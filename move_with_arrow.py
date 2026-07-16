@@ -4,7 +4,7 @@ import time
 
 print("방향키를 눌러보세요. 종료하려면 q를 누르세요.")
 
-ser = serial.Serial("COM3", 9600, timeout=0.1)
+ser = serial.Serial("/dev/ttyUSB0", 9600, timeout=0.1)
 time.sleep(2)  # 아두이노 리셋 대기
 
 deg = 0
@@ -62,8 +62,8 @@ try:
         # 조향 왼쪽
         if keyboard.is_pressed("left"):
             if now - last_left_time > STEER_INTERVAL:
-                deg -= 1
-                deg = max(-21, min(21, deg))
+                deg += 10
+                deg = max(-20, min(20, deg))
                 print("왼쪽 조향:", deg)
                 send_steer(deg)
                 last_left_time = now
@@ -71,8 +71,8 @@ try:
         # 조향 오른쪽
         elif keyboard.is_pressed("right"):
             if now - last_right_time > STEER_INTERVAL:
-                deg += 1
-                deg = max(-21, min(21, deg))
+                deg -= 10
+                deg = max(-20, min(20, deg))
                 print("오른쪽 조향:", deg)
                 send_steer(deg)
                 last_right_time = now
@@ -93,8 +93,8 @@ try:
         if keyboard.is_pressed("a"):
             time.sleep(0.2)
             try:
-                deg = int(input("몇 도로 갈 거에요? 최대 ±21도: "))
-                deg = max(-21, min(21, deg))
+                deg = int(input("몇 도로 갈 거에요? 최대 ±20도: "))
+                deg = max(-20, min(20, deg))
                 send_steer(deg)
             except ValueError:
                 print("숫자를 입력하세요.")

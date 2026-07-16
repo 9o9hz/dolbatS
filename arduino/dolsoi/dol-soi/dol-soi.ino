@@ -12,17 +12,17 @@ const int REAR_R_IN2 = 7;
 // ---------------- Steering Sensor ----------------
 const int STEER_SENSOR_PIN = A0;
 
-// A0 값이 512일 때 조향각 0도
-const int STEER_CENTER_RAW = 512;
+// A0 값이 588일 때 조향각 0도
+const int STEER_CENTER_RAW = 588;
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
 // 즉 각도 = ADC 변화량 * 270 / 1024
 const float DEG_PER_ADC = 270.0f / 1024.0f;
 
-// A0 값이 증가할 때 오른쪽(+)이면 1
-// 반대로 움직이면 -1로 바꿔
-const int STEER_SIGN = 1;
+// 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-)
+// 현재 센서는 오른쪽으로 움직일 때 A0 값이 증가하므로 -1
+const int STEER_SIGN = -1;
 
 // 목표각 근처 허용 오차
 const float STEER_TOLERANCE_DEG = 0.5f;
@@ -37,9 +37,9 @@ float targetSteerDeg = 0.0f;
 int driveSpeed = 0;
 char driveDir = 'S';
 
-// 디버그 출력 간격
-unsigned long lastDebugMs = 0;
-const unsigned long DEBUG_INTERVAL_MS = 300;
+// 상태 송출 간격: "angle,speed" 형식
+unsigned long lastStatusMs = 0;
+const unsigned long STATUS_INTERVAL_MS = 300;
 
 void setup() {
   Serial.begin(9600);
@@ -59,18 +59,12 @@ void setup() {
 
   currentSteerDeg = readCurrentSteerDeg();
   targetSteerDeg = currentSteerDeg;
-
-  Serial.println("READY");
 }
 
 void loop() {
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-
-    Serial.print("RX: [");
-    Serial.print(cmd);
-    Serial.println("]");
 
     parseCommand(cmd);
   }
@@ -148,9 +142,6 @@ void parseCommand(String cmd) {
   else if (cmd.startsWith("S,")) {
     parseSteerCommand(cmd);
   }
-  else {
-    Serial.println("Invalid command");
-  }
 }
 
 void parseDriveCommand(String cmd) {
@@ -163,7 +154,6 @@ void parseDriveCommand(String cmd) {
   int secondComma = cmd.indexOf(',', firstComma + 1);
 
   if (firstComma == -1 || secondComma == -1) {
-    Serial.println("Drive parse failed");
     return;
   }
 
@@ -178,15 +168,6 @@ void parseDriveCommand(String cmd) {
   if (dir == 'F' || dir == 'R' || dir == 'S') {
     driveDir = dir;
     driveSpeed = speed;
-
-    Serial.print("Drive Dir: ");
-    Serial.println(driveDir);
-
-    Serial.print("Drive Speed: ");
-    Serial.println(driveSpeed);
-  }
-  else {
-    Serial.println("Invalid drive direction");
   }
 }
 
@@ -199,7 +180,6 @@ void parseSteerCommand(String cmd) {
   int comma = cmd.indexOf(',');
 
   if (comma == -1) {
-    Serial.println("Steer parse failed");
     return;
   }
 
@@ -210,9 +190,6 @@ void parseSteerCommand(String cmd) {
   angle = round(angle * 10.0f) / 10.0f;
 
   targetSteerDeg = angle;
-
-  Serial.print("Target Steer: ");
-  Serial.println(targetSteerDeg, 1);
 }
 
 // ---------------- 실제 구동 적용 ----------------
@@ -238,25 +215,29 @@ void applySteer() {
     handleStop();
   }
   else if (steerError > 0) {
-    handleRight();
-  }
-  else {
     handleLeft();
   }
+  else {
+    handleRight();
+  }
 
-  // 디버그 출력
+  // 현재 조향각과 속도를 "angle,speed" 형식으로 송출한다.
+  // 후진 속도는 음수, 정지는 0으로 표현한다.
   unsigned long now = millis();
 
-  if (now - lastDebugMs >= DEBUG_INTERVAL_MS) {
-    Serial.print("Current: ");
+  if (now - lastStatusMs >= STATUS_INTERVAL_MS) {
+    int signedSpeed = 0;
+    if (driveDir == 'F') {
+      signedSpeed = driveSpeed;
+    }
+    else if (driveDir == 'R') {
+      signedSpeed = -driveSpeed;
+    }
+
     Serial.print(currentSteerDeg, 1);
+    Serial.print(",");
+    Serial.println(signedSpeed);
 
-    Serial.print(" / Target: ");
-    Serial.print(targetSteerDeg, 1);
-
-    Serial.print(" / Error: ");
-    Serial.println(steerError, 1);
-
-    lastDebugMs = now;
+    lastStatusMs = now;
   }
 }
