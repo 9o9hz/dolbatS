@@ -37,7 +37,7 @@ ros2 run detect_pkg obstacle_detector_publisher \
 
 # `/cmd_vel`
 ```bash
-ros2 run control_pkg cmd_vel_serial_bridge \
+ros2 run control_pkg serial_bridge \
   --serial-port /dev/ttyUSB0 \
-  --baudrate 9600
+  --baudrate 115200
 ```

@@ -13,7 +13,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /camera/traffic_light/detection_view
+        Value: /camera/lane/detection_view
       Value: true
   Enabled: true
   Global Options:

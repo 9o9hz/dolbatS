@@ -9,6 +9,31 @@ const int REAR_L_IN2 = 5;
 const int REAR_R_IN1 = 6;
 const int REAR_R_IN2 = 7;
 
+// ---------------- Ultrasonic Sensors ----------------
+const int LEFT_ULTRASONIC_ECHO = 22;
+const int LEFT_ULTRASONIC_TRIG = 23;
+const int RIGHT_ULTRASONIC_ECHO = 24;
+const int RIGHT_ULTRASONIC_TRIG = 25;
+
+const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
+const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 30;
+
+enum UltrasonicState {
+  ULTRASONIC_IDLE,
+  ULTRASONIC_WAIT_RISE,
+  ULTRASONIC_WAIT_FALL
+};
+
+UltrasonicState ultrasonicState = ULTRASONIC_IDLE;
+unsigned long ultrasonicTriggerStartUs = 0;
+unsigned long ultrasonicEchoStartUs = 0;
+unsigned long lastUltrasonicTriggerMs = 0;
+int activeUltrasonicEchoPin = LEFT_ULTRASONIC_ECHO;
+bool activeUltrasonicIsLeft = true;
+bool nextUltrasonicIsLeft = true;
+float leftDistanceCm = -1.0f;
+float rightDistanceCm = -1.0f;
+
 // ---------------- Steering Sensor ----------------
 const int STEER_SENSOR_PIN = A0;
 
@@ -37,12 +62,12 @@ float targetSteerDeg = 0.0f;
 int driveSpeed = 0;
 char driveDir = 'S';
 
-// 상태 송출 간격: "angle,speed" 형식
-unsigned long lastStatusMs = 0;
-const unsigned long STATUS_INTERVAL_MS = 300;
+const unsigned long TELEMETRY_INTERVAL_MS = 10;
+unsigned long lastTelemetryMs = 0;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
+  Serial.setTimeout(5);
 
   pinMode(HANDLE_IN1, OUTPUT);
   pinMode(HANDLE_IN2, OUTPUT);
@@ -52,6 +77,13 @@ void setup() {
 
   pinMode(REAR_R_IN1, OUTPUT);
   pinMode(REAR_R_IN2, OUTPUT);
+
+  pinMode(LEFT_ULTRASONIC_TRIG, OUTPUT);
+  pinMode(LEFT_ULTRASONIC_ECHO, INPUT);
+  pinMode(RIGHT_ULTRASONIC_TRIG, OUTPUT);
+  pinMode(RIGHT_ULTRASONIC_ECHO, INPUT);
+  digitalWrite(LEFT_ULTRASONIC_TRIG, LOW);
+  digitalWrite(RIGHT_ULTRASONIC_TRIG, LOW);
 
   pinMode(STEER_SENSOR_PIN, INPUT);
 
@@ -71,6 +103,110 @@ void loop() {
 
   applyDrive();
   applySteer();
+  updateUltrasonicSensors();
+  publishTelemetry();
+}
+
+// ---------------- 비차단 초음파 거리 측정 ----------------
+
+void startUltrasonicMeasurement(int trigPin, int echoPin, bool isLeft) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  activeUltrasonicEchoPin = echoPin;
+  activeUltrasonicIsLeft = isLeft;
+  ultrasonicTriggerStartUs = micros();
+  ultrasonicState = ULTRASONIC_WAIT_RISE;
+}
+
+void finishUltrasonicMeasurement(float distanceCm) {
+  if (activeUltrasonicIsLeft) {
+    leftDistanceCm = distanceCm;
+  }
+  else {
+    rightDistanceCm = distanceCm;
+  }
+
+  ultrasonicState = ULTRASONIC_IDLE;
+  lastUltrasonicTriggerMs = millis();
+  nextUltrasonicIsLeft = !activeUltrasonicIsLeft;
+}
+
+void updateUltrasonicSensors() {
+  unsigned long nowUs = micros();
+
+  if (ultrasonicState == ULTRASONIC_WAIT_RISE) {
+    if (digitalRead(activeUltrasonicEchoPin) == HIGH) {
+      ultrasonicEchoStartUs = nowUs;
+      ultrasonicState = ULTRASONIC_WAIT_FALL;
+    }
+    else if (nowUs - ultrasonicTriggerStartUs >= ULTRASONIC_TIMEOUT_US) {
+      finishUltrasonicMeasurement(-1.0f);
+    }
+    return;
+  }
+
+  if (ultrasonicState == ULTRASONIC_WAIT_FALL) {
+    if (digitalRead(activeUltrasonicEchoPin) == LOW) {
+      unsigned long durationUs = nowUs - ultrasonicEchoStartUs;
+      float distanceCm = durationUs * 0.0343f / 2.0f;
+      finishUltrasonicMeasurement(distanceCm <= 400.0f ? distanceCm : -1.0f);
+    }
+    else if (nowUs - ultrasonicEchoStartUs >= ULTRASONIC_TIMEOUT_US) {
+      finishUltrasonicMeasurement(-1.0f);
+    }
+    return;
+  }
+
+  if (millis() - lastUltrasonicTriggerMs < ULTRASONIC_TRIGGER_INTERVAL_MS) {
+    return;
+  }
+
+  if (nextUltrasonicIsLeft) {
+    startUltrasonicMeasurement(
+      LEFT_ULTRASONIC_TRIG,
+      LEFT_ULTRASONIC_ECHO,
+      true
+    );
+  }
+  else {
+    startUltrasonicMeasurement(
+      RIGHT_ULTRASONIC_TRIG,
+      RIGHT_ULTRASONIC_ECHO,
+      false
+    );
+  }
+}
+
+// ---------------- 상태 송출 ----------------
+
+void publishTelemetry() {
+  unsigned long now = millis();
+  if (now - lastTelemetryMs < TELEMETRY_INTERVAL_MS) {
+    return;
+  }
+
+  int signedSpeed = 0;
+  if (driveDir == 'F') {
+    signedSpeed = driveSpeed;
+  }
+  else if (driveDir == 'R') {
+    signedSpeed = -driveSpeed;
+  }
+
+  // 형식: current_speed,current_steer,left_cm,right_cm
+  Serial.print(signedSpeed);
+  Serial.print(",");
+  Serial.print(currentSteerDeg, 1);
+  Serial.print(",");
+  Serial.print(leftDistanceCm, 1);
+  Serial.print(",");
+  Serial.println(rightDistanceCm, 1);
+
+  lastTelemetryMs = now;
 }
 
 // ---------------- 현재 조향각 읽기 ----------------
@@ -219,25 +355,5 @@ void applySteer() {
   }
   else {
     handleRight();
-  }
-
-  // 현재 조향각과 속도를 "angle,speed" 형식으로 송출한다.
-  // 후진 속도는 음수, 정지는 0으로 표현한다.
-  unsigned long now = millis();
-
-  if (now - lastStatusMs >= STATUS_INTERVAL_MS) {
-    int signedSpeed = 0;
-    if (driveDir == 'F') {
-      signedSpeed = driveSpeed;
-    }
-    else if (driveDir == 'R') {
-      signedSpeed = -driveSpeed;
-    }
-
-    Serial.print(currentSteerDeg, 1);
-    Serial.print(",");
-    Serial.println(signedSpeed);
-
-    lastStatusMs = now;
   }
 }

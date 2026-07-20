@@ -19,7 +19,7 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
-            "cmd_vel_serial_bridge = serial_bridge:main",
+            "serial_bridge = serial_bridge:main",
         ],
     },
 )

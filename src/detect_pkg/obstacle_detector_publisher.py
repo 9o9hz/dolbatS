@@ -39,9 +39,9 @@ class ObstacleDetectorPublisher(Node):
         self.declare_parameter(
             "bottom_center_topic", "/detect/obstacle/bottom_center"
         )
-        self.declare_parameter("raw_image_topic", "/camera/traffic_light/raw")
+        self.declare_parameter("raw_image_topic", "/camera/lane/raw")
         self.declare_parameter(
-            "detection_image_topic", "/camera/traffic_light/detection_view"
+            "detection_image_topic", "/camera/lane/detection_view"
         )
         self.declare_parameter("show_window", False if show_window is None else show_window)
 

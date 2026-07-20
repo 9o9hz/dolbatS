@@ -1,7 +1,7 @@
 # dolbatS
 
 ## 명령어 체계
-돌쇠는 다음과 같은 명령어 체계를 가지고 움직입니다. `Serial` 통신을 통해 `9600 baudrate`로 명령어를 전송받습니다. 모든 명령어의 끝은 `\n`으로 끝나야 합니다.
+돌쇠는 다음과 같은 명령어 체계를 가지고 움직입니다. `Serial` 통신을 통해 `115200 baudrate`로 명령어를 전송받습니다. 모든 명령어의 끝은 `\n`으로 끝나야 합니다.
 
 
 ```
@@ -33,16 +33,16 @@ S,15.3\n
 
 자세한 내용은 `steering_test.py` 파일 안에 `send_steer()`, `send_drive()` 함수를 참조하면 됩니다.
 
-아두이노는 300ms마다 현재 상태를 `angle,speed` 형식으로 송출합니다. 조향각은 소수점 첫째 자리까지 표시하고, 전진 속도는 양수, 후진 속도는 음수, 정지는 `0`으로 표시합니다.
+Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 핀은 오른쪽 센서의 ECHO/TRIG로 사용합니다. 아두이노는 10ms마다 `현재속도,현재조향각,왼쪽거리cm,오른쪽거리cm` 형식으로 최신 상태를 송출합니다. 초음파 센서는 상호 간섭을 줄이기 위해 좌우를 번갈아 측정하며, 측정 실패 또는 범위 초과는 `-1.0`으로 표시합니다.
 
 ```
--12.3,100
-0.0,-80
+128,5.2,35.2,41.8
+-80,-10.1,-1.0,120.4
 ```
 
 ## ROS2 카메라 인식 토픽 발행
 
-`traffic_light_camera_publisher`는 `/camera/traffic_light/raw`, `lane_camera_publisher`는 `/camera/lane/raw`를 발행합니다. `obstacle_detector_publisher`는 신호등 카메라 토픽을 구독해 `dolsoi-model-v2.pt`로 객체를 찾고 감지 여부, 박스와 하단 중심 좌표를 발행합니다.
+`traffic_light_camera_publisher`는 `/camera/traffic_light/raw`, `lane_camera_publisher`는 `/camera/lane/raw`를 발행합니다. `obstacle_detector_publisher`는 차선 카메라 토픽을 구독해 `dolsoi-model-v2.pt`로 객체를 찾고 감지 여부, 박스와 하단 중심 좌표를 발행합니다.
 
 필요 패키지:
 
@@ -99,8 +99,8 @@ source install/setup.bash
 | 토픽 | 타입 | 내용 |
 | --- | --- | --- |
 | `/camera/traffic_light/raw` | `sensor_msgs/Image` | 신호등 카메라 raw BGR 프레임 |
-| `/camera/traffic_light/detection_view` | `sensor_msgs/Image` | 신호등 카메라의 RViz용 감지 영상 |
 | `/camera/lane/raw` | `sensor_msgs/Image` | 차선 카메라 raw BGR 프레임 |
+| `/camera/lane/detection_view` | `sensor_msgs/Image` | 차선 카메라의 RViz용 장애물 감지 영상 |
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
 | `/detect/obstacle/bottom_center` | `std_msgs/Float32MultiArray` | 감지된 경우에만 바운딩 박스 하단 중심 `[x, y]` 발행 |
@@ -116,6 +116,6 @@ ros2 run camera_pkg traffic_light_camera_publisher --ros-args \
 ```
 ros2 run detect_pkg obstacle_detector_publisher --ros-args \
   -p confidence_threshold:=0.5 \
-  -p raw_image_topic:=/camera/traffic_light/raw \
+  -p raw_image_topic:=/camera/lane/raw \
   -p show_window:=true
 ```
