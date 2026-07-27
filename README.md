@@ -104,6 +104,53 @@ source install/setup.bash
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
 | `/detect/obstacle/bottom_center` | `std_msgs/Float32MultiArray` | 감지된 경우에만 바운딩 박스 하단 중심 `[x, y]` 발행 |
+| `/ultrasonic/left_distance` | `std_msgs/Float32` | 왼쪽 초음파 거리(cm), 측정 실패는 `-1.0` |
+| `/ultrasonic/right_distance` | `std_msgs/Float32` | 오른쪽 초음파 거리(cm), 측정 실패는 `-1.0` |
+| `/detect/obstacle_event` | `std_msgs/Int8MultiArray` | 초음파 장애물 상태가 바뀔 때만 `[event, avoid_direction]` 발행 |
+
+## ROS2 초음파 장애물 이벤트
+
+`ultrasonic_obstacle_event`는 좌우 거리 한 쌍을 한 프레임으로 처리합니다.
+기본값으로 40cm 이하가 3프레임 연속되면 감지 이벤트를, 양쪽 모두
+45cm 초과가 3프레임 연속되면 해제 이벤트를 발행합니다. `-1.0`, NaN,
+무한대는 유효한 거리로 세지 않으며, 센서 오류만으로 해제 이벤트가
+발생하지 않습니다.
+
+이벤트 데이터의 코드는 다음과 같습니다.
+
+| 배열 위치 | 값 | 의미 |
+| --- | --- | --- |
+| `data[0]` | `1` / `0` | 장애물 감지 / 장애물 사라짐 |
+| `data[1]` | `1` / `-1` | 왼쪽 회피 / 오른쪽 회피 |
+
+감지와 그에 대응하는 해제 이벤트에는 같은 회피 방향이 들어갑니다. 따라서
+다음 회피 로직은 마지막 이벤트의 `data[1]`을 저장해 두었다가 사용할 수
+있습니다. 왼쪽 센서가 막히면 오른쪽, 오른쪽 센서가 막히면 왼쪽을
+선택하며 양쪽이 모두 막히면 더 여유 있는 쪽을 선택합니다.
+
+실행:
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-select control_pkg
+source install/setup.bash
+ros2 run control_pkg ultrasonic_obstacle_event
+```
+
+임계값과 연속 프레임 수 변경:
+
+```bash
+ros2 run control_pkg ultrasonic_obstacle_event --ros-args \
+  -p detect_threshold_cm:=35.0 \
+  -p clear_threshold_cm:=40.0 \
+  -p consecutive_frames:=5
+```
+
+이벤트 확인:
+
+```bash
+ros2 topic echo /detect/obstacle_event
+```
 
 주요 파라미터:
 
