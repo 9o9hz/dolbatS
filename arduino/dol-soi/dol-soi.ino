@@ -37,8 +37,8 @@ float rightDistanceCm = -1.0f;
 // ---------------- Steering Sensor ----------------
 const int STEER_SENSOR_PIN = A0;
 
-// A0 값이 588일 때 조향각 0도
-const int STEER_CENTER_RAW = 588;
+// A0 값이 632일 때 조향각 0도
+const int STEER_CENTER_RAW = 632;
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
@@ -47,17 +47,21 @@ const float DEG_PER_ADC = 270.0f / 1024.0f;
 
 // 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-)
 // 현재 센서는 오른쪽으로 움직일 때 A0 값이 증가하므로 -1
-const int STEER_SIGN = -1;
+const int STEER_SIGN = 1;
 
-// 목표각 근처 허용 오차
-const float STEER_TOLERANCE_DEG = 0.5f;
+// 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
+// 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
+const int STEER_RAW_MIN = 545;
+const int STEER_RAW_MAX = 720;
+const int STEER_RAW_TOLERANCE = 2;
 
 // 조향 모터 PWM
 const int STEER_PWM = 150;
 
 // ---------------- State Variables ----------------
 float currentSteerDeg = 0.0f;
-float targetSteerDeg = 0.0f;
+int currentSteerRaw = STEER_CENTER_RAW;
+int targetSteerRaw = STEER_CENTER_RAW;
 
 int driveSpeed = 0;
 char driveDir = 'S';
@@ -89,8 +93,13 @@ void setup() {
 
   stopAllMotors();
 
-  currentSteerDeg = readCurrentSteerDeg();
-  targetSteerDeg = currentSteerDeg;
+  currentSteerRaw = readSteerSensorRaw();
+  currentSteerDeg = steerRawToDeg(currentSteerRaw);
+  targetSteerRaw = constrain(
+    currentSteerRaw,
+    STEER_RAW_MIN,
+    STEER_RAW_MAX
+  );
 }
 
 void loop() {
@@ -211,9 +220,11 @@ void publishTelemetry() {
 
 // ---------------- 현재 조향각 읽기 ----------------
 
-float readCurrentSteerDeg() {
-  int raw = analogRead(STEER_SENSOR_PIN);
+int readSteerSensorRaw() {
+  return analogRead(STEER_SENSOR_PIN);
+}
 
+float steerRawToDeg(int raw) {
   float angle = (raw - STEER_CENTER_RAW) * DEG_PER_ADC * STEER_SIGN;
 
   return angle;
@@ -325,7 +336,15 @@ void parseSteerCommand(String cmd) {
   // 소수점 첫째 자리로 반올림
   angle = round(angle * 10.0f) / 10.0f;
 
-  targetSteerDeg = angle;
+  // 각도 명령을 센서 raw 목표값으로 변환한 뒤 안전 범위로 제한
+  int requestedRaw = round(
+    STEER_CENTER_RAW + angle / (DEG_PER_ADC * STEER_SIGN)
+  );
+  targetSteerRaw = constrain(
+    requestedRaw,
+    STEER_RAW_MIN,
+    STEER_RAW_MAX
+  );
 }
 
 // ---------------- 실제 구동 적용 ----------------
@@ -343,17 +362,21 @@ void applyDrive() {
 }
 
 void applySteer() {
-  currentSteerDeg = readCurrentSteerDeg();
+  currentSteerRaw = readSteerSensorRaw();
+  currentSteerDeg = steerRawToDeg(currentSteerRaw);
 
-  float steerError = targetSteerDeg - currentSteerDeg;
+  int steerRawError = targetSteerRaw - currentSteerRaw;
 
-  if (fabs(steerError) <= STEER_TOLERANCE_DEG) {
+  if (abs(steerRawError) <= STEER_RAW_TOLERANCE) {
     handleStop();
   }
-  else if (steerError > 0) {
+  else if (steerRawError < 0 && currentSteerRaw > STEER_RAW_MIN) {
     handleLeft();
   }
-  else {
+  else if (steerRawError > 0 && currentSteerRaw < STEER_RAW_MAX) {
     handleRight();
+  }
+  else {
+    handleStop();
   }
 }

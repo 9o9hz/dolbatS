@@ -13,6 +13,7 @@ last_drive = None
 last_steer = None
 last_left_time = 0
 last_right_time = 0
+speed = 50
 
 STEER_INTERVAL = 0.08  # 좌우 키를 누르고 있을 때 각도 변경 간격
 
@@ -79,11 +80,11 @@ try:
 
         # 전진
         if keyboard.is_pressed("up"):
-            send_drive("F", 255)
+            send_drive("F", speed)
 
         # 후진
         elif keyboard.is_pressed("down"):
-            send_drive("R", 255)
+            send_drive("R", speed)
 
         # 위/아래 안 누르면 정지
         else:
