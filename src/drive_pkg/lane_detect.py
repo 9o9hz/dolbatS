@@ -29,9 +29,11 @@ PARAMETER_DEFAULTS = {
     "model_path": str(DEFAULT_MODEL),
     "bev_params": str(DEFAULT_BEV_PARAMS),
     "image_topic": "/image_raw/compressed",
+    "bev_topic": "/lane/detection/bev/compressed",
     "mask_topic": "/lane/detection/mask/compressed",
     "segmentation_topic": "/lane/detection/segmentation/compressed",
     "status_topic": "/lane/detection/status",
+    "instances_topic": "/lane/detection/instances",
     "confidence": 0.25,
     "image_size": 640,
     "device": "auto",
@@ -41,6 +43,8 @@ PARAMETER_DEFAULTS = {
     "debug_jpeg_quality": 80,
     "display": False,
     "display_scale": 1.0,
+    "display_window_x": 20,
+    "display_window_y": 60,
 }
 
 
@@ -115,12 +119,22 @@ class LaneDetectNode(Node):
         self.display_scale = max(
             0.1, float(parameter("display_scale"))
         )
+        self.display_window_x = int(parameter("display_window_x"))
+        self.display_window_y = int(parameter("display_window_y"))
+        self.display_window_ready = False
         self.frame_count = 0
 
         image_topic = str(parameter("image_topic"))
+        bev_topic = str(parameter("bev_topic"))
         mask_topic = str(parameter("mask_topic"))
         segmentation_topic = str(parameter("segmentation_topic"))
         status_topic = str(parameter("status_topic"))
+        instances_topic = str(parameter("instances_topic"))
+        self.bev_publisher = self.create_publisher(
+            CompressedImage,
+            bev_topic,
+            qos_profile_sensor_data,
+        )
         self.mask_publisher = self.create_publisher(
             CompressedImage,
             mask_topic,
@@ -134,6 +148,11 @@ class LaneDetectNode(Node):
         self.status_publisher = self.create_publisher(
             String,
             status_topic,
+            10,
+        )
+        self.instances_publisher = self.create_publisher(
+            String,
+            instances_topic,
             10,
         )
         self.image_subscription = self.create_subscription(
@@ -179,10 +198,11 @@ class LaneDetectNode(Node):
                 retina_masks=True,
                 verbose=False,
             )[0]
-            mask, instance_count = self._combined_mask(
+            mask, instances = self._combined_mask(
                 result,
                 bev.shape[:2],
             )
+            instance_count = len(instances)
             segmentation = result.plot(
                 labels=True,
                 boxes=False,
@@ -197,6 +217,13 @@ class LaneDetectNode(Node):
             return
 
         inference_ms = (time.perf_counter() - started) * 1000.0
+        self._publish_image(
+            bev,
+            message,
+            self.bev_publisher,
+            ".jpg",
+            [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
+        )
         self._publish_image(
             mask,
             message,
@@ -223,6 +250,21 @@ class LaneDetectNode(Node):
                 )
             )
         )
+        timestamp_ns = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
+        self.instances_publisher.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "timestamp_ns": timestamp_ns,
+                        "instances": instances,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
 
         if self.display:
             preview = cv2.resize(
@@ -232,7 +274,21 @@ class LaneDetectNode(Node):
                 fy=self.display_scale,
                 interpolation=cv2.INTER_NEAREST,
             )
-            cv2.imshow("lane_detect: segmentation", preview)
+            window_name = "lane_detect: segmentation"
+            if not self.display_window_ready:
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                cv2.moveWindow(
+                    window_name,
+                    self.display_window_x,
+                    self.display_window_y,
+                )
+                self.display_window_ready = True
+            cv2.resizeWindow(
+                window_name,
+                preview.shape[1],
+                preview.shape[0],
+            )
+            cv2.imshow(window_name, preview)
             if cv2.waitKey(1) & 0xFF in (27, ord("q")):
                 rclpy.shutdown()
 
@@ -240,18 +296,25 @@ class LaneDetectNode(Node):
         self,
         result: Any,
         image_shape: Sequence[int],
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, list[dict]]:
         height, width = int(image_shape[0]), int(image_shape[1])
         combined = np.zeros((height, width), dtype=np.uint8)
         if result.masks is None or result.boxes is None:
-            return combined, 0
+            return combined, []
 
         masks = result.masks.data.detach().cpu().numpy()
         classes = (
             result.boxes.cls.detach().cpu().numpy().astype(int)
         )
-        instance_count = 0
-        for raw_mask, class_id in zip(masks, classes):
+        confidences = (
+            result.boxes.conf.detach().cpu().numpy().astype(float)
+        )
+        instances = []
+        for raw_mask, class_id, confidence in zip(
+            masks,
+            classes,
+            confidences,
+        ):
             if int(class_id) not in self.lane_class_ids:
                 continue
             resized = cv2.resize(
@@ -260,8 +323,21 @@ class LaneDetectNode(Node):
                 interpolation=cv2.INTER_NEAREST,
             )
             combined[resized > 0] = 255
-            instance_count += 1
-        return combined, instance_count
+            y_values, x_values = np.nonzero(resized)
+            if len(x_values) == 0:
+                continue
+            instances.append(
+                {
+                    "class_id": int(class_id),
+                    "class_name": str(self.model.names[int(class_id)]),
+                    "confidence": round(float(confidence), 4),
+                    "x_min": int(np.min(x_values)),
+                    "y_min": int(np.min(y_values)),
+                    "x_max": int(np.max(x_values)),
+                    "y_max": int(np.max(y_values)),
+                }
+            )
+        return combined, instances
 
     @staticmethod
     def _publish_image(

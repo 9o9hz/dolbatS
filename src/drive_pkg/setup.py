@@ -13,10 +13,9 @@ setup(
         "lane_detect",
         "lane_processing",
         "path_plan",
+        "path_visualizer",
         "pure_pursuit",
         "test_yolo_usb_cam",
-        "validate_lane_video",
-        "yolo11_lane_post_processor",
         "yolo_lane_driver",
     ],
     data_files=[
@@ -27,7 +26,7 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (
             f"share/{package_name}/resource",
-            ["resource/bev_params_7.npz"],
+            ["resource/bev_params_0728.npz"],
         ),
         (
             f"share/{package_name}/config",
@@ -48,6 +47,7 @@ setup(
         "console_scripts": [
             "lane_detect = lane_detect:main",
             "path_plan = path_plan:main",
+            "path_visualizer = path_visualizer:main",
             "pure_pursuit = pure_pursuit:main",
             "drive_pipeline = drive_pipeline:main",
             "yolo_lane_driver = drive_pipeline:main",

@@ -1,0 +1,9 @@
+# Selected BEV Points (Y-Auto, original image coordinates)
+# Points can be outside original image bounds
+# Original image size: 640 x 480
+# Canvas size: 1000 x 800
+# Offset: (180, 160)
+-32, 479 # 1 (L-Bot) [OUTSIDE]
+710, 479 # 2 (R-Bot) [OUTSIDE]
+97, 247 # 3 (L-Top) [INSIDE]
+526, 247 # 4 (R-Top) [INSIDE]

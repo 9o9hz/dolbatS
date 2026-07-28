@@ -40,6 +40,13 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="drive_pkg",
+                executable="path_visualizer",
+                name="path_visualizer",
+                output="screen",
+                parameters=[params_file],
+            ),
+            Node(
+                package="drive_pkg",
                 executable="pure_pursuit",
                 name="pure_pursuit",
                 output="screen",

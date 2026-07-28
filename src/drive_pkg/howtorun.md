@@ -1,13 +1,13 @@
 # drive_pkg 모듈형 파이프라인
 
-`drive_pkg`는 하나의 ROS 2 패키지 안에서 세 노드가 토픽으로 연결된다.
+`drive_pkg`는 하나의 ROS 2 패키지 안에서 네 노드가 토픽으로 연결된다.
 
 ```text
 /image_raw/compressed
   -> lane_detect
   -> /lane/detection/mask/compressed
   -> path_plan
-  -> /lane/path
+  -> /lane/path/control
   -> pure_pursuit
   -> /cmd_vel
 ```
@@ -66,11 +66,13 @@ ros2 run drive_pkg pure_pursuit --ros-args \
 | 검출 | `/lane/detection/segmentation/compressed` | `sensor_msgs/CompressedImage` | YOLO 시각화 |
 | 검출 | `/lane/detection/status` | `std_msgs/String` | 검출 개수·추론 시간 JSON |
 | 계획 | `/lane/path` | `nav_msgs/Path` | `base_link` 기준 metric 경로 |
+| 계획/제어 | `/lane/path/control` | `std_msgs/String` | 동일 프레임의 timestamp·fallback·metric 경로 |
 | 계획 | `/lane/path/debug/compressed` | `sensor_msgs/CompressedImage` | 생성 경로 시각화 |
 | 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |
 | 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
 | 제어 | `/cmd_vel` | `geometry_msgs/Twist` | 주행 속도·각속도 명령 |
 | 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON |
+| 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
 `pure_pursuit.enable_drive` 기본값은 `false`다. 이때 계산 결과는
 `/lane/control/status`에서 확인할 수 있지만 `/cmd_vel`에는 정지 명령만

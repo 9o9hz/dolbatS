@@ -227,6 +227,13 @@ class PurePursuitNode(Node):
         lookahead_m = self._dynamic_lookahead(
             self.last_steering_deg
         )
+        visual_target_index = int(
+            np.argmin(np.abs(distances - lookahead_m))
+        )
+        visual_target_distance = max(
+            float(distances[visual_target_index]),
+            1e-3,
+        )
         speed = self._target_speed(self.last_steering_deg)
         if self.path_fallback:
             speed *= self.hold_speed_scale
@@ -246,7 +253,8 @@ class PurePursuitNode(Node):
             desired_speed=speed,
             command=command,
             lookahead_m=lookahead_m,
-            target_distance=target_distance,
+            target_distance=visual_target_distance,
+            target_index=visual_target_index,
         )
 
     def _dynamic_lookahead(self, steering_deg: float) -> float:
@@ -317,6 +325,7 @@ class PurePursuitNode(Node):
                 self.last_steering_deg
             ),
             target_distance=0.0,
+            target_index=-1,
         )
 
     def _publish_status(
@@ -328,6 +337,7 @@ class PurePursuitNode(Node):
         command: Twist,
         lookahead_m: float,
         target_distance: float,
+        target_index: int,
     ) -> None:
         self.status_publisher.publish(
             String(
@@ -346,6 +356,7 @@ class PurePursuitNode(Node):
                             target_distance,
                             3,
                         ),
+                        "lookahead_target_index": int(target_index),
                         "desired_speed_mps": round(
                             desired_speed,
                             3,

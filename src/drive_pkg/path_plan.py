@@ -215,6 +215,16 @@ class PathPlanNode(Node):
                         ),
                         "selection_mode": output.selection_mode,
                         "which_lane": output.which_lane,
+                        "detected_lines": output.detected_lines,
+                        "left_boundary_pixels": self._points_payload(
+                            output.left_boundary_pixels
+                        ),
+                        "right_boundary_pixels": self._points_payload(
+                            output.right_boundary_pixels
+                        ),
+                        "path_pixels": self._points_payload(
+                            output.path_pixels
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -237,6 +247,15 @@ class PathPlanNode(Node):
             cv2.imshow("path_plan: local path", preview)
             if cv2.waitKey(1) & 0xFF in (27, ord("q")):
                 rclpy.shutdown()
+
+    @staticmethod
+    def _points_payload(points: Optional[np.ndarray]) -> list[list[float]]:
+        if points is None or len(points) == 0:
+            return []
+        return np.round(
+            np.asarray(points, dtype=np.float64),
+            1,
+        ).tolist()
 
     def _path_message(
         self,
@@ -272,7 +291,14 @@ class PathPlanNode(Node):
         mask: np.ndarray,
         output: PathPlanResult,
     ) -> np.ndarray:
-        debug = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        debug = np.zeros((*mask.shape, 3), dtype=np.uint8)
+        debug[mask > 0] = (0, 150, 0)
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        cv2.drawContours(debug, contours, -1, (0, 255, 0), 2)
         if output.path_pixels is not None:
             points = np.rint(output.path_pixels).astype(np.int32)
             if len(points) >= 2:
@@ -283,6 +309,26 @@ class PathPlanNode(Node):
                     (0, 0, 255),
                     4,
                 )
+        cv2.putText(
+            debug,
+            "GREEN: detected lines",
+            (12, debug.shape[0] - 38),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            debug,
+            "RED: reference path",
+            (12, debug.shape[0] - 14),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
         lines = (
             f"path: {output.reason}",
             f"selection: {output.selection_mode}",

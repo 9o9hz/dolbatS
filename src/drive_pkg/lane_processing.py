@@ -45,7 +45,7 @@ from std_msgs.msg import String
 
 def _default_bev_params_path() -> Path:
     source_path = (
-        Path(__file__).resolve().parent / "resource" / "bev_params_7.npz"
+        Path(__file__).resolve().parent / "resource" / "bev_params_0728.npz"
     )
     if source_path.is_file():
         return source_path
@@ -56,7 +56,7 @@ def _default_bev_params_path() -> Path:
         return (
             Path(get_package_share_directory("drive_pkg"))
             / "resource"
-            / "bev_params_7.npz"
+            / "bev_params_0728.npz"
         )
     except (ImportError, LookupError):
         return source_path
@@ -170,6 +170,9 @@ class PathPlanResult:
     dashed_region_count: int
     selection_mode: str
     which_lane: Optional[str]
+    detected_lines: List[Dict[str, Any]]
+    left_boundary_pixels: PointArray
+    right_boundary_pixels: PointArray
 
 
 @dataclass(frozen=True)
@@ -1561,6 +1564,43 @@ class SegmentationLaneProcessor:
             f"{selection_mode}:{reason}",
         )
         fallback = fallback or self._using_tracked_boundary
+        detected_lines = []
+        for group in groups:
+            points = np.asarray(group["points"], dtype=np.float32)
+            if len(points) == 0:
+                continue
+            label_point = points[len(points) // 2]
+            piece_count = len(group["pieces"])
+            box_padding = 15.0
+            detected_lines.append(
+                {
+                    "type": (
+                        "DASHED"
+                        if piece_count
+                        >= self.config.dashed_piece_threshold
+                        else "SOLID"
+                    ),
+                    "x": round(float(label_point[0]), 1),
+                    "y": round(float(label_point[1]), 1),
+                    "x_min": round(
+                        float(np.min(points[:, 0]) - box_padding),
+                        1,
+                    ),
+                    "y_min": round(
+                        float(np.min(points[:, 1]) - box_padding),
+                        1,
+                    ),
+                    "x_max": round(
+                        float(np.max(points[:, 0]) + box_padding),
+                        1,
+                    ),
+                    "y_max": round(
+                        float(np.max(points[:, 1]) + box_padding),
+                        1,
+                    ),
+                    "piece_count": piece_count,
+                }
+            )
         return PathPlanResult(
             path_pixels=final_path,
             path_meters=self.pixels_to_meters(final_path),
@@ -1570,6 +1610,17 @@ class SegmentationLaneProcessor:
             dashed_region_count=dashed_region_count,
             selection_mode=selection_mode,
             which_lane=which_lane,
+            detected_lines=detected_lines,
+            left_boundary_pixels=(
+                None
+                if left is None
+                else np.asarray(left["points"], dtype=np.float32)
+            ),
+            right_boundary_pixels=(
+                None
+                if right is None
+                else np.asarray(right["points"], dtype=np.float32)
+            ),
         )
 
     def process(self, frame: np.ndarray) -> LaneResult:

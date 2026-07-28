@@ -12,13 +12,18 @@ lane_detect:
     process_every_nth_frame: 1
 
     image_topic: "/image_raw/compressed"
+    bev_topic: "/lane/detection/bev/compressed"
     mask_topic: "/lane/detection/mask/compressed"
     segmentation_topic: "/lane/detection/segmentation/compressed"
     status_topic: "/lane/detection/status"
+    instances_topic: "/lane/detection/instances"
 
     debug_jpeg_quality: 80
+    # 별도 path_visualizer가 segmentation과 경로를 한 창에 표시.
     display: false
     display_scale: 1.0
+    display_window_x: 20
+    display_window_y: 60
 
 
 path_plan:
@@ -28,6 +33,7 @@ path_plan:
     pixels_per_meter: 600.0
     lane_width_m: 0.90
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
+    # BEV 설정시마다 변경
     bev_reference_forward_offset_m: 1.04
 
     # 차선 조각 결합 및 좌/우 경계 선택.
@@ -65,13 +71,39 @@ path_plan:
     display_scale: 1.0
 
 
+path_visualizer:
+  ros__parameters:
+    segmentation_topic: "/lane/detection/segmentation/compressed"
+    bev_topic: "/lane/detection/bev/compressed"
+    debug_topic: "/lane/path/debug/compressed"
+    status_topic: "/lane/path/status"
+    control_status_topic: "/lane/control/status"
+    instances_topic: "/lane/detection/instances"
+    window_name: "drive visualizer: segmentation | BEV control | lines + path"
+    window_x: 20
+    window_y: 60
+    display_scale: 0.90
+    # 박스 위치 평활화와 DASHED/SOLID 전환 히스테리시스.
+    box_ema_alpha: 0.15
+    type_switch_frames: 5
+    track_max_missed_frames: 12
+    track_match_distance_px: 140.0
+    confidence_full_hits: 5
+    # 같은 선과 겹치는 여러 YOLO 마스크 confidence 집계 방식: mean/max.
+    yolo_confidence_aggregation: "mean"
+    # 토픽 한두 프레임 누락 시에만 표시를 유지하고 이후 자동 제거.
+    # pure_pursuit의 path_timeout_sec(0.5초)보다 짧게 유지.
+    lookahead_target_hold_sec: 0.45
+    reference_path_hold_sec: 0.45
+
+
 pure_pursuit:
   ros__parameters:
     # 안전상 기본값은 dry-run. 실제 주행 검증 후 true로 변경.
-    enable_drive: false
+    enable_drive: true
     speed_mps: 0.18
     hold_speed_scale: 0.75
-    turn_speed_min_scale: 0.25
+    turn_speed_min_scale: 0.50
     turn_speed_reduction: 0.70
 
     wheelbase_m: 0.545
@@ -79,7 +111,7 @@ pure_pursuit:
     # -1.0이면 아래 min/max로 동적 look-ahead 사용.
     lookahead_m: -1.0
     lookahead_min_m: 1.10
-    lookahead_max_m: 2.50
+    lookahead_max_m: 2.00
 
     steering_ema_alpha: 0.35
     steering_deadband_deg: 0.8

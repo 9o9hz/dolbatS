@@ -7,7 +7,7 @@
   -> lane_detect
   -> /lane/detection/mask/compressed
   -> path_plan
-  -> /lane/path
+  -> /lane/path/control
   -> pure_pursuit
   -> /cmd_vel
   -> serial_bridge
@@ -15,7 +15,7 @@
 ```
 
 `drive_pipeline.launch.py`가 `lane_detect`, `path_plan`,
-`pure_pursuit` 노드를 한 번에 실행한다.
+`path_visualizer`, `pure_pursuit` 노드를 한 번에 실행한다.
 
 > 이 문서는 ROS 2 Humble과 현재 워크스페이스의 설치가 완료된 상태를
 > 전제로 한다. 각 명령은 별도 터미널에서 실행한다.
@@ -107,12 +107,16 @@ path_plan:
     pixels_per_meter: 600.0
     lane_width_m: 0.90
     bev_reference_forward_offset_m: 1.04
+    max_fallback_sec: 0.45
 
 pure_pursuit:
   ros__parameters:
     speed_mps: 0.18
     wheelbase_m: 0.545
     max_steer_deg: 18.0
+    max_path_age_sec: 0.40
+    max_fallback_sec: 0.45
+    path_timeout_sec: 0.50
 ```
 
 ## 4. 차선 주행 파이프라인 실행
@@ -127,6 +131,7 @@ ros2 launch drive_pkg drive_pipeline.launch.py \
 ```text
 /lane_detect
 /path_plan
+/path_visualizer
 /pure_pursuit
 ```
 
@@ -141,6 +146,7 @@ ros2 launch drive_pkg drive_pipeline.launch.py \
 ros2 topic hz /lane/detection/mask/compressed
 ros2 topic echo /lane/detection/status
 ros2 topic echo /lane/path/status
+ros2 topic echo /lane/path/control
 ros2 topic echo /lane/control/status
 ros2 topic echo /cmd_vel
 ```
@@ -150,9 +156,13 @@ ros2 topic echo /cmd_vel
 ```text
 /lane/detection/status  -> YOLO 검출 결과 존재
 /lane/path/status       -> path_valid: true
-/lane/control/status    -> 조향각과 look-ahead 계산
+/lane/control/status    -> planned/commanded 조향각과 look-ahead 계산
 /cmd_vel                -> linear.x와 angular.z가 0인 정지 명령
 ```
+
+비주얼라이저의 `ACTUAL STEERING`은
+`/vehicle/current_steering_angle` 피드백이며, 시리얼 브리지가 실행되지
+않거나 1초 이상 피드백이 없으면 `N/A`로 표시된다.
 
 디버그 이미지는 `rqt_image_view`에서 확인한다.
 
@@ -197,6 +207,15 @@ ros2 topic echo /cmd_vel
 
 경로가 비거나 `path_timeout_sec` 동안 새 경로가 들어오지 않아도
 `pure_pursuit`가 정지 명령을 발행한다.
+
+rosbag 입력을 사용할 때는 기록 시각과 제어 시각을 일치시켜야 한다.
+
+```bash
+ros2 bag play <bag-directory> --clock
+ros2 launch drive_pkg drive_pipeline.launch.py \
+  params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml \
+  use_sim_time:=true
+```
 
 ## 주의사항
 
