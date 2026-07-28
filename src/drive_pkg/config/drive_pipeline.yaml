@@ -59,8 +59,6 @@ drive_main:
     which_lane_topic: "/which/lane"
     path_frame_id: "base_link"
 
-    # 안전상 기본값은 dry-run. 실제 주행 검증 후 true로 변경.
-    enable_drive: true
     speed_mps: 0.18
     hold_speed_scale: 0.75
     turn_speed_min_scale: 0.50

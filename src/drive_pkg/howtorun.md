@@ -113,10 +113,9 @@ YAML을 따로 두거나 필요한 블록만 별도 파일로 분리해서 쓴�
 | 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON |
 | 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
-`pure_pursuit.enable_drive`(`drive_main`에서는 `enable_drive`) 기본값은
-`false`다. 이때 계산 결과는 `/lane/control/status`에서 확인할 수 있지만
-`/cmd_vel`에는 정지 명령만 발행한다. 경로와 조향 방향을 검증한 뒤에만
-YAML 값을 `true`로 바꾼다.
+항상 실제 주행 명령을 `/cmd_vel`에 발행한다(dry-run 모드 없음). 경로가
+유효하지 않거나 `path_timeout_sec` 동안 새 경로가 없으면 정지 명령을
+발행한다.
 
 각 단계 확인 예:
 

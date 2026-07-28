@@ -22,7 +22,6 @@ PARAMETER_DEFAULTS = {
     "path_status_topic": "/lane/path/status",
     "cmd_vel_topic": "/cmd_vel",
     "status_topic": "/lane/control/status",
-    "enable_drive": False,
     "speed_mps": 0.18,
     "hold_speed_scale": 0.75,
     "turn_speed_min_scale": 0.25,
@@ -256,7 +255,6 @@ class PurePursuitNode(Node):
             self.declare_parameter(name, default)
         parameter = lambda name: self.get_parameter(name).value
 
-        self.enable_drive = bool(parameter("enable_drive"))
         self.controller = PurePursuitController(
             speed_mps=float(parameter("speed_mps")),
             hold_speed_scale=float(parameter("hold_speed_scale")),
@@ -315,15 +313,7 @@ class PurePursuitNode(Node):
             10,
         )
         self.watchdog = self.create_timer(0.1, self.check_path_timeout)
-        self.get_logger().info(
-            f"{path_topic} -> {cmd_vel_topic}; "
-            f"drive_enabled={self.enable_drive}"
-        )
-        if not self.enable_drive:
-            self.get_logger().info(
-                "Dry-run mode: controller status is calculated, "
-                "but cmd_vel remains zero."
-            )
+        self.get_logger().info(f"{path_topic} -> {cmd_vel_topic}")
 
     def on_path_status(self, message: String) -> None:
         try:
@@ -348,7 +338,7 @@ class PurePursuitNode(Node):
     def _publish_command(self, command: SteeringCommand) -> None:
         twist = (
             self.controller.make_twist(command)
-            if self.enable_drive and command.path_valid
+            if command.path_valid
             else Twist()
         )
         self.cmd_publisher.publish(twist)
@@ -359,7 +349,6 @@ class PurePursuitNode(Node):
                         "path_valid": command.path_valid,
                         "reason": command.reason,
                         "fallback": self.controller.path_fallback,
-                        "drive_enabled": self.enable_drive,
                         "steering_deg": round(
                             command.steering_deg,
                             2,

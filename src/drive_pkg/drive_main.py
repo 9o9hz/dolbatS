@@ -106,11 +106,6 @@ def parse_args(
     parser.add_argument("--device", default="auto")
     parser.add_argument("--confidence", type=float, default=0.25)
     parser.add_argument(
-        "--enable-drive",
-        action="store_true",
-        help="Allow non-zero cmd_vel output; default is safe dry-run.",
-    )
-    parser.add_argument(
         "--display",
         action="store_true",
         help="Show local cv2.imshow debug windows in addition to topics.",
@@ -170,7 +165,6 @@ class LaneDriveNode(Node):
             "path_frame_id": "base_link",
             "cmd_vel_topic": "/cmd_vel",
             "control_status_topic": "/lane/control/status",
-            "enable_drive": bool(cli_args.enable_drive),
             "speed_mps": 0.18,
             "hold_speed_scale": 0.75,
             "turn_speed_min_scale": 0.50,
@@ -257,7 +251,6 @@ class LaneDriveNode(Node):
         self.path_frame_id = str(parameter("path_frame_id"))
         self.debug_canvas_size = (bev.height, bev.width)
 
-        self.enable_drive = bool(parameter("enable_drive"))
         self.controller = PurePursuitController(
             speed_mps=float(parameter("speed_mps")),
             hold_speed_scale=float(parameter("hold_speed_scale")),
@@ -365,13 +358,8 @@ class LaneDriveNode(Node):
         self.get_logger().info(
             f"{image_topic} -> /cmd_vel (integrated); model={model_path}, "
             f"bev={bev_path}, device={self.detector.device}, "
-            f"undistort={self.use_undistort}, drive_enabled={self.enable_drive}"
+            f"undistort={self.use_undistort}"
         )
-        if not self.enable_drive:
-            self.get_logger().info(
-                "Dry-run mode: pipeline runs end to end, but cmd_vel "
-                "remains zero."
-            )
 
     # ------------------------------------------------------------------
     # Mission hooks (structure only; no mission logic implemented yet).
@@ -640,7 +628,7 @@ class LaneDriveNode(Node):
     def _publish_control(self, command: SteeringCommand) -> None:
         twist = (
             self.controller.make_twist(command)
-            if self.enable_drive and command.path_valid
+            if command.path_valid
             else Twist()
         )
         self.cmd_publisher.publish(twist)
@@ -651,7 +639,6 @@ class LaneDriveNode(Node):
                         "path_valid": command.path_valid,
                         "reason": command.reason,
                         "fallback": self.controller.path_fallback,
-                        "drive_enabled": self.enable_drive,
                         "steering_deg": round(command.steering_deg, 2),
                         "lookahead_m": round(command.lookahead_m, 3),
                         "lookahead_target_m": round(
