@@ -1,0 +1,92 @@
+lane_detect:
+  ros__parameters:
+    # 모델/BEV 파일. bev_params가 빈 문자열이면 패키지 resource 기본값 사용.
+    model_path: "/home/tak/lane_yolo_project/weight/best1.pt"
+    bev_params: ""
+    calibration_width: 640
+    calibration_height: 480
+
+    confidence: 0.25
+    image_size: 640
+    device: "auto"
+    process_every_nth_frame: 1
+
+    image_topic: "/image_raw/compressed"
+    mask_topic: "/lane/detection/mask/compressed"
+    segmentation_topic: "/lane/detection/segmentation/compressed"
+    status_topic: "/lane/detection/status"
+
+    debug_jpeg_quality: 80
+    display: false
+    display_scale: 1.0
+
+
+path_plan:
+  ros__parameters:
+    # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
+    bev_params: ""
+    pixels_per_meter: 600.0
+    lane_width_m: 0.90
+    # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
+    bev_reference_forward_offset_m: 1.04
+
+    # 차선 조각 결합 및 좌/우 경계 선택.
+    min_component_area: 250
+    center_sample_step: 5
+    same_line_threshold_px: 75.0
+    min_group_span_px: 80.0
+    min_group_area: 500
+    dashed_piece_threshold: 2
+    prefer_solid_when_dashed: true
+    lane_track_max_age_frames: 7
+    lane_track_match_threshold_px: 90.0
+    solid_enter_frames: 4
+    solid_exit_frames: 6
+
+    # 경로 생성 및 시간축 평활화.
+    path_top_y: 180
+    path_bottom_margin: 30
+    path_step_px: 10
+    path_resample_step_px: 5
+    path_ema_alpha: 0.35
+    path_transition_blend_frames: 6
+    max_path_lateral_step_m: 0.04
+    max_missing_frames: 8
+
+    mask_topic: "/lane/detection/mask/compressed"
+    path_topic: "/lane/path"
+    debug_topic: "/lane/path/debug/compressed"
+    status_topic: "/lane/path/status"
+    which_lane_topic: "/which/lane"
+    path_frame_id: "base_link"
+
+    debug_jpeg_quality: 80
+    display: false
+    display_scale: 1.0
+
+
+pure_pursuit:
+  ros__parameters:
+    # 안전상 기본값은 dry-run. 실제 주행 검증 후 true로 변경.
+    enable_drive: false
+    speed_mps: 0.18
+    hold_speed_scale: 0.75
+    turn_speed_min_scale: 0.25
+    turn_speed_reduction: 0.70
+
+    wheelbase_m: 0.545
+    max_steer_deg: 18.0
+    # -1.0이면 아래 min/max로 동적 look-ahead 사용.
+    lookahead_m: -1.0
+    lookahead_min_m: 1.10
+    lookahead_max_m: 2.50
+
+    steering_ema_alpha: 0.35
+    steering_deadband_deg: 0.8
+    max_steering_change_deg: 3.0
+    path_timeout_sec: 0.5
+
+    path_topic: "/lane/path"
+    path_status_topic: "/lane/path/status"
+    cmd_vel_topic: "/cmd_vel"
+    status_topic: "/lane/control/status"

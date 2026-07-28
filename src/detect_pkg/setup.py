@@ -4,6 +4,7 @@ from setuptools import setup
 
 
 package_name = "detect_pkg"
+package_share_files = ["package.xml", *glob("dolsoi-model-v2.pt")]
 
 setup(
     name=package_name,
@@ -11,7 +12,7 @@ setup(
     py_modules=["obstacle_detector_publisher"],
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
-        (f"share/{package_name}", ["package.xml", "dolsoi-model-v2.pt"]),
+        (f"share/{package_name}", package_share_files),
         (f"share/{package_name}/config", glob("config/*.rviz")),
     ],
     install_requires=["setuptools"],

@@ -44,6 +44,23 @@ Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 �
 
 `traffic_light_camera_publisher`는 `/camera/traffic_light/raw`, `lane_camera_publisher`는 `/camera/lane/raw`를 발행합니다. `obstacle_detector_publisher`는 차선 카메라 토픽을 구독해 `dolsoi-model-v2.pt`로 객체를 찾고 감지 여부, 박스와 하단 중심 좌표를 발행합니다.
 
+## ROS2 차선 주행 파이프라인
+
+차선 주행은 `drive_pkg` 안의 독립 노드 세 개가 토픽으로 연결됩니다.
+
+```text
+lane_detect -> /lane/detection/mask/compressed
+            -> path_plan -> /lane/path
+                         -> pure_pursuit -> /cmd_vel
+```
+
+파라미터는
+`src/drive_pkg/config/drive_pipeline.yaml` 한 곳에서 노드별로 관리합니다.
+전체 실행은 `ros2 launch drive_pkg drive_pipeline.launch.py`, 개별 실행은
+각각 `ros2 run drive_pkg lane_detect`, `path_plan`, `pure_pursuit`를
+사용합니다. 상세 토픽과 실행 예시는
+`src/drive_pkg/howtorun.md`를 참고하세요.
+
 필요 패키지:
 
 ```

@@ -64,3 +64,21 @@ __pycache__/
 
 
 carla/
+
+# Raster image files
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+*.[bB][mM][pP]
+*.[gG][iI][fF]
+*.[wW][eE][bB][pP]
+*.[tT][iI][fF]
+*.[tT][iI][fF][fF]
+*.[hH][eE][iI][cC]
+*.[hH][eE][iI][fF]
+
+# Video files
+*.[mM][pP]4
+
+# Generated Roboflow BEV datasets
+roboflow_bev_images*/

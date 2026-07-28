@@ -13,7 +13,7 @@ last_drive = None
 last_steer = None
 last_left_time = 0
 last_right_time = 0
-speed = 50
+speed = 230
 
 STEER_INTERVAL = 0.08  # 좌우 키를 누르고 있을 때 각도 변경 간격
 

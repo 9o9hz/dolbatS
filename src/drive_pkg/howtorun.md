@@ -1,145 +1,87 @@
-# drive_pkg 실행
+# drive_pkg 모듈형 파이프라인
 
-## 1. USB 카메라 압축 토픽 실행
-
-카메라 장치 번호는 `ls -l /dev/video*`로 확인한다.
-
-```bash
-source /opt/ros/humble/setup.bash
-
-ros2 run usb_cam usb_cam_node_exe \
-  --ros-args \
-  -r __ns:=/camera1 \
-  -p video_device:=/dev/video2 \
-  -p image_width:=640 \
-  -p image_height:=480 \
-  -p framerate:=30.0 \
-  -p pixel_format:=mjpeg2rgb
-```
-
-USB 카메라 입력 토픽:
-
-```text
-/camera1/image_raw/compressed
-```
-
-## 2. drive_pkg 빌드
-
-```bash
-cd /home/tak/dolbatS
-source /opt/ros/humble/setup.bash
-colcon build --packages-select drive_pkg
-source install/setup.bash
-```
-
-## 3. 차선 세그멘테이션 및 경로 생성
-
-기본값은 실제 주행 명령이 비활성화된 dry-run이다.
-
-```bash
-ros2 run drive_pkg yolo_lane_driver --display
-```
-
-파라미터를 한 파일에서 조정하려면
-`config/yolo_lane_driver.yaml`을 수정하고 다음처럼 실행한다:
-
-```bash
-ros2 run drive_pkg yolo_lane_driver --ros-args \
-  --params-file /home/tak/dolbatS/src/drive_pkg/config/yolo_lane_driver.yaml
-```
-
-YAML의 `enable_drive` 기본값은 안전을 위해 `false`이다. 실제 주행 시에만
-`true`로 변경한다. YAML 수정 후에는 노드만 재시작하면 된다.
-
-모델은 차선 종류를 별도 클래스로 구분하지 않으므로, 같은 곡선으로 묶인
-분리 마스크가 `dashed_piece_threshold`개 이상이면 점선으로 판정한다.
-`prefer_solid_when_dashed: true`이면 점선과 함께 검출된 연속 실선을
-우선 기준 경계로 사용한다.
-
-차량 중심에 가장 가까운 좌·우 차선을 비교하여 왼쪽이 실선이고 오른쪽이
-점선이면 `/which/lane`에 `lane_1`, 왼쪽이 점선이고 오른쪽이 실선이면
-`lane_2`를 발행한다. 두 차선이 모두 같은 종류이거나 한쪽만 검출되면
-차선 번호를 발행하지 않는다.
-
-현재 기본 차량 형상 및 동적 LD 설정:
-
-```bash
-ros2 run drive_pkg yolo_lane_driver \
-  --lane-width-m 0.90 \
-  --bev-reference-forward-offset-m 1.04 \
-  --lookahead-min-m 1.1 \
-  --lookahead-max-m 2.5 \
-  --display
-```
-
-`bev-reference-forward-offset-m`는 후륜축 중심에서 BEV 영상 하단 기준점
-(현재 차량 앞코)까지의 전방 거리이다. 동적 LD는 조향 요구각 0도에서
-최댓값, 최대 조향각에서 최솟값이 되도록 선형으로 조정된다.
-
-BEV 변환은 기본적으로 `resource/bev_params_7.npz`의 `src_points`,
-`dst_points`, `warp_w`, `warp_h`를 사용한다. 다른 파일을 사용할 때는:
-
-```bash
-ros2 run drive_pkg yolo_lane_driver \
-  --bev-params /path/to/bev_params.npz \
-  --display
-```
-
-ROS 파라미터로 설정하려면:
-
-```bash
-ros2 run drive_pkg yolo_lane_driver --ros-args \
-  -p image_topic:=/image_raw/compressed \
-  -p model_path:=/home/tak/lane_yolo_project/weight/best1.pt \
-  -p bev_params:=/home/tak/dolbatS/src/drive_pkg/resource/bev_params_7.npz \
-  -p confidence:=0.25 \
-  -p display:=true
-```
-
-OpenCV 창:
-
-```text
-BEV segmentation
-BEV generated path
-```
-
-출력 토픽:
-
-```text
-/lane/path
-/lane/yolo_drive/segmentation/compressed
-/lane/yolo_drive/path/compressed
-/lane/yolo_drive/status
-/which/lane
-/cmd_vel
-```
-
-rosbag을 사용할 때 기본 입력 토픽은 다음과 같다.
+`drive_pkg`는 하나의 ROS 2 패키지 안에서 세 노드가 토픽으로 연결된다.
 
 ```text
 /image_raw/compressed
+  -> lane_detect
+  -> /lane/detection/mask/compressed
+  -> path_plan
+  -> /lane/path
+  -> pure_pursuit
+  -> /cmd_vel
 ```
 
-## 4. rqt_image_view로 확인
+각 노드는 따로 실행·교체·확인할 수 있다. 전체 파라미터는
+`config/drive_pipeline.yaml`에서 노드별로 조정한다.
+
+## 전체 실행
 
 ```bash
-ros2 run rqt_image_view rqt_image_view
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch drive_pkg drive_pipeline.launch.py
 ```
 
-다음 두 압축 토픽을 각각 확인한다.
-
-```text
-/lane/yolo_drive/segmentation/compressed
-/lane/yolo_drive/path/compressed
-```
-
-## 5. 실제 주행 활성화
-
-경로와 조향값을 충분히 확인한 후에만 사용한다.
+소스 트리의 YAML을 바로 지정하려면:
 
 ```bash
-ros2 run drive_pkg yolo_lane_driver \
-  --enable-drive \
-  --speed-mps 0.20 \
-  --display
+ros2 launch drive_pkg drive_pipeline.launch.py \
+  params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
+
+기존 명령과의 호환을 위해 아래 명령도 세 노드를 한 프로세스에서
+실행한다. 노드별 장애 격리와 재시작이 필요하면 launch 실행을 권장한다.
+
+```bash
+ros2 run drive_pkg yolo_lane_driver --ros-args \
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+## 노드별 실행
+
+세 터미널에서 공통 YAML을 넘겨 개별 실행할 수 있다.
+
+```bash
+ros2 run drive_pkg lane_detect --ros-args \
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+```bash
+ros2 run drive_pkg path_plan --ros-args \
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+```bash
+ros2 run drive_pkg pure_pursuit --ros-args \
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+## 주요 토픽
+
+| 단계 | 토픽 | 타입 | 내용 |
+| --- | --- | --- | --- |
+| 입력 | `/image_raw/compressed` | `sensor_msgs/CompressedImage` | 카메라 영상 |
+| 검출 | `/lane/detection/mask/compressed` | `sensor_msgs/CompressedImage` | BEV 이진 차선 마스크(PNG) |
+| 검출 | `/lane/detection/segmentation/compressed` | `sensor_msgs/CompressedImage` | YOLO 시각화 |
+| 검출 | `/lane/detection/status` | `std_msgs/String` | 검출 개수·추론 시간 JSON |
+| 계획 | `/lane/path` | `nav_msgs/Path` | `base_link` 기준 metric 경로 |
+| 계획 | `/lane/path/debug/compressed` | `sensor_msgs/CompressedImage` | 생성 경로 시각화 |
+| 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |
+| 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
+| 제어 | `/cmd_vel` | `geometry_msgs/Twist` | 주행 속도·각속도 명령 |
+| 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON |
+
+`pure_pursuit.enable_drive` 기본값은 `false`다. 이때 계산 결과는
+`/lane/control/status`에서 확인할 수 있지만 `/cmd_vel`에는 정지 명령만
+발행한다. 경로와 조향 방향을 검증한 뒤에만 YAML 값을 `true`로 바꾼다.
+
+각 단계 확인 예:
+
+```bash
+ros2 topic hz /lane/detection/mask/compressed
+ros2 topic echo /lane/path/status
+ros2 topic echo /lane/control/status
+```
+
+이미지는 `rqt_image_view`에서 검출/경로 디버그 토픽을 선택해 확인한다.
