@@ -1,10 +1,15 @@
-lane_detect:
+drive_main:
   ros__parameters:
     # 모델/BEV 파일. bev_params가 빈 문자열이면 패키지 resource 기본값 사용.
     model_path: "/home/tak/lane_yolo_project/weight/best1.pt"
     bev_params: ""
     calibration_width: 640
     calibration_height: 480
+
+    # 카메라 undistort. calib_file이 빈 문자열이거나 로드에 실패하면
+    # 경고만 남기고 undistort 없이 진행한다.
+    calib_file: ""
+    use_undistort: true
 
     confidence: 0.25
     image_size: 640
@@ -15,21 +20,10 @@ lane_detect:
     bev_topic: "/lane/detection/bev/compressed"
     mask_topic: "/lane/detection/mask/compressed"
     segmentation_topic: "/lane/detection/segmentation/compressed"
-    status_topic: "/lane/detection/status"
+    detection_status_topic: "/lane/detection/status"
     instances_topic: "/lane/detection/instances"
 
-    debug_jpeg_quality: 80
-    # 별도 path_visualizer가 segmentation과 경로를 한 창에 표시.
-    display: false
-    display_scale: 1.0
-    display_window_x: 20
-    display_window_y: 60
-
-
-path_plan:
-  ros__parameters:
     # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
-    bev_params: ""
     pixels_per_meter: 600.0
     lane_width_m: 0.90
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
@@ -59,15 +53,38 @@ path_plan:
     max_path_lateral_step_m: 0.04
     max_missing_frames: 8
 
-    mask_topic: "/lane/detection/mask/compressed"
     path_topic: "/lane/path"
     debug_topic: "/lane/path/debug/compressed"
-    status_topic: "/lane/path/status"
+    path_status_topic: "/lane/path/status"
     which_lane_topic: "/which/lane"
     path_frame_id: "base_link"
 
+    # 안전상 기본값은 dry-run. 실제 주행 검증 후 true로 변경.
+    enable_drive: true
+    speed_mps: 0.18
+    hold_speed_scale: 0.75
+    turn_speed_min_scale: 0.50
+    turn_speed_reduction: 0.70
+
+    wheelbase_m: 0.545
+    max_steer_deg: 18.0
+    # -1.0이면 아래 min/max로 동적 look-ahead 사용.
+    lookahead_m: -1.0
+    lookahead_min_m: 1.10
+    lookahead_max_m: 2.00
+
+    steering_ema_alpha: 0.35
+    steering_deadband_deg: 0.8
+    max_steering_change_deg: 3.0
+    path_timeout_sec: 0.5
+
+    cmd_vel_topic: "/cmd_vel"
+    control_status_topic: "/lane/control/status"
+
     debug_jpeg_quality: 80
-    display: false
+    # 별도 path_visualizer가 segmentation과 경로를 한 창에 표시.
+    # local_display를 켜면 drive_main 자체 프로세스에서도 cv2.imshow로 확인 가능.
+    local_display: false
     display_scale: 1.0
 
 
@@ -95,30 +112,3 @@ path_visualizer:
     # pure_pursuit의 path_timeout_sec(0.5초)보다 짧게 유지.
     lookahead_target_hold_sec: 0.45
     reference_path_hold_sec: 0.45
-
-
-pure_pursuit:
-  ros__parameters:
-    # 안전상 기본값은 dry-run. 실제 주행 검증 후 true로 변경.
-    enable_drive: true
-    speed_mps: 0.18
-    hold_speed_scale: 0.75
-    turn_speed_min_scale: 0.50
-    turn_speed_reduction: 0.70
-
-    wheelbase_m: 0.545
-    max_steer_deg: 18.0
-    # -1.0이면 아래 min/max로 동적 look-ahead 사용.
-    lookahead_m: -1.0
-    lookahead_min_m: 1.10
-    lookahead_max_m: 2.00
-
-    steering_ema_alpha: 0.35
-    steering_deadband_deg: 0.8
-    max_steering_change_deg: 3.0
-    path_timeout_sec: 0.5
-
-    path_topic: "/lane/path"
-    path_status_topic: "/lane/path/status"
-    cmd_vel_topic: "/cmd_vel"
-    status_topic: "/lane/control/status"

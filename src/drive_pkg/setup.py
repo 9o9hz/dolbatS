@@ -9,6 +9,7 @@ setup(
     name=package_name,
     version="0.1.0",
     py_modules=[
+        "drive_main",
         "drive_pipeline",
         "lane_detect",
         "lane_processing",
@@ -45,12 +46,13 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
+            "drive_main = drive_main:main",
             "lane_detect = lane_detect:main",
             "path_plan = path_plan:main",
             "path_visualizer = path_visualizer:main",
             "pure_pursuit = pure_pursuit:main",
-            "drive_pipeline = drive_pipeline:main",
-            "yolo_lane_driver = drive_pipeline:main",
+            "drive_pipeline = drive_main:main",
+            "yolo_lane_driver = drive_main:main",
             "yolo_topic_test = test_yolo_usb_cam:main",
         ],
     },

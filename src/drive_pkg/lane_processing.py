@@ -231,6 +231,88 @@ def load_bev_parameters(path: Path) -> BevParameters:
     )
 
 
+@dataclass(frozen=True)
+class CameraCalibration:
+    """Precomputed undistortion map, as produced by ``cv2.calibrateCamera``."""
+
+    width: int
+    height: int
+    map_x: np.ndarray
+    map_y: np.ndarray
+
+
+def load_calibration(path: Path) -> CameraCalibration:
+    """Load a ``camera_calibration.npz`` file (same schema as the one used
+    by ``validate_lane_video.py``: ``camera_matrix``,
+    ``distortion_coefficients``, ``new_camera_matrix``, ``image_width``,
+    ``image_height``)."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Calibration file not found: {path}")
+
+    with np.load(path, allow_pickle=False) as data:
+        required = {
+            "camera_matrix",
+            "distortion_coefficients",
+            "new_camera_matrix",
+            "image_width",
+            "image_height",
+        }
+        missing = required - set(data.files)
+        if missing:
+            raise KeyError(f"Calibration keys missing: {sorted(missing)}")
+
+        camera_matrix = np.asarray(data["camera_matrix"], dtype=np.float64)
+        distortion = np.asarray(
+            data["distortion_coefficients"],
+            dtype=np.float64,
+        ).reshape(-1)
+        new_camera_matrix = np.asarray(
+            data["new_camera_matrix"],
+            dtype=np.float64,
+        )
+        width = _scalar_int(data, "image_width")
+        height = _scalar_int(data, "image_height")
+
+    if (
+        camera_matrix.shape != (3, 3)
+        or new_camera_matrix.shape != (3, 3)
+        or distortion.size not in (4, 5, 8, 12, 14)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ValueError(f"Invalid calibration data: {path}")
+
+    map_x, map_y = cv2.initUndistortRectifyMap(
+        camera_matrix,
+        distortion,
+        None,
+        new_camera_matrix,
+        (width, height),
+        cv2.CV_32FC1,
+    )
+    return CameraCalibration(width, height, map_x, map_y)
+
+
+def undistort_frame(
+    calibration: CameraCalibration,
+    frame: np.ndarray,
+) -> np.ndarray:
+    height, width = frame.shape[:2]
+    if (width, height) != (calibration.width, calibration.height):
+        raise ValueError(
+            "Frame resolution does not match calibration resolution: "
+            f"{width}x{height} != "
+            f"{calibration.width}x{calibration.height}"
+        )
+    return cv2.remap(
+        frame,
+        calibration.map_x,
+        calibration.map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+
+
 def decode_compressed_image(message: CompressedImage) -> np.ndarray:
     encoded = np.frombuffer(message.data, dtype=np.uint8)
     frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)

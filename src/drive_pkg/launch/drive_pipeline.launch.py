@@ -1,4 +1,4 @@
-"""Launch the lane detector, path planner, and Pure Pursuit controller."""
+"""Launch the integrated drive_main node plus the debug visualizer."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -26,15 +26,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="drive_pkg",
-                executable="lane_detect",
-                name="lane_detect",
-                output="screen",
-                parameters=[params_file],
-            ),
-            Node(
-                package="drive_pkg",
-                executable="path_plan",
-                name="path_plan",
+                executable="drive_main",
+                name="drive_main",
                 output="screen",
                 parameters=[params_file],
             ),
@@ -42,13 +35,6 @@ def generate_launch_description() -> LaunchDescription:
                 package="drive_pkg",
                 executable="path_visualizer",
                 name="path_visualizer",
-                output="screen",
-                parameters=[params_file],
-            ),
-            Node(
-                package="drive_pkg",
-                executable="pure_pursuit",
-                name="pure_pursuit",
                 output="screen",
                 parameters=[params_file],
             ),

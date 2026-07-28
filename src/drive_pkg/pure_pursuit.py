@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import math
 from typing import Optional, Sequence
@@ -38,6 +39,214 @@ PARAMETER_DEFAULTS = {
 }
 
 
+@dataclass
+class SteeringCommand:
+    """Result of one Pure Pursuit control step."""
+
+    path_valid: bool
+    reason: str
+    steering_deg: float
+    speed_mps: float
+    lookahead_m: float
+    target_distance_m: float
+    target_index: int
+
+
+class PurePursuitController:
+    """Pure Pursuit steering/speed math, independent of ROS.
+
+    Extracted out of ``PurePursuitNode`` so the same steering logic can be
+    called directly (no topic round trip) from an integrated node such as
+    ``drive_main.LaneDriveNode``, while ``PurePursuitNode`` keeps working
+    unchanged as a thin ROS wrapper around it.
+    """
+
+    def __init__(
+        self,
+        speed_mps: float,
+        hold_speed_scale: float,
+        turn_speed_min_scale: float,
+        turn_speed_reduction: float,
+        wheelbase_m: float,
+        lookahead_min_m: float,
+        lookahead_max_m: float,
+        fixed_lookahead_m: float,
+        max_steer_deg: float,
+        steering_ema_alpha: float,
+        steering_deadband_deg: float,
+        max_steering_change_deg: float,
+    ) -> None:
+        self.speed_mps = max(0.0, float(speed_mps))
+        self.hold_speed_scale = float(
+            np.clip(float(hold_speed_scale), 0.0, 1.0)
+        )
+        self.turn_speed_min_scale = float(
+            np.clip(float(turn_speed_min_scale), 0.0, 1.0)
+        )
+        self.turn_speed_reduction = float(
+            np.clip(float(turn_speed_reduction), 0.0, 1.0)
+        )
+        self.wheelbase_m = float(wheelbase_m)
+        self.lookahead_min_m = float(lookahead_min_m)
+        self.lookahead_max_m = float(lookahead_max_m)
+        if float(fixed_lookahead_m) > 0.0:
+            self.lookahead_min_m = float(fixed_lookahead_m)
+            self.lookahead_max_m = float(fixed_lookahead_m)
+        self.max_steer_deg = float(max_steer_deg)
+        self.steering_ema_alpha = float(steering_ema_alpha)
+        self.steering_deadband_deg = float(steering_deadband_deg)
+        self.max_steering_change_deg = float(max_steering_change_deg)
+        self._validate_parameters()
+
+        self.last_steering_deg = 0.0
+        self.path_fallback = False
+
+    def _validate_parameters(self) -> None:
+        if self.wheelbase_m <= 0.0:
+            raise ValueError("wheelbase_m must be positive")
+        if (
+            self.lookahead_min_m <= 0.0
+            or self.lookahead_max_m < self.lookahead_min_m
+        ):
+            raise ValueError(
+                "lookahead must satisfy 0 < min <= max"
+            )
+        if self.max_steer_deg <= 0.0:
+            raise ValueError("max_steer_deg must be positive")
+        if not 0.0 <= self.steering_ema_alpha <= 1.0:
+            raise ValueError(
+                "steering_ema_alpha must be between 0 and 1"
+            )
+        if self.max_steering_change_deg <= 0.0:
+            raise ValueError(
+                "max_steering_change_deg must be positive"
+            )
+
+    def set_path_fallback(self, fallback: bool) -> None:
+        self.path_fallback = bool(fallback)
+
+    def compute(self, points: np.ndarray) -> SteeringCommand:
+        if (
+            points is None
+            or len(points) == 0
+            or points.ndim != 2
+            or not np.all(np.isfinite(points))
+        ):
+            return self.stop("empty_or_invalid_path")
+
+        lookahead_m = self._dynamic_lookahead(self.last_steering_deg)
+        distances = np.linalg.norm(points, axis=1)
+        target_index = int(
+            np.argmin(np.abs(distances - lookahead_m))
+        )
+        forward, left = points[target_index]
+        target_distance = max(float(distances[target_index]), 1e-3)
+        heading_error = math.atan2(
+            float(left),
+            max(float(forward), 1e-3),
+        )
+        raw_steering_deg = math.degrees(
+            math.atan2(
+                2.0 * self.wheelbase_m * math.sin(heading_error),
+                target_distance,
+            )
+        )
+        raw_steering_deg = float(
+            np.clip(
+                raw_steering_deg,
+                -self.max_steer_deg,
+                self.max_steer_deg,
+            )
+        )
+        if abs(raw_steering_deg) < self.steering_deadband_deg:
+            raw_steering_deg = 0.0
+
+        filtered = (
+            self.steering_ema_alpha * raw_steering_deg
+            + (1.0 - self.steering_ema_alpha) * self.last_steering_deg
+        )
+        steering_step = float(
+            np.clip(
+                filtered - self.last_steering_deg,
+                -self.max_steering_change_deg,
+                self.max_steering_change_deg,
+            )
+        )
+        self.last_steering_deg = float(
+            np.clip(
+                self.last_steering_deg + steering_step,
+                -self.max_steer_deg,
+                self.max_steer_deg,
+            )
+        )
+        lookahead_m = self._dynamic_lookahead(self.last_steering_deg)
+        visual_target_index = int(
+            np.argmin(np.abs(distances - lookahead_m))
+        )
+        visual_target_distance = max(
+            float(distances[visual_target_index]),
+            1e-3,
+        )
+        speed = self._target_speed(self.last_steering_deg)
+        if self.path_fallback:
+            speed *= self.hold_speed_scale
+
+        return SteeringCommand(
+            path_valid=True,
+            reason="ok",
+            steering_deg=self.last_steering_deg,
+            speed_mps=speed,
+            lookahead_m=lookahead_m,
+            target_distance_m=visual_target_distance,
+            target_index=visual_target_index,
+        )
+
+    def stop(self, reason: str) -> SteeringCommand:
+        return SteeringCommand(
+            path_valid=False,
+            reason=reason,
+            steering_deg=self.last_steering_deg,
+            speed_mps=0.0,
+            lookahead_m=self._dynamic_lookahead(self.last_steering_deg),
+            target_distance_m=0.0,
+            target_index=-1,
+        )
+
+    def _dynamic_lookahead(self, steering_deg: float) -> float:
+        ratio = float(
+            np.clip(
+                abs(steering_deg) / self.max_steer_deg,
+                0.0,
+                1.0,
+            )
+        )
+        return self.lookahead_max_m - (
+            self.lookahead_max_m - self.lookahead_min_m
+        ) * ratio
+
+    def _target_speed(self, steering_deg: float) -> float:
+        turn_ratio = min(
+            1.0,
+            abs(steering_deg) / self.max_steer_deg,
+        )
+        scale = max(
+            self.turn_speed_min_scale,
+            1.0 - self.turn_speed_reduction * turn_ratio,
+        )
+        return self.speed_mps * scale
+
+    def make_twist(self, command: SteeringCommand) -> Twist:
+        message = Twist()
+        message.linear.x = float(command.speed_mps)
+        if abs(command.speed_mps) > 1e-6:
+            message.angular.z = float(
+                command.speed_mps
+                / self.wheelbase_m
+                * math.tan(math.radians(command.steering_deg))
+            )
+        return message
+
+
 class PurePursuitNode(Node):
     """Pure Pursuit controller isolated behind path and cmd_vel topics."""
 
@@ -48,48 +257,34 @@ class PurePursuitNode(Node):
         parameter = lambda name: self.get_parameter(name).value
 
         self.enable_drive = bool(parameter("enable_drive"))
-        self.speed_mps = max(0.0, float(parameter("speed_mps")))
-        self.hold_speed_scale = float(
-            np.clip(float(parameter("hold_speed_scale")), 0.0, 1.0)
-        )
-        self.turn_speed_min_scale = float(
-            np.clip(
-                float(parameter("turn_speed_min_scale")),
-                0.0,
-                1.0,
-            )
-        )
-        self.turn_speed_reduction = float(
-            np.clip(
-                float(parameter("turn_speed_reduction")),
-                0.0,
-                1.0,
-            )
-        )
-        self.wheelbase_m = float(parameter("wheelbase_m"))
-        self.lookahead_min_m = float(parameter("lookahead_min_m"))
-        self.lookahead_max_m = float(parameter("lookahead_max_m"))
-        fixed_lookahead = float(parameter("lookahead_m"))
-        if fixed_lookahead > 0.0:
-            self.lookahead_min_m = fixed_lookahead
-            self.lookahead_max_m = fixed_lookahead
-        self.max_steer_deg = float(parameter("max_steer_deg"))
-        self.steering_ema_alpha = float(
-            parameter("steering_ema_alpha")
-        )
-        self.steering_deadband_deg = float(
-            parameter("steering_deadband_deg")
-        )
-        self.max_steering_change_deg = float(
-            parameter("max_steering_change_deg")
+        self.controller = PurePursuitController(
+            speed_mps=float(parameter("speed_mps")),
+            hold_speed_scale=float(parameter("hold_speed_scale")),
+            turn_speed_min_scale=float(
+                parameter("turn_speed_min_scale")
+            ),
+            turn_speed_reduction=float(
+                parameter("turn_speed_reduction")
+            ),
+            wheelbase_m=float(parameter("wheelbase_m")),
+            lookahead_min_m=float(parameter("lookahead_min_m")),
+            lookahead_max_m=float(parameter("lookahead_max_m")),
+            fixed_lookahead_m=float(parameter("lookahead_m")),
+            max_steer_deg=float(parameter("max_steer_deg")),
+            steering_ema_alpha=float(
+                parameter("steering_ema_alpha")
+            ),
+            steering_deadband_deg=float(
+                parameter("steering_deadband_deg")
+            ),
+            max_steering_change_deg=float(
+                parameter("max_steering_change_deg")
+            ),
         )
         self.path_timeout_sec = max(
             0.0, float(parameter("path_timeout_sec"))
         )
-        self._validate_parameters()
 
-        self.last_steering_deg = 0.0
-        self.path_fallback = False
         self.last_path_time = None
         self.timed_out = False
 
@@ -130,33 +325,12 @@ class PurePursuitNode(Node):
                 "but cmd_vel remains zero."
             )
 
-    def _validate_parameters(self) -> None:
-        if self.wheelbase_m <= 0.0:
-            raise ValueError("wheelbase_m must be positive")
-        if (
-            self.lookahead_min_m <= 0.0
-            or self.lookahead_max_m < self.lookahead_min_m
-        ):
-            raise ValueError(
-                "lookahead must satisfy 0 < min <= max"
-            )
-        if self.max_steer_deg <= 0.0:
-            raise ValueError("max_steer_deg must be positive")
-        if not 0.0 <= self.steering_ema_alpha <= 1.0:
-            raise ValueError(
-                "steering_ema_alpha must be between 0 and 1"
-            )
-        if self.max_steering_change_deg <= 0.0:
-            raise ValueError(
-                "max_steering_change_deg must be positive"
-            )
-
     def on_path_status(self, message: String) -> None:
         try:
             status = json.loads(message.data)
         except (json.JSONDecodeError, TypeError):
             return
-        self.path_fallback = bool(status.get("fallback", False))
+        self.controller.set_path_fallback(status.get("fallback", False))
 
     def on_path(self, message: Path) -> None:
         self.last_path_time = self.get_clock().now()
@@ -168,132 +342,53 @@ class PurePursuitNode(Node):
             ],
             dtype=np.float64,
         )
-        if (
-            len(points) == 0
-            or points.ndim != 2
-            or not np.all(np.isfinite(points))
-        ):
-            self._publish_stop("empty_or_invalid_path")
-            return
+        command = self.controller.compute(points)
+        self._publish_command(command)
 
-        lookahead_m = self._dynamic_lookahead(
-            self.last_steering_deg
-        )
-        distances = np.linalg.norm(points, axis=1)
-        target_index = int(
-            np.argmin(np.abs(distances - lookahead_m))
-        )
-        forward, left = points[target_index]
-        target_distance = max(float(distances[target_index]), 1e-3)
-        heading_error = math.atan2(
-            float(left),
-            max(float(forward), 1e-3),
-        )
-        raw_steering_deg = math.degrees(
-            math.atan2(
-                2.0 * self.wheelbase_m * math.sin(heading_error),
-                target_distance,
-            )
-        )
-        raw_steering_deg = float(
-            np.clip(
-                raw_steering_deg,
-                -self.max_steer_deg,
-                self.max_steer_deg,
-            )
-        )
-        if abs(raw_steering_deg) < self.steering_deadband_deg:
-            raw_steering_deg = 0.0
-
-        filtered = (
-            self.steering_ema_alpha * raw_steering_deg
-            + (1.0 - self.steering_ema_alpha)
-            * self.last_steering_deg
-        )
-        steering_step = float(
-            np.clip(
-                filtered - self.last_steering_deg,
-                -self.max_steering_change_deg,
-                self.max_steering_change_deg,
-            )
-        )
-        self.last_steering_deg = float(
-            np.clip(
-                self.last_steering_deg + steering_step,
-                -self.max_steer_deg,
-                self.max_steer_deg,
-            )
-        )
-        lookahead_m = self._dynamic_lookahead(
-            self.last_steering_deg
-        )
-        visual_target_index = int(
-            np.argmin(np.abs(distances - lookahead_m))
-        )
-        visual_target_distance = max(
-            float(distances[visual_target_index]),
-            1e-3,
-        )
-        speed = self._target_speed(self.last_steering_deg)
-        if self.path_fallback:
-            speed *= self.hold_speed_scale
-
-        command = (
-            self._make_twist(
-                speed,
-                math.radians(self.last_steering_deg),
-            )
-            if self.enable_drive
+    def _publish_command(self, command: SteeringCommand) -> None:
+        twist = (
+            self.controller.make_twist(command)
+            if self.enable_drive and command.path_valid
             else Twist()
         )
-        self.cmd_publisher.publish(command)
-        self._publish_status(
-            path_valid=True,
-            reason="ok",
-            desired_speed=speed,
-            command=command,
-            lookahead_m=lookahead_m,
-            target_distance=visual_target_distance,
-            target_index=visual_target_index,
-        )
-
-    def _dynamic_lookahead(self, steering_deg: float) -> float:
-        ratio = float(
-            np.clip(
-                abs(steering_deg) / self.max_steer_deg,
-                0.0,
-                1.0,
+        self.cmd_publisher.publish(twist)
+        self.status_publisher.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "path_valid": command.path_valid,
+                        "reason": command.reason,
+                        "fallback": self.controller.path_fallback,
+                        "drive_enabled": self.enable_drive,
+                        "steering_deg": round(
+                            command.steering_deg,
+                            2,
+                        ),
+                        "lookahead_m": round(command.lookahead_m, 3),
+                        "lookahead_target_m": round(
+                            command.target_distance_m,
+                            3,
+                        ),
+                        "lookahead_target_index": int(
+                            command.target_index
+                        ),
+                        "desired_speed_mps": round(
+                            command.speed_mps,
+                            3,
+                        ),
+                        "published_linear_x": round(
+                            twist.linear.x,
+                            3,
+                        ),
+                        "published_angular_z": round(
+                            twist.angular.z,
+                            3,
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             )
         )
-        return self.lookahead_max_m - (
-            self.lookahead_max_m - self.lookahead_min_m
-        ) * ratio
-
-    def _target_speed(self, steering_deg: float) -> float:
-        turn_ratio = min(
-            1.0,
-            abs(steering_deg) / self.max_steer_deg,
-        )
-        scale = max(
-            self.turn_speed_min_scale,
-            1.0 - self.turn_speed_reduction * turn_ratio,
-        )
-        return self.speed_mps * scale
-
-    def _make_twist(
-        self,
-        speed_mps: float,
-        steering_rad: float,
-    ) -> Twist:
-        message = Twist()
-        message.linear.x = float(speed_mps)
-        if abs(speed_mps) > 1e-6:
-            message.angular.z = float(
-                speed_mps
-                / self.wheelbase_m
-                * math.tan(steering_rad)
-            )
-        return message
 
     def check_path_timeout(self) -> None:
         if (
@@ -308,71 +403,9 @@ class PurePursuitNode(Node):
         if elapsed < self.path_timeout_sec:
             return
         self.timed_out = True
-        self._publish_stop("path_timeout")
+        self._publish_command(self.controller.stop("path_timeout"))
         self.get_logger().warning(
             f"No path for {elapsed:.2f}s: vehicle stopped"
-        )
-
-    def _publish_stop(self, reason: str) -> None:
-        command = Twist()
-        self.cmd_publisher.publish(command)
-        self._publish_status(
-            path_valid=False,
-            reason=reason,
-            desired_speed=0.0,
-            command=command,
-            lookahead_m=self._dynamic_lookahead(
-                self.last_steering_deg
-            ),
-            target_distance=0.0,
-            target_index=-1,
-        )
-
-    def _publish_status(
-        self,
-        *,
-        path_valid: bool,
-        reason: str,
-        desired_speed: float,
-        command: Twist,
-        lookahead_m: float,
-        target_distance: float,
-        target_index: int,
-    ) -> None:
-        self.status_publisher.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "path_valid": path_valid,
-                        "reason": reason,
-                        "fallback": self.path_fallback,
-                        "drive_enabled": self.enable_drive,
-                        "steering_deg": round(
-                            self.last_steering_deg,
-                            2,
-                        ),
-                        "lookahead_m": round(lookahead_m, 3),
-                        "lookahead_target_m": round(
-                            target_distance,
-                            3,
-                        ),
-                        "lookahead_target_index": int(target_index),
-                        "desired_speed_mps": round(
-                            desired_speed,
-                            3,
-                        ),
-                        "published_linear_x": round(
-                            command.linear.x,
-                            3,
-                        ),
-                        "published_angular_z": round(
-                            command.angular.z,
-                            3,
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-            )
         )
 
     def destroy_node(self) -> bool:

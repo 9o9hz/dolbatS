@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 import time
 from typing import Any, Optional, Sequence
@@ -48,7 +49,7 @@ PARAMETER_DEFAULTS = {
 }
 
 
-def _resolve_device(requested: str) -> Any:
+def resolve_device(requested: str) -> Any:
     normalized = requested.strip().lower()
     if normalized not in ("", "auto"):
         return int(normalized) if normalized.isdigit() else requested
@@ -57,22 +58,36 @@ def _resolve_device(requested: str) -> Any:
     return 0 if torch.cuda.is_available() else "cpu"
 
 
-class LaneDetectNode(Node):
-    """Runs only perspective conversion and YOLO mask inference."""
+@dataclass
+class DetectionOutput:
+    """Result of running BEV warp + YOLO segmentation on one frame."""
 
-    def __init__(self) -> None:
-        super().__init__("lane_detect")
-        for name, default in PARAMETER_DEFAULTS.items():
-            self.declare_parameter(name, default)
+    bev: np.ndarray
+    mask: np.ndarray
+    segmentation: np.ndarray
+    instances: list[dict]
+    inference_ms: float
 
-        parameter = lambda name: self.get_parameter(name).value
-        model_path = Path(str(parameter("model_path")))
-        bev_path_value = str(parameter("bev_params")).strip()
-        bev_path = (
-            Path(bev_path_value)
-            if bev_path_value
-            else DEFAULT_BEV_PARAMS
-        )
+
+class LaneDetectorCore:
+    """Pure BEV warp + YOLO segmentation logic, independent of ROS.
+
+    Extracted out of ``LaneDetectNode`` so the same detection code can be
+    called directly (no topic round trip) from an integrated node such as
+    ``drive_main.LaneDriveNode``, while ``LaneDetectNode`` keeps working
+    unchanged as a thin ROS wrapper around it.
+    """
+
+    def __init__(
+        self,
+        model_path: Path,
+        bev_path: Path,
+        calibration_width: int,
+        calibration_height: int,
+        confidence: float,
+        image_size: int,
+        device_request: str,
+    ) -> None:
         if not model_path.is_file():
             raise FileNotFoundError(
                 f"YOLO model not found: {model_path}"
@@ -100,15 +115,129 @@ class LaneDetectNode(Node):
         self.source_points = bev.source_points
         self.destination_points = bev.destination_points
         self.warp_size = (bev.width, bev.height)
-        self.calibration_width = max(
-            1, int(parameter("calibration_width"))
+        self.calibration_width = max(1, int(calibration_width))
+        self.calibration_height = max(1, int(calibration_height))
+        self.confidence = float(confidence)
+        self.image_size = max(1, int(image_size))
+        self.device = resolve_device(str(device_request))
+
+    def make_bev(self, frame: np.ndarray) -> np.ndarray:
+        height, width = frame.shape[:2]
+        source = self.source_points.copy()
+        source[:, 0] *= width / float(self.calibration_width)
+        source[:, 1] *= height / float(self.calibration_height)
+        matrix = cv2.getPerspectiveTransform(
+            source,
+            self.destination_points,
         )
-        self.calibration_height = max(
-            1, int(parameter("calibration_height"))
+        return cv2.warpPerspective(
+            frame,
+            matrix,
+            self.warp_size,
+            flags=cv2.INTER_LINEAR,
         )
-        self.confidence = float(parameter("confidence"))
-        self.image_size = max(1, int(parameter("image_size")))
-        self.device = _resolve_device(str(parameter("device")))
+
+    def detect(self, frame: np.ndarray) -> DetectionOutput:
+        started = time.perf_counter()
+        bev = self.make_bev(frame)
+        result = self.model.predict(
+            source=bev,
+            imgsz=self.image_size,
+            conf=self.confidence,
+            device=self.device,
+            retina_masks=True,
+            verbose=False,
+        )[0]
+        mask, instances = self._combined_mask(result, bev.shape[:2])
+        segmentation = result.plot(
+            labels=True,
+            boxes=False,
+            masks=True,
+            conf=True,
+        )
+        inference_ms = (time.perf_counter() - started) * 1000.0
+        return DetectionOutput(
+            bev=bev,
+            mask=mask,
+            segmentation=segmentation,
+            instances=instances,
+            inference_ms=inference_ms,
+        )
+
+    def _combined_mask(
+        self,
+        result: Any,
+        image_shape: Sequence[int],
+    ) -> tuple[np.ndarray, list[dict]]:
+        height, width = int(image_shape[0]), int(image_shape[1])
+        combined = np.zeros((height, width), dtype=np.uint8)
+        if result.masks is None or result.boxes is None:
+            return combined, []
+
+        masks = result.masks.data.detach().cpu().numpy()
+        classes = (
+            result.boxes.cls.detach().cpu().numpy().astype(int)
+        )
+        confidences = (
+            result.boxes.conf.detach().cpu().numpy().astype(float)
+        )
+        instances = []
+        for raw_mask, class_id, confidence in zip(
+            masks,
+            classes,
+            confidences,
+        ):
+            if int(class_id) not in self.lane_class_ids:
+                continue
+            resized = cv2.resize(
+                (raw_mask > 0.5).astype(np.uint8),
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            combined[resized > 0] = 255
+            y_values, x_values = np.nonzero(resized)
+            if len(x_values) == 0:
+                continue
+            instances.append(
+                {
+                    "class_id": int(class_id),
+                    "class_name": str(self.model.names[int(class_id)]),
+                    "confidence": round(float(confidence), 4),
+                    "x_min": int(np.min(x_values)),
+                    "y_min": int(np.min(y_values)),
+                    "x_max": int(np.max(x_values)),
+                    "y_max": int(np.max(y_values)),
+                }
+            )
+        return combined, instances
+
+
+class LaneDetectNode(Node):
+    """Runs only perspective conversion and YOLO mask inference."""
+
+    def __init__(self) -> None:
+        super().__init__("lane_detect")
+        for name, default in PARAMETER_DEFAULTS.items():
+            self.declare_parameter(name, default)
+
+        parameter = lambda name: self.get_parameter(name).value
+        model_path = Path(str(parameter("model_path")))
+        bev_path_value = str(parameter("bev_params")).strip()
+        bev_path = (
+            Path(bev_path_value)
+            if bev_path_value
+            else DEFAULT_BEV_PARAMS
+        )
+
+        self.core = LaneDetectorCore(
+            model_path=model_path,
+            bev_path=bev_path,
+            calibration_width=int(parameter("calibration_width")),
+            calibration_height=int(parameter("calibration_height")),
+            confidence=float(parameter("confidence")),
+            image_size=int(parameter("image_size")),
+            device_request=str(parameter("device")),
+        )
         self.process_every_nth_frame = max(
             1, int(parameter("process_every_nth_frame"))
         )
@@ -163,23 +292,7 @@ class LaneDetectNode(Node):
         )
         self.get_logger().info(
             f"{image_topic} -> {mask_topic}; model={model_path}, "
-            f"bev={bev_path}, device={self.device}"
-        )
-
-    def _make_bev(self, frame: np.ndarray) -> np.ndarray:
-        height, width = frame.shape[:2]
-        source = self.source_points.copy()
-        source[:, 0] *= width / float(self.calibration_width)
-        source[:, 1] *= height / float(self.calibration_height)
-        matrix = cv2.getPerspectiveTransform(
-            source,
-            self.destination_points,
-        )
-        return cv2.warpPerspective(
-            frame,
-            matrix,
-            self.warp_size,
-            flags=cv2.INTER_LINEAR,
+            f"bev={bev_path}, device={self.core.device}"
         )
 
     def on_image(self, message: CompressedImage) -> None:
@@ -187,28 +300,8 @@ class LaneDetectNode(Node):
         if (self.frame_count - 1) % self.process_every_nth_frame:
             return
 
-        started = time.perf_counter()
         try:
-            bev = self._make_bev(decode_compressed_image(message))
-            result = self.model.predict(
-                source=bev,
-                imgsz=self.image_size,
-                conf=self.confidence,
-                device=self.device,
-                retina_masks=True,
-                verbose=False,
-            )[0]
-            mask, instances = self._combined_mask(
-                result,
-                bev.shape[:2],
-            )
-            instance_count = len(instances)
-            segmentation = result.plot(
-                labels=True,
-                boxes=False,
-                masks=True,
-                conf=True,
-            )
+            output = self.core.detect(decode_compressed_image(message))
         except Exception as exc:
             self.get_logger().error(
                 f"Lane detection failed: {exc}",
@@ -216,23 +309,22 @@ class LaneDetectNode(Node):
             )
             return
 
-        inference_ms = (time.perf_counter() - started) * 1000.0
         self._publish_image(
-            bev,
+            output.bev,
             message,
             self.bev_publisher,
             ".jpg",
             [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
         )
         self._publish_image(
-            mask,
+            output.mask,
             message,
             self.mask_publisher,
             ".png",
             [],
         )
         self._publish_image(
-            segmentation,
+            output.segmentation,
             message,
             self.segmentation_publisher,
             ".jpg",
@@ -242,9 +334,11 @@ class LaneDetectNode(Node):
             String(
                 data=json.dumps(
                     {
-                        "lane_instances": instance_count,
-                        "mask_pixels": int(np.count_nonzero(mask)),
-                        "inference_ms": round(inference_ms, 1),
+                        "lane_instances": len(output.instances),
+                        "mask_pixels": int(
+                            np.count_nonzero(output.mask)
+                        ),
+                        "inference_ms": round(output.inference_ms, 1),
                     },
                     ensure_ascii=False,
                 )
@@ -259,7 +353,7 @@ class LaneDetectNode(Node):
                 data=json.dumps(
                     {
                         "timestamp_ns": timestamp_ns,
-                        "instances": instances,
+                        "instances": output.instances,
                     },
                     ensure_ascii=False,
                 )
@@ -268,7 +362,7 @@ class LaneDetectNode(Node):
 
         if self.display:
             preview = cv2.resize(
-                segmentation,
+                output.segmentation,
                 None,
                 fx=self.display_scale,
                 fy=self.display_scale,
@@ -291,53 +385,6 @@ class LaneDetectNode(Node):
             cv2.imshow(window_name, preview)
             if cv2.waitKey(1) & 0xFF in (27, ord("q")):
                 rclpy.shutdown()
-
-    def _combined_mask(
-        self,
-        result: Any,
-        image_shape: Sequence[int],
-    ) -> tuple[np.ndarray, list[dict]]:
-        height, width = int(image_shape[0]), int(image_shape[1])
-        combined = np.zeros((height, width), dtype=np.uint8)
-        if result.masks is None or result.boxes is None:
-            return combined, []
-
-        masks = result.masks.data.detach().cpu().numpy()
-        classes = (
-            result.boxes.cls.detach().cpu().numpy().astype(int)
-        )
-        confidences = (
-            result.boxes.conf.detach().cpu().numpy().astype(float)
-        )
-        instances = []
-        for raw_mask, class_id, confidence in zip(
-            masks,
-            classes,
-            confidences,
-        ):
-            if int(class_id) not in self.lane_class_ids:
-                continue
-            resized = cv2.resize(
-                (raw_mask > 0.5).astype(np.uint8),
-                (width, height),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            combined[resized > 0] = 255
-            y_values, x_values = np.nonzero(resized)
-            if len(x_values) == 0:
-                continue
-            instances.append(
-                {
-                    "class_id": int(class_id),
-                    "class_name": str(self.model.names[int(class_id)]),
-                    "confidence": round(float(confidence), 4),
-                    "x_min": int(np.min(x_values)),
-                    "y_min": int(np.min(y_values)),
-                    "x_max": int(np.max(x_values)),
-                    "y_max": int(np.max(y_values)),
-                }
-            )
-        return combined, instances
 
     @staticmethod
     def _publish_image(
