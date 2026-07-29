@@ -11,6 +11,8 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>ament_index_python</depend>
+  <exec_depend>drive_pkg</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

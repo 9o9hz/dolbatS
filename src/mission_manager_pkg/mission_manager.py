@@ -21,7 +21,7 @@ DEFAULTS = {
     "lane_valid_topic": "/control/candidate/lane/valid",
     "obstacle_steer_topic": "/control/candidate/obstacle/steer_angle",
     "obstacle_valid_topic": "/control/candidate/obstacle/valid",
-    "obstacle_detected_topic": "/detect/obstacle/detected",
+    "obstacle_active_topic": "/detect/obstacle/avoidance_active",
     "traffic_detected_topic": "/detect/traffic_light/detected",
     "traffic_color_topic": "/detect/traffic_light/color",
     "traffic_confidence_topic": "/detect/traffic_light/confidence",
@@ -149,7 +149,7 @@ class MissionLogic:
 
         self.lane = CandidateMemory()
         self.obstacle = CandidateMemory()
-        self.obstacle_detected = False
+        self.obstacle_active = False
         self.traffic_detected = False
         self.traffic_color = "none"
         self.traffic_confidence = 0.0
@@ -246,7 +246,13 @@ class MissionLogic:
         )
 
     def _obstacle_output(self) -> MissionOutput:
-        if not self.obstacle.has_last_valid:
+        # Unlike lane tracking, an active avoidance candidate must be valid
+        # now. Holding a stale full-steering obstacle command after a sensor
+        # fault or controller timeout would be unsafe.
+        if (
+            not self.obstacle.current_valid
+            or not self.obstacle.has_last_valid
+        ):
             return MissionOutput(
                 MISSION_OBSTACLE,
                 self.traffic_substate,
@@ -318,7 +324,7 @@ class MissionLogic:
         }
         if traffic_active:
             output = self._traffic_output(now_sec)
-        elif self.obstacle_detected:
+        elif self.obstacle_active:
             output = self._obstacle_output()
         else:
             output = self._lane_output()
@@ -463,10 +469,10 @@ class MissionManagerNode(Node):
             lambda msg: self.logic.obstacle.update_valid(bool(msg.data)),
             10,
         )
-        self.obstacle_detected_sub = self.create_subscription(
+        self.obstacle_active_sub = self.create_subscription(
             Bool,
-            str(parameter("obstacle_detected_topic")),
-            self.on_obstacle_detected,
+            str(parameter("obstacle_active_topic")),
+            self.on_obstacle_active,
             10,
         )
         self.traffic_detected_sub = self.create_subscription(
@@ -488,8 +494,8 @@ class MissionManagerNode(Node):
             10,
         )
 
-    def on_obstacle_detected(self, message: Bool) -> None:
-        self.logic.obstacle_detected = bool(message.data)
+    def on_obstacle_active(self, message: Bool) -> None:
+        self.logic.obstacle_active = bool(message.data)
 
     def on_traffic_detected(self, message: Bool) -> None:
         self.logic.traffic_detected = bool(message.data)
@@ -525,7 +531,7 @@ class MissionManagerNode(Node):
             "traffic_confidence": round(
                 self.logic.traffic_confidence, 3
             ),
-            "obstacle_detected": self.logic.obstacle_detected,
+            "obstacle_active": self.logic.obstacle_active,
             "selected_steer_source": output.selected_steer_source,
             "selected_steer_deg": round(output.steer_deg, 3),
             "output_throttle": round(output.throttle, 3),

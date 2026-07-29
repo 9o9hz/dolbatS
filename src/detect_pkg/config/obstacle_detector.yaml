@@ -1,0 +1,49 @@
+obstacle_detector_publisher:
+  ros__parameters:
+    confidence_threshold: 0.5
+    # 회피 제어기가 초음파 장애물을 확인한 동안에만 true를 발행한다.
+    enable_topic: /detect/obstacle/enable
+    enabled_at_startup: false
+    compressed_image_topic: /camera/lane/image_raw/compressed
+    detected_topic: /detect/obstacle/detected
+    bbox_topic: /detect/obstacle/bbox
+    bottom_center_topic: /detect/obstacle/bottom_center
+    detection_image_topic: /camera/lane/detection_view
+    bev_footprint_topic: /detect/obstacle/bev_footprint
+    bev_detection_image_topic: /detect/obstacle/bev_view
+    calibration_width: 640
+    calibration_height: 480
+    pixels_per_meter: 600.0
+    vehicle_width_m: 0.64
+    show_window: false
+
+ultrasonic_obstacle_event:
+  ros__parameters:
+    left_distance_topic: /ultrasonic/left_distance
+    right_distance_topic: /ultrasonic/right_distance
+    event_topic: /detect/obstacle_event
+    detect_threshold_cm: 40.0
+    clear_threshold_cm: 45.0
+    consecutive_frames: 3
+    default_avoid_direction: 1
+
+yolo_obstacle_turn:
+  ros__parameters:
+    left_distance_topic: /ultrasonic/left_distance
+    right_distance_topic: /ultrasonic/right_distance
+    yolo_enable_topic: /detect/obstacle/enable
+    avoidance_active_topic: /detect/obstacle/avoidance_active
+    candidate_steer_topic: /control/candidate/obstacle/steer_angle
+    candidate_valid_topic: /control/candidate/obstacle/valid
+    status_topic: /detect/avoidance/status
+    detect_threshold_cm: 40.0
+    clear_threshold_cm: 45.0
+    consecutive_frames: 3
+    full_steer_angle_deg: 20.0
+    trend_epsilon_cm: 0.5
+    minimum_drop_cm: 2.0
+    rise_from_minimum_cm: 3.0
+    trend_consecutive_frames: 3
+    approach_timeout_sec: 8.0
+    turn_timeout_sec: 8.0
+    publish_rate_hz: 30.0

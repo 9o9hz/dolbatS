@@ -1,0 +1,19 @@
+serial_bridge:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel
+    serial_port: /dev/ttyUSB0
+    baud_rate: 115200
+    serial_startup_delay: 2.0
+    max_linear_speed: 1.0
+    wheelbase: 0.545
+    max_drive_pwm: 255
+    max_steer_angle: 20.0
+    linear_deadband: 0.01
+    angular_deadband: 0.01
+    command_timeout: 0.5
+    center_on_timeout: true
+    invert_angular: false
+    steering_angle_topic: /vehicle/current_steering_angle
+    speed_topic: /vehicle/current_speed
+    left_distance_topic: /ultrasonic/left_distance
+    right_distance_topic: /ultrasonic/right_distance

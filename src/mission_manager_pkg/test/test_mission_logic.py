@@ -53,7 +53,7 @@ class CandidateAndModeTest(unittest.TestCase):
         logic = MissionLogic()
         logic.lane.update_steer(5.0)
         logic.lane.update_valid(True)
-        logic.obstacle_detected = True
+        logic.obstacle_active = True
         output = logic.step(0.0)
         self.assertEqual(output.mission_state, MISSION_OBSTACLE)
         self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.0))
@@ -66,7 +66,11 @@ class CandidateAndModeTest(unittest.TestCase):
         self.assertGreater(output.throttle, 0.4)
         self.assertLess(output.throttle, 0.8)
 
-        logic.obstacle_detected = False
+        logic.obstacle.update_valid(False)
+        output = logic.step(1.5)
+        self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.0))
+
+        logic.obstacle_active = False
         self.assertEqual(logic.step(2.0).mission_state, MISSION_LANE)
 
 
@@ -82,7 +86,7 @@ class TrafficStateTest(unittest.TestCase):
         self.logic.traffic_color = color
 
     def test_red_hold_priority_and_green_release(self):
-        self.logic.obstacle_detected = True
+        self.logic.obstacle_active = True
         self.set_traffic(True, "red")
         output = self.logic.step(1.0)
         self.assertEqual(output.mission_state, MISSION_TRAFFIC)

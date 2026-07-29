@@ -8,7 +8,10 @@ package_name = "control_pkg"
 setup(
     name=package_name,
     version="0.0.1",
-    py_modules=["serial_bridge"],
+    py_modules=[
+        "serial_bridge",
+        "manual_cmd_vel",
+    ],
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
@@ -27,6 +30,7 @@ setup(
     entry_points={
         "console_scripts": [
             "serial_bridge = serial_bridge:main",
+            "manual_cmd_vel = manual_cmd_vel:main",
         ],
     },
 )

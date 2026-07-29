@@ -43,13 +43,15 @@ ros2 launch mission_manager_pkg mission_manager.launch.py
 ```
 
 차선·장애물 후보와 detector 결과를 받아 `lane`, `traffic_light`,
-`obstacle` 중 하나를 선택한다. 마지막 유효 candidate는 timeout 없이
-유지한다. 노드 시작 후 유효한 차선 candidate를 한 번도 받지 않았다면
-최종 조향과 throttle을 0으로 발행한다.
+`obstacle` 중 하나를 선택한다. 차선 candidate의 마지막 유효값은
+timeout 없이 유지한다. 노드 시작 후 유효한 차선 candidate를 한 번도
+받지 않았다면 최종 조향과 throttle을 0으로 발행한다.
 
-장애물 회피 candidate publisher는 아직 없다. 장애물이 검출된 상태에서
-유효한 장애물 candidate를 한 번도 받지 못했다면 lane 조향으로 대체하지
-않고 정지한다.
+장애물 판단에는 YOLO의 프레임별 `/detect/obstacle/detected` 대신
+초음파 감지부터 회전 완료까지 유지되는
+`/detect/obstacle/avoidance_active`를 사용한다. 회피 중 obstacle
+candidate가 invalid가 되면 과거 풀조향값을 유지하지 않고 최종 조향과
+throttle을 모두 0으로 발행한다.
 
 ```bash
 ros2 topic echo /mission_state
@@ -78,8 +80,42 @@ ros2 run detect_pkg traffic_light_detection
 
 ```bash
 ros2 run camera_pkg lane_camera_publisher --camera-index 1
-ros2 run detect_pkg obstacle_detector_publisher
+ros2 launch detect_pkg obstacle_detection.launch.py
 ```
+
+`obstacle_detection.launch.py`는 장애물 YOLO, 초음파 이벤트 필터, 장애물
+회피 candidate publisher를 함께 실행한다.
+
+```text
+/detect/obstacle/enable                    YOLO 추론 활성화
+/detect/obstacle/avoidance_active          obstacle mission 활성화
+/control/candidate/obstacle/steer_angle    장애물 후보 조향각(deg)
+/control/candidate/obstacle/valid          현재 후보 유효 여부
+/detect/avoidance/status                   회피 상태 JSON
+```
+
+상태 전이:
+
+```text
+차선 주행
+  -> 좌/우 초음파 임계값 이하 연속 감지
+  -> avoidance_active=true, YOLO ON, 직진 조향 후보 0도
+  -> 감지됐던 쪽 초음파에서 장애물이 사라짐
+  -> 같은 방향 풀조향 후보
+  -> 해당 센서 거리가 감소한 뒤 증가
+  -> avoidance_active=false, YOLO OFF, lane candidate로 복귀
+```
+
+YOLO bbox 하단 중앙점과 차량 폭의 BEV 결과는 다음 토픽에서 확인한다.
+
+```bash
+ros2 topic echo /detect/obstacle/bev_footprint
+ros2 topic echo /detect/avoidance/status
+```
+
+시각화는 `rqt_image_view`에서 `/detect/obstacle/bev_view`를 선택한다.
+임계값, 풀조향각, 거리 증감 판정과 timeout은
+`src/detect_pkg/config/obstacle_detector.yaml`에서 조정한다.
 
 ## Arduino serial bridge
 

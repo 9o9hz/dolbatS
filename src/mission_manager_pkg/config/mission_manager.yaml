@@ -8,7 +8,10 @@ mission_manager:
 
     obstacle_steer_topic: "/control/candidate/obstacle/steer_angle"
     obstacle_valid_topic: "/control/candidate/obstacle/valid"
-    obstacle_detected_topic: "/detect/obstacle/detected"
+    # 초음파 감지부터 회전 완료까지 회피 노드가 유지하는 mission gate.
+    # YOLO의 프레임별 detected 토픽을 직접 사용하면 회전 중 lane으로
+    # 너무 일찍 복귀할 수 있으므로 별도 active 토픽을 사용한다.
+    obstacle_active_topic: "/detect/obstacle/avoidance_active"
 
     traffic_detected_topic: "/detect/traffic_light/detected"
     traffic_color_topic: "/detect/traffic_light/color"

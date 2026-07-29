@@ -91,8 +91,8 @@ ros2 run drive_pkg pure_pursuit --ros-args \
   호출 — 정지선/장애물 회피처럼 경로 자체를 바꾸는 미션 로직의 자리).
 `pure_pursuit`에는 신호등·장애물·주차 판단을 넣지 않는다.
 mission_manager가 candidate와 detector 결과를 구독해 최종 조향과 throttle을
-결정한다. 마지막 유효 candidate는 timeout 없이 유지하며, 한 번도 유효한
-candidate를 받지 못한 경우에만 정지한다.
+결정한다. 차선 후보의 마지막 유효값은 유지하지만, 활성화된 장애물 후보가
+invalid이면 과거 풀조향값을 사용하지 않고 정지한다.
 
 ## 주요 토픽
 
