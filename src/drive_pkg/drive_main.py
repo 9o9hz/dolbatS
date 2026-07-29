@@ -158,6 +158,9 @@ class LaneDriveNode(Node):
             "path_transition_blend_frames": 6,
             "max_path_lateral_step_m": 0.04,
             "max_missing_frames": 8,
+            "bbox_close_ksize": 5,
+            "path_spline_smooth_factor": 10.0,
+            "path_spline_points": 100,
             "path_topic": "/lane/path",
             "debug_topic": "/lane/path/debug/compressed",
             "path_status_topic": "/lane/path/status",
@@ -246,6 +249,11 @@ class LaneDriveNode(Node):
                 parameter("max_path_lateral_step_m")
             ),
             max_missing_frames=int(parameter("max_missing_frames")),
+            bbox_close_ksize=int(parameter("bbox_close_ksize")),
+            path_spline_smooth_factor=float(
+                parameter("path_spline_smooth_factor")
+            ),
+            path_spline_points=int(parameter("path_spline_points")),
         )
         self.processor = SegmentationLaneProcessor(None, plan_config)
         self.path_frame_id = str(parameter("path_frame_id"))
@@ -410,7 +418,9 @@ class LaneDriveNode(Node):
         self._publish_detection(detection, message)
 
         try:
-            plan = self.processor.plan_mask(detection.mask)
+            plan = self.processor.plan_mask(
+                detection.mask, detection.instances
+            )
         except Exception as exc:
             self.get_logger().error(
                 f"Path planning failed: {exc}",
