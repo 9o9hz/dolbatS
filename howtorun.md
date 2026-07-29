@@ -92,10 +92,10 @@ ros2 launch detect_pkg obstacle_detection.launch.py
 /control/candidate/obstacle/steer_angle    장애물 후보 조향각(deg)
 /control/candidate/obstacle/valid          현재 후보 유효 여부
 /detect/avoidance/status                   회피 상태 JSON
-/ultrasonic/left_front_distance            왼쪽 앞 거리(cm)
-/ultrasonic/left_rear_distance             왼쪽 뒤 거리(cm)
-/ultrasonic/right_front_distance           오른쪽 앞 거리(cm)
-/ultrasonic/right_rear_distance            오른쪽 뒤 거리(cm)
+/ultrasonic/left/front                     왼쪽 앞 거리(cm)
+/ultrasonic/left/rear                      왼쪽 뒤 거리(cm)
+/ultrasonic/right/front                    오른쪽 앞 거리(cm)
+/ultrasonic/right/rear                     오른쪽 뒤 거리(cm)
 ```
 
 상태 전이:
@@ -115,14 +115,12 @@ ros2 launch detect_pkg obstacle_detection.launch.py
 오른쪽 뒤에서 시작한 경우에는 반대로 오른쪽 풀조향과 왼쪽 앞 센서를
 사용한다.
 
-YOLO bbox 하단 중앙점과 차량 폭의 BEV 결과는 다음 토픽에서 확인한다.
+회피 상태는 다음 토픽에서 확인한다.
 
 ```bash
-ros2 topic echo /detect/obstacle/bev_footprint
 ros2 topic echo /detect/avoidance/status
 ```
 
-시각화는 `rqt_image_view`에서 `/detect/obstacle/bev_view`를 선택한다.
 임계값, 풀조향각, 거리 증감 판정과 timeout은
 `src/detect_pkg/config/obstacle_detector.yaml`에서 조정한다.
 뒤 센서의 `-1.0`은 에코 없음이므로 `rear_no_echo_is_clear: true`일 때
@@ -169,12 +167,10 @@ Arduino는 유효한 `D,...` 명령이 500ms 동안 없으면 별도 watchdog으
 ```text
 /vehicle/current_steering_angle  실제 조향각(deg)
 /vehicle/drive_pwm               명령 PWM(-255~255), 실제 측정 속도 아님
-/ultrasonic/left_front_distance  왼쪽 앞 거리(cm)
-/ultrasonic/left_rear_distance   왼쪽 뒤 거리(cm)
-/ultrasonic/right_front_distance 오른쪽 앞 거리(cm)
-/ultrasonic/right_rear_distance  오른쪽 뒤 거리(cm)
-/ultrasonic/left_distance        왼쪽 앞·뒤 중 가까운 유효 거리(cm)
-/ultrasonic/right_distance       오른쪽 앞·뒤 중 가까운 유효 거리(cm)
+/ultrasonic/left/front           왼쪽 앞 거리(cm)
+/ultrasonic/left/rear            왼쪽 뒤 거리(cm)
+/ultrasonic/right/front          오른쪽 앞 거리(cm)
+/ultrasonic/right/rear           오른쪽 뒤 거리(cm)
 ```
 
 실차 구동 전에는 바퀴를 지면에서 띄우고 조향 부호, 전후진 방향,

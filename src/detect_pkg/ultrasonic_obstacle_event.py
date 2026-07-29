@@ -20,8 +20,8 @@ class UltrasonicObstacleEvent(Node):
     def __init__(self) -> None:
         super().__init__("ultrasonic_obstacle_event")
 
-        self.declare_parameter("left_distance_topic", "/ultrasonic/left_distance")
-        self.declare_parameter("right_distance_topic", "/ultrasonic/right_distance")
+        self.declare_parameter("left_distance_topic", "/ultrasonic/left/rear")
+        self.declare_parameter("right_distance_topic", "/ultrasonic/right/rear")
         self.declare_parameter("event_topic", "/detect/obstacle_event")
         self.declare_parameter("detect_threshold_cm", 40.0)
         self.declare_parameter("clear_threshold_cm", 45.0)

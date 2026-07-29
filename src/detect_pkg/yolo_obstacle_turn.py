@@ -33,16 +33,16 @@ class YoloObstacleTurn(Node):
         defaults = {
             "yolo_detected_topic": "/detect/obstacle/detected",
             "left_front_distance_topic": (
-                "/ultrasonic/left_front_distance"
+                "/ultrasonic/left/front"
             ),
             "left_rear_distance_topic": (
-                "/ultrasonic/left_rear_distance"
+                "/ultrasonic/left/rear"
             ),
             "right_front_distance_topic": (
-                "/ultrasonic/right_front_distance"
+                "/ultrasonic/right/front"
             ),
             "right_rear_distance_topic": (
-                "/ultrasonic/right_rear_distance"
+                "/ultrasonic/right/rear"
             ),
             "avoidance_active_topic": (
                 "/detect/obstacle/avoidance_active"

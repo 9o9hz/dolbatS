@@ -22,9 +22,7 @@ serial_bridge:
 
     steering_angle_topic: "/vehicle/current_steering_angle"
     drive_pwm_topic: "/vehicle/drive_pwm"
-    left_distance_topic: "/ultrasonic/left_distance"
-    right_distance_topic: "/ultrasonic/right_distance"
-    left_front_distance_topic: "/ultrasonic/left_front_distance"
-    left_rear_distance_topic: "/ultrasonic/left_rear_distance"
-    right_front_distance_topic: "/ultrasonic/right_front_distance"
-    right_rear_distance_topic: "/ultrasonic/right_rear_distance"
+    left_front_distance_topic: "/ultrasonic/left/front"
+    left_rear_distance_topic: "/ultrasonic/left/rear"
+    right_front_distance_topic: "/ultrasonic/right/front"
+    right_rear_distance_topic: "/ultrasonic/right/rear"

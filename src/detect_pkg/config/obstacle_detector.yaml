@@ -7,20 +7,13 @@ obstacle_detector_publisher:
     compressed_image_topic: /camera/lane/image_raw/compressed
     detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
-    bottom_center_topic: /detect/obstacle/bottom_center
     detection_image_topic: /camera/lane/detection_view
-    bev_footprint_topic: /detect/obstacle/bev_footprint
-    bev_detection_image_topic: /detect/obstacle/bev_view
-    calibration_width: 640
-    calibration_height: 480
-    pixels_per_meter: 600.0
-    vehicle_width_m: 0.64
     show_window: false
 
 ultrasonic_obstacle_event:
   ros__parameters:
-    left_distance_topic: /ultrasonic/left_rear_distance
-    right_distance_topic: /ultrasonic/right_rear_distance
+    left_distance_topic: /ultrasonic/left/rear
+    right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
     detect_threshold_cm: 40.0
     clear_threshold_cm: 45.0
@@ -30,10 +23,10 @@ ultrasonic_obstacle_event:
 yolo_obstacle_turn:
   ros__parameters:
     yolo_detected_topic: /detect/obstacle/detected
-    left_front_distance_topic: /ultrasonic/left_front_distance
-    left_rear_distance_topic: /ultrasonic/left_rear_distance
-    right_front_distance_topic: /ultrasonic/right_front_distance
-    right_rear_distance_topic: /ultrasonic/right_rear_distance
+    left_front_distance_topic: /ultrasonic/left/front
+    left_rear_distance_topic: /ultrasonic/left/rear
+    right_front_distance_topic: /ultrasonic/right/front
+    right_rear_distance_topic: /ultrasonic/right/rear
     avoidance_active_topic: /detect/obstacle/avoidance_active
     candidate_steer_topic: /control/candidate/obstacle/steer_angle
     candidate_valid_topic: /control/candidate/obstacle/valid

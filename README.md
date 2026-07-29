@@ -168,13 +168,10 @@ source install/setup.bash
 | `/detect/traffic_light/confidence` | `std_msgs/Float32` | 선택한 신호등 검출 confidence, 미검출은 `0.0` |
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
-| `/detect/obstacle/bottom_center` | `std_msgs/Float32MultiArray` | 감지된 경우에만 바운딩 박스 하단 중심 `[x, y]` 발행 |
-| `/ultrasonic/left_distance` | `std_msgs/Float32` | 왼쪽 앞·뒤 중 가까운 유효 거리(cm), 모두 실패하면 `-1.0` |
-| `/ultrasonic/right_distance` | `std_msgs/Float32` | 오른쪽 앞·뒤 중 가까운 유효 거리(cm), 모두 실패하면 `-1.0` |
-| `/ultrasonic/left_front_distance` | `std_msgs/Float32` | 왼쪽 앞 초음파 거리(cm) |
-| `/ultrasonic/left_rear_distance` | `std_msgs/Float32` | 왼쪽 뒤 초음파 거리(cm) |
-| `/ultrasonic/right_front_distance` | `std_msgs/Float32` | 오른쪽 앞 초음파 거리(cm) |
-| `/ultrasonic/right_rear_distance` | `std_msgs/Float32` | 오른쪽 뒤 초음파 거리(cm) |
+| `/ultrasonic/left/front` | `std_msgs/Float32` | 왼쪽 앞 초음파 거리(cm) |
+| `/ultrasonic/left/rear` | `std_msgs/Float32` | 왼쪽 뒤 초음파 거리(cm) |
+| `/ultrasonic/right/front` | `std_msgs/Float32` | 오른쪽 앞 초음파 거리(cm) |
+| `/ultrasonic/right/rear` | `std_msgs/Float32` | 오른쪽 뒤 초음파 거리(cm) |
 | `/vehicle/drive_pwm` | `std_msgs/Float32` | Arduino의 구동 명령 PWM(`-255~255`), 실제 측정 속도 아님 |
 | `/detect/obstacle_event` | `std_msgs/Int8MultiArray` | 초음파 장애물 상태가 바뀔 때만 `[event, avoid_direction]` 발행 |
 
