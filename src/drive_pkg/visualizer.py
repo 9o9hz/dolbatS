@@ -266,8 +266,9 @@ class DrivingVisualizer:
         # X/Qt backend otherwise drops it), OpenCV's Python-side handle is
         # left dangling and the next resizeWindow/imshow/destroyWindow call
         # on it raises cv2.error ("NULL guiReceiver"). That must never take
-        # down this whole process -- it also publishes /cmd_vel. Once the
-        # window is gone, stop touching it instead of crashing.
+        # down this whole process -- it also publishes steering/throttle
+        # commands. Once the window is gone, stop touching it instead of
+        # crashing.
         self._window_broken = False
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)

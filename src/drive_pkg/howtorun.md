@@ -1,7 +1,8 @@
 # drive_pkg 2노드 파이프라인
 
 `drive_pkg`는 두 개의 필수 노드로 나뉜다: `drive_main`(인식 + 경로 생성,
-`/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 제어, `/cmd_vel` 발행).
+`/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 제어, 조향각/정규화
+throttle을 `/auto_steer_angle`/`/auto_throttle`로 발행).
 시각화는 별도 노드 없이 `pure_pursuit` 프로세스 안에 통합돼 있다
 (main5.py 스타일 로컬 cv2 창) — `drive_main`이 발행하는 디버그 토픽 4개와
 자기 자신의 제어 상태(토픽 왕복 없이 직접 전달)를 모아 한 창에 표시하며,
@@ -12,7 +13,7 @@
   -> drive_main (undistort -> BEV/YOLO 검출 -> 경로 생성)
   -> /lane/path
   -> pure_pursuit (Pure Pursuit 제어)
-  -> /cmd_vel
+  -> /auto_steer_angle, /auto_throttle
 ```
 
 전체 파라미터는 `config/drive_pipeline.yaml`에서 `drive_main:`/`pure_pursuit:`
@@ -58,8 +59,9 @@ ros2 run drive_pkg drive_main --weights /path/to/best.pt \
   --ros-args --params-file config/drive_pipeline.yaml
 ```
 
-`pure_pursuit`는 별도 프로세스로 직접 실행해야 실제로 `/cmd_vel`이
-발행된다 (`drive_main`은 더 이상 조향/속도를 계산하지 않는다):
+`pure_pursuit`는 별도 프로세스로 직접 실행해야 실제로 `/auto_steer_angle`/
+`/auto_throttle`이 발행된다 (`drive_main`은 더 이상 조향/속도를 계산하지
+않는다):
 
 ```bash
 ros2 run drive_pkg pure_pursuit --ros-args \
@@ -88,8 +90,8 @@ ros2 run drive_pkg pure_pursuit --ros-args \
   직전 호출), `postprocess_path()`(경로 생성 직후, `/lane/path` 발행 직전
   호출 — 정지선/장애물 회피처럼 경로 자체를 바꾸는 미션 로직의 자리).
 - `pure_pursuit.PurePursuitNode`: `postprocess_command()`(Pure Pursuit
-  계산 직후, `/cmd_vel` 발행 직전 호출 — 신호등/수직주차처럼 조향·속도
-  결과를 바꾸는 미션 로직의 자리).
+  계산 직후, `/auto_steer_angle`/`/auto_throttle` 발행 직전 호출 —
+  신호등/수직주차처럼 조향·속도 결과를 바꾸는 미션 로직의 자리).
 
 둘 다 현재는 pass-through이며, 이번 단계에서는 구조만 마련하고 실제 판정은
 구현하지 않았다.
@@ -107,21 +109,24 @@ ros2 run drive_pkg pure_pursuit --ros-args \
 | 계획 | `/lane/path/debug/compressed` | `sensor_msgs/CompressedImage` | 생성 경로 시각화 |
 | 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |
 | 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
-| 제어 | `/cmd_vel` | `geometry_msgs/Twist` | 주행 속도·각속도 명령 (`pure_pursuit` 발행) |
+| 제어 | `/auto_steer_angle` | `std_msgs/Float32` | 조향각(deg) (`pure_pursuit` 발행) |
+| 제어 | `/auto_throttle` | `std_msgs/Float32` | 정규화 throttle(`-1.0~1.0`, 음수=후진) (`pure_pursuit` 발행) |
 | 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON (`pure_pursuit` 발행) |
 | 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
-항상 실제 주행 명령을 `/cmd_vel`에 발행한다(dry-run 모드 없음). `pure_pursuit`가
-빈 경로(`poses` 없음)를 받으면 자동으로 정지 명령을 낸다 — `drive_main`이
-검출/경로 생성에 실패하면 빈 `/lane/path`를 발행해서 이 경로로 정지시킨다.
-별도의 경로-끊김 워치독(`path_timeout_sec`)은 없다.
+항상 실제 주행 명령을 `/auto_steer_angle`/`/auto_throttle`에 발행한다
+(dry-run 모드 없음). `pure_pursuit`가 빈 경로(`poses` 없음)를 받으면
+자동으로 `throttle=0.0`을 낸다 — `drive_main`이 검출/경로 생성에 실패하면
+빈 `/lane/path`를 발행해서 이 경로로 정지시킨다. 별도의 경로-끊김
+워치독(`path_timeout_sec`)은 없다.
 
 각 단계 확인 예:
 
 ```bash
 ros2 topic hz /lane/detection/mask/compressed
 ros2 topic echo /lane/path/status
-ros2 topic echo /lane/control/status
+ros2 topic echo /auto_steer_angle
+ros2 topic echo /auto_throttle
 ```
 
 이미지는 `rqt_image_view`에서 검출/경로 디버그 토픽을 선택해 확인한다.

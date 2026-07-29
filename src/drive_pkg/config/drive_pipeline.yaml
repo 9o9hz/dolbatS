@@ -78,7 +78,10 @@ pure_pursuit:
   ros__parameters:
     path_topic: "/lane/path"
     path_status_topic: "/lane/path/status"
-    cmd_vel_topic: "/cmd_vel"
+    steer_angle_topic: "/auto_steer_angle"
+    throttle_topic: "/auto_throttle"
+    max_speed_mps: 1.0
+    auto_throttle_max: 1.0
     status_topic: "/lane/control/status"
 
     speed_mps: 0.18

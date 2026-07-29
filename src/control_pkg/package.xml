@@ -3,12 +3,11 @@
 <package format="3">
   <name>control_pkg</name>
   <version>0.0.1</version>
-  <description>Bridge cmd_vel to the Dolsoi Arduino serial protocol.</description>
+  <description>Bridge steer angle and normalized throttle commands to the Dolsoi Arduino serial protocol.</description>
   <maintainer email="user@example.com">thislifewon</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
-  <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <exec_depend>python3-serial</exec_depend>
   <export><build_type>ament_python</build_type></export>

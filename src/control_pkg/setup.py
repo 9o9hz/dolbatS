@@ -15,7 +15,10 @@ setup(
     zip_safe=True,
     maintainer="thislifewon",
     maintainer_email="user@example.com",
-    description="Bridge cmd_vel to the Dolsoi Arduino serial protocol.",
+    description=(
+        "Bridge steer angle / normalized throttle Float32 commands to "
+        "the Dolsoi Arduino serial protocol."
+    ),
     license="MIT",
     entry_points={
         "console_scripts": [

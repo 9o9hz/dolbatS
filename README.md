@@ -51,7 +51,8 @@ Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 �
 ```text
 lane_detect -> /lane/detection/mask/compressed
             -> path_plan -> /lane/path
-                         -> pure_pursuit -> /cmd_vel
+                         -> pure_pursuit -> /auto_steer_angle
+                                         -> /auto_throttle
 ```
 
 파라미터는
