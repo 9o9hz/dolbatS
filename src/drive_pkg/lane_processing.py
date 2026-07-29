@@ -23,7 +23,7 @@ from sensor_msgs.msg import CompressedImage
 
 def _default_bev_params_path() -> Path:
     source_path = (
-        Path(__file__).resolve().parent / "resource" / "bev_params_0728.npz"
+        Path(__file__).resolve().parent / "resource" / "bev_params_0729.npz"
     )
     if source_path.is_file():
         return source_path
@@ -34,7 +34,7 @@ def _default_bev_params_path() -> Path:
         return (
             Path(get_package_share_directory("drive_pkg"))
             / "resource"
-            / "bev_params_0728.npz"
+            / "bev_params_0729.npz"
         )
     except (ImportError, LookupError):
         return source_path

@@ -24,7 +24,7 @@ setup(
         (
             f"share/{package_name}/resource",
             [
-                "resource/bev_params_0728.npz",
+                "resource/bev_params_0729.npz",
                 "resource/best1.pt",
             ],
         ),

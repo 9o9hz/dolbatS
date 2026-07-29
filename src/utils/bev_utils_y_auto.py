@@ -131,7 +131,7 @@ def main(args=None):
     parser.add_argument('--topic', type=str, default='/image_raw/compressed', help='구독할 ROS 2 이미지 토픽 이름')
     parser.add_argument('--warp-width', type=int, default=640)
     parser.add_argument('--warp-height', type=int, default=640)
-    parser.add_argument('--out-npz', type=str, default='bev_params_7.npz')
+    parser.add_argument('--out-npz', type=str, default='bev_params_0729.npz')
     parser.add_argument('--out-txt', type=str, default='selected_bev_src_points_7.txt')
     args = parser.parse_args()
     

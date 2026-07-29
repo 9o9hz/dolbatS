@@ -34,14 +34,14 @@ def get_default_bev_path() -> str:
         return os.path.join(
             get_package_share_directory("drive_pkg"),
             "resource",
-            "bev_params_7.npz",
+            "bev_params_0729.npz",
         )
     except Exception:
         return str(
             Path(__file__).resolve().parent.parent
             / "drive_pkg"
             / "resource"
-            / "bev_params_7.npz"
+            / "bev_params_0729.npz"
         )
 
 

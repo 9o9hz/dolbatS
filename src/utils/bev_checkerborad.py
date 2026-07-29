@@ -33,7 +33,7 @@ PROJECT_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_TOPIC = "/image_raw/compressed"
 DEFAULT_CALIBRATION = PROJECT_ROOT / "camera_calibration.npz"
 DEFAULT_BEV_PARAMS = (
-    PROJECT_ROOT / "src" / "drive_pkg" / "resource" / "bev_params_0728.npz"
+    PROJECT_ROOT / "src" / "drive_pkg" / "resource" / "bev_params_0729.npz"
 )
 DEFAULT_POINTS_TXT = SCRIPT_DIR / "selected_bev_src_points.txt"
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "roboflow_bev_images"

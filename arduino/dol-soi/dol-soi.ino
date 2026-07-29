@@ -38,7 +38,7 @@ float rightDistanceCm = -1.0f;
 const int STEER_SENSOR_PIN = A0;
 
 // A0 값이 618일 때 조향각 0도
-const int STEER_CENTER_RAW = 618;
+const int STEER_CENTER_RAW = 595;
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
@@ -51,8 +51,8 @@ const int STEER_SIGN = 1;
 
 // 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
 // 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
-const int STEER_RAW_MIN = 520;
-const int STEER_RAW_MAX = 715;
+const int STEER_RAW_MIN = 500;
+const int STEER_RAW_MAX = 690;
 const int STEER_RAW_TOLERANCE = 2;
 
 // 조향 모터 PWM

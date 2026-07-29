@@ -10,16 +10,18 @@ time.sleep(2)  # 아두이노 리셋 대기
 deg = 0
 
 last_drive = None
+last_drive_time = 0.0
 last_steer = None
 last_left_time = 0
 last_right_time = 0
 speed = 230
 
 STEER_INTERVAL = 0.08  # 좌우 키를 누르고 있을 때 각도 변경 간격
+DRIVE_HEARTBEAT_INTERVAL = 0.1
 
 
-def send_drive(direction, speed):
-    global last_drive
+def send_drive(direction, speed, force=False):
+    global last_drive, last_drive_time
 
     speed = max(0, min(255, speed))
 
@@ -27,12 +29,19 @@ def send_drive(direction, speed):
         raise ValueError("direction must be F, R, or S")
 
     cmd = f"D,{direction},{speed}\n"
+    now = time.monotonic()
 
-    # 같은 주행 명령 중복 전송 방지
-    if last_drive != cmd:
+    # Arduino의 주행 watchdog이 만료되지 않도록 같은 명령도 주기적으로
+    # 다시 전송한다.
+    if (
+        force
+        or last_drive != cmd
+        or now - last_drive_time >= DRIVE_HEARTBEAT_INTERVAL
+    ):
         ser.write(cmd.encode("utf-8"))
         print("TX:", cmd.strip())
         last_drive = cmd
+        last_drive_time = now
 
 
 def send_steer(angle):
@@ -56,7 +65,7 @@ try:
         # 종료
         if keyboard.is_pressed("q"):
             print("프로그램을 종료합니다.")
-            send_drive("S", 0)
+            send_drive("S", 0, force=True)
             send_steer(0)
             break
 
@@ -109,6 +118,6 @@ try:
         time.sleep(0.01)
 
 finally:
-    send_drive("S", 0)
+    send_drive("S", 0, force=True)
     send_steer(0)
     ser.close()

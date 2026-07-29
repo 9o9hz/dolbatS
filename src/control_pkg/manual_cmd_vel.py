@@ -1,34 +1,33 @@
 #!/usr/bin/env python3
-"""Keyboard teleoperation node that publishes Ackermann-compatible cmd_vel."""
+"""Keyboard teleoperation node for final steer/throttle Float32 topics."""
 
 import curses
-import math
 import time
 from typing import Optional, Sequence
 
 import rclpy
-from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from std_msgs.msg import Float32
 
 
 class ManualCmdVel(Node):
-    """Convert arrow-key input into geometry_msgs/Twist commands."""
+    """Convert arrow-key input into final normalized vehicle commands."""
 
     def __init__(self) -> None:
         super().__init__("manual_cmd_vel")
 
-        self.declare_parameter("cmd_vel_topic", "/cmd_vel")
-        self.declare_parameter("speed", 0.9)
-        self.declare_parameter("wheelbase", 0.545)
+        self.declare_parameter("steer_topic", "/auto_steer_angle")
+        self.declare_parameter("throttle_topic", "/auto_throttle")
+        self.declare_parameter("throttle", 0.9)
         self.declare_parameter("steer_step_deg", 10.0)
         self.declare_parameter("max_steer_deg", 20.0)
         self.declare_parameter("key_timeout", 0.25)
         self.declare_parameter("publish_rate", 20.0)
 
-        topic = str(self.get_parameter("cmd_vel_topic").value)
-        self.speed = abs(float(self.get_parameter("speed").value))
-        self.wheelbase = max(
-            1e-6, abs(float(self.get_parameter("wheelbase").value))
+        steer_topic = str(self.get_parameter("steer_topic").value)
+        throttle_topic = str(self.get_parameter("throttle_topic").value)
+        self.throttle = min(
+            1.0, abs(float(self.get_parameter("throttle").value))
         )
         self.steer_step_deg = abs(
             float(self.get_parameter("steer_step_deg").value)
@@ -43,7 +42,12 @@ class ManualCmdVel(Node):
             1.0, float(self.get_parameter("publish_rate").value)
         )
 
-        self.publisher = self.create_publisher(Twist, topic, 10)
+        self.steer_publisher = self.create_publisher(
+            Float32, steer_topic, 10
+        )
+        self.throttle_publisher = self.create_publisher(
+            Float32, throttle_topic, 10
+        )
         self.steering_deg = 0.0
         self.direction = 0
         self.last_drive_key_time = 0.0
@@ -52,15 +56,28 @@ class ManualCmdVel(Node):
         self.timer = self.create_timer(1.0 / publish_rate, self.publish_command)
 
         self.get_logger().info(
-            f"Manual driving ready: publishing to {topic} at {publish_rate:.1f} Hz"
+            f"Manual driving ready: publishing {steer_topic}, "
+            f"{throttle_topic} at {publish_rate:.1f} Hz"
+        )
+        self.get_logger().warning(
+            "Do not run mission_manager while manual driving; both publish "
+            "the final /auto_* command topics"
         )
 
     def handle_key(self, key: int) -> None:
-        """Update the desired speed and steering from one curses key code."""
+        """Update commands from a terminal key without privileged input access."""
         now = time.monotonic()
 
         if key in (ord("q"), ord("Q")):
             self.quit_requested = True
+        elif key == curses.KEY_LEFT:
+            if now - self.last_steer_key_time > 0.08:
+                self._change_steering(self.steer_step_deg)
+                self.last_steer_key_time = now
+        elif key == curses.KEY_RIGHT:
+            if now - self.last_steer_key_time > 0.08:
+                self._change_steering(-self.steer_step_deg)
+                self.last_steer_key_time = now
         elif key == curses.KEY_UP:
             self.direction = 1
             self.last_drive_key_time = now
@@ -72,44 +89,39 @@ class ManualCmdVel(Node):
             self.last_drive_key_time = 0.0
         elif key in (ord("c"), ord("C")):
             self.steering_deg = 0.0
-        elif key == curses.KEY_LEFT:
-            self._change_steering(self.steer_step_deg, now)
-        elif key == curses.KEY_RIGHT:
-            self._change_steering(-self.steer_step_deg, now)
+            self.publish_steering()
 
-    def _change_steering(self, change_deg: float, now: float) -> None:
-        # Limit changes while a held key is generating terminal key-repeat events.
-        if now - self.last_steer_key_time < 0.08:
-            return
+    def _change_steering(self, change_deg: float) -> None:
         self.steering_deg = max(
             -self.max_steer_deg,
             min(self.max_steer_deg, self.steering_deg + change_deg),
         )
-        self.last_steer_key_time = now
+        self.publish_steering()
 
-    def current_command(self, now: Optional[float] = None) -> Twist:
-        """Build the current command, stopping when drive-key input expires."""
+    def publish_steering(self) -> None:
+        self.steer_publisher.publish(Float32(data=self.steering_deg))
+
+    def current_command(
+        self, now: Optional[float] = None
+    ) -> tuple[float, float]:
+        """Return steer and throttle, stopping when drive input expires."""
         if now is None:
             now = time.monotonic()
 
         if now - self.last_drive_key_time > self.key_timeout:
             self.direction = 0
 
-        message = Twist()
-        message.linear.x = self.direction * self.speed
-        if self.direction:
-            steering_rad = math.radians(self.steering_deg)
-            message.angular.z = (
-                message.linear.x / self.wheelbase * math.tan(steering_rad)
-            )
-        return message
+        return self.steering_deg, self.direction * self.throttle
 
     def publish_command(self) -> None:
-        self.publisher.publish(self.current_command())
+        steering_deg, throttle = self.current_command()
+        self.steer_publisher.publish(Float32(data=steering_deg))
+        self.throttle_publisher.publish(Float32(data=throttle))
 
     def publish_stop(self) -> None:
         self.direction = 0
-        self.publisher.publish(Twist())
+        self.steer_publisher.publish(Float32(data=self.steering_deg))
+        self.throttle_publisher.publish(Float32(data=0.0))
 
 
 def _run_terminal(screen: "curses.window", node: ManualCmdVel) -> None:
@@ -119,7 +131,7 @@ def _run_terminal(screen: "curses.window", node: ManualCmdVel) -> None:
 
     while rclpy.ok() and not node.quit_requested:
         screen.erase()
-        screen.addstr(0, 0, "Arrow-key manual driving (/cmd_vel)")
+        screen.addstr(0, 0, "Arrow-key manual driving (/auto_*)")
         screen.addstr(2, 0, "UP/DOWN : forward/reverse (hold)")
         screen.addstr(3, 0, "LEFT/RIGHT : steering +/-")
         screen.addstr(4, 0, "SPACE or S : stop")
@@ -128,7 +140,7 @@ def _run_terminal(screen: "curses.window", node: ManualCmdVel) -> None:
         screen.addstr(
             8,
             0,
-            f"speed={node.direction * node.speed:+.2f} m/s  "
+            f"throttle={node.direction * node.throttle:+.2f}  "
             f"steering={node.steering_deg:+.1f} deg",
         )
         screen.refresh()
@@ -139,7 +151,7 @@ def _run_terminal(screen: "curses.window", node: ManualCmdVel) -> None:
                 break
             node.handle_key(key)
 
-        rclpy.spin_once(node, timeout_sec=0.02)
+        rclpy.spin_once(node, timeout_sec=0.01)
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:

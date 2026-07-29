@@ -275,7 +275,7 @@ def main(args=None):
                         help='표시용 캔버스 너비')
     parser.add_argument('--canvas-height', type=int, default=800,
                         help='표시용 캔버스 높이')
-    parser.add_argument('--out-npz', type=str, default='bev_params_7.npz')
+    parser.add_argument('--out-npz', type=str, default='bev_params_0729.npz')
     parser.add_argument('--out-txt', type=str, default='selected_bev_src_points_7.txt')
 
     args = parser.parse_args()
