@@ -64,10 +64,29 @@ ros2 run detect_pkg obstacle_detector_publisher
 
 ## Arduino serial bridge
 
+권장 실차 실행은 설치된
+`share/control_pkg/config/serial_bridge.yaml`을 자동으로 읽는 launch
+방식이다. 소스 설정 파일은
+`src/control_pkg/config/serial_bridge.yaml`에 있다.
+
+```bash
+ros2 launch control_pkg serial_bridge.launch.py
+```
+
+포트 등 자주 바꾸는 값은 YAML보다 우선하는 launch argument로 지정한다.
+
+```bash
+ros2 launch control_pkg serial_bridge.launch.py \
+  serial_port:=/dev/ttyACM0 \
+  baudrate:=115200 \
+  command_timeout_sec:=0.4
+```
+
+YAML을 적용하지 않는 단독 디버깅에는 기존 직접 실행도 사용할 수 있다.
+
 ```bash
 ros2 run control_pkg serial_bridge \
-  --serial-port /dev/ttyACM0 \
-  --baudrate 115200
+  --serial-port /dev/ttyACM0 --baudrate 115200
 ```
 
 bridge는 최종 `/auto_steer_angle`, `/auto_throttle`을 구독한다. 두 명령이

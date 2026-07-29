@@ -65,6 +65,23 @@ future mission_manager -> /auto_steer_angle, /auto_throttle
                        -> serial_bridge -> Arduino
 ```
 
+`serial_bridge`의 권장 실차 실행은 YAML 설정을 자동 적용하는 launch 방식이다.
+
+```bash
+ros2 launch control_pkg serial_bridge.launch.py
+```
+
+설정 파일은 `src/control_pkg/config/serial_bridge.yaml`이며, 포트는 다음처럼
+덮어쓸 수 있다.
+
+```bash
+ros2 launch control_pkg serial_bridge.launch.py \
+  serial_port:=/dev/ttyACM0
+```
+
+`ros2 run control_pkg serial_bridge`는 YAML이 자동 적용되지 않는 단독
+디버깅 방식이다.
+
 파라미터는
 `src/drive_pkg/config/drive_pipeline.yaml` 한 곳에서 노드별로 관리합니다.
 통합 준비 구성은 `ros2 launch drive_pkg drive_pipeline.launch.py`를 사용하며
