@@ -2,7 +2,7 @@
 
 `drive_pkg`는 두 개의 필수 노드로 나뉜다: `drive_main`(인식 + 경로 생성,
 `/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 차선 후보 조향각과
-추천 throttle, 유효 여부를 `/control/candidate/lane/*`로 발행).
+유효 여부를 `/control/candidate/lane/*`로 발행).
 시각화는 별도 노드 없이 `pure_pursuit` 프로세스 안에 통합돼 있다
 (main5.py 스타일 로컬 cv2 창) — `drive_main`이 발행하는 디버그 토픽 4개와
 자기 자신의 제어 상태(토픽 왕복 없이 직접 전달)를 모아 한 창에 표시하며,
@@ -13,12 +13,12 @@
   -> drive_main (undistort -> BEV/YOLO 검출 -> 경로 생성)
   -> /lane/path
   -> pure_pursuit (Pure Pursuit 제어)
-  -> /control/candidate/lane/{steer_angle,throttle,valid}
+  -> /control/candidate/lane/{steer_angle,valid}
 ```
 
 전체 파라미터는 `config/drive_pipeline.yaml`에서 `drive_main:`/`pure_pursuit:`
 두 블록으로 나뉘어 있다. 검출·경로 생성 관련 파라미터는 `drive_main:`에,
-조향/속도 제어와 통합 시각화(옛 `path_visualizer:` 블록의 모든 키) 관련
+조향 제어와 통합 시각화(옛 `path_visualizer:` 블록의 모든 키) 관련
 파라미터는 `pure_pursuit:`에 있다.
 
 경로 생성 내부 알고리즘(`lane_processing.py`)은 자매 프로젝트
@@ -36,9 +36,8 @@ source install/setup.bash
 ros2 launch drive_pkg drive_pipeline.launch.py
 ```
 
-`drive_pipeline.launch.py`는 통합 준비 구성으로 `drive_main`,
-`pure_pursuit` 두 노드를 함께 띄운다. 최종 판단 노드는 아직 없으므로
-이 구성의 `/auto_steer_angle`, `/auto_throttle` publisher 수는 0이다.
+`drive_pipeline.launch.py`는 `drive_main`, `pure_pursuit` 두 노드를 함께
+띄운다. 최종 제어는 별도 `mission_manager` launch가 발행한다.
 `pure_pursuit`의 `local_display`(기본값 true)가 켜져 있으면 통합 시각화
 창도 이때 함께 뜬다.
 
@@ -90,10 +89,10 @@ ros2 run drive_pkg pure_pursuit --ros-args \
 - `drive_main.LaneDriveNode`: `preprocess_frame()`(undistort 직후, BEV/검출
   직전 호출), `postprocess_path()`(경로 생성 직후, `/lane/path` 발행 직전
   호출 — 정지선/장애물 회피처럼 경로 자체를 바꾸는 미션 로직의 자리).
-`pure_pursuit`에는 신호등·장애물·주차 판단을 넣지 않는다. 추후
+`pure_pursuit`에는 신호등·장애물·주차 판단을 넣지 않는다.
 mission_manager가 candidate와 detector 결과를 구독해 최종 조향과 throttle을
-결정한다. Float32 candidate에는 timestamp가 없으므로 판단 노드는 각 callback
-수신 시각을 저장하고 `valid`와 함께 freshness를 검사해야 한다.
+결정한다. 마지막 유효 candidate는 timeout 없이 유지하며, 한 번도 유효한
+candidate를 받지 못한 경우에만 정지한다.
 
 ## 주요 토픽
 
@@ -109,15 +108,14 @@ mission_manager가 candidate와 detector 결과를 구독해 최종 조향과 th
 | 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |
 | 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
 | 후보 | `/control/candidate/lane/steer_angle` | `std_msgs/Float32` | 차선 후보 조향각(deg) |
-| 후보 | `/control/candidate/lane/throttle` | `std_msgs/Float32` | 기존 속도 계산을 보존한 추천 throttle |
 | 후보 | `/control/candidate/lane/valid` | `std_msgs/Bool` | 현재 path 기반 후보 유효 여부 |
-| 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON (`pure_pursuit` 발행) |
+| 입력 | `/auto_throttle` | `std_msgs/Float32` | 최종 throttle 피드백(동적 LD 계산) |
+| 제어 | `/lane/control/status` | `std_msgs/String` | 후보 조향·LD JSON (`pure_pursuit` 발행) |
 | 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
-통합 구성에서는 실제 주행 명령을 발행하지 않는다. `pure_pursuit`가 빈
-경로를 받으면 `valid=false`, 추천 `throttle=0.0`을 발행한다. 별도의
-경로-끊김 워치독은 없으므로 추후 판단 노드가 callback freshness를
-검사해야 한다.
+`pure_pursuit`는 실제 주행 명령이나 throttle 후보를 발행하지 않는다.
+빈 경로를 받으면 `valid=false`를 발행하고 마지막 조향값은 상태 표시용으로
+유지한다.
 
 각 단계 확인 예:
 
@@ -125,7 +123,6 @@ mission_manager가 candidate와 detector 결과를 구독해 최종 조향과 th
 ros2 topic hz /lane/detection/mask/compressed
 ros2 topic echo /lane/path/status
 ros2 topic echo /control/candidate/lane/steer_angle
-ros2 topic echo /control/candidate/lane/throttle
 ros2 topic echo /control/candidate/lane/valid
 ```
 

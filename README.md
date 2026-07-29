@@ -58,11 +58,22 @@ lane_detect -> /lane/detection/mask/compressed
             -> path_plan -> /lane/path
                          -> pure_pursuit
                               -> /control/candidate/lane/steer_angle
-                              -> /control/candidate/lane/throttle
                               -> /control/candidate/lane/valid
 
-future mission_manager -> /auto_steer_angle, /auto_throttle
-                       -> serial_bridge -> Arduino
+mission_manager -> /auto_steer_angle, /auto_throttle
+                -> serial_bridge -> Arduino
+```
+
+`mission_manager`만 최종 조향과 throttle을 30Hz로 발행한다. 장애물 회피
+candidate publisher는 아직 구현되지 않았다. 따라서 장애물이 검출됐지만
+유효한 장애물 candidate를 한 번도 받지 못한 경우에는 정지한다.
+
+통합 실행은 세 터미널에서 다음 순서로 시작한다.
+
+```bash
+ros2 launch drive_pkg drive_pipeline.launch.py
+ros2 launch mission_manager_pkg mission_manager.launch.py
+ros2 launch control_pkg serial_bridge.launch.py
 ```
 
 `serial_bridge`의 권장 실차 실행은 YAML 설정을 자동 적용하는 launch 방식이다.
@@ -84,8 +95,8 @@ ros2 launch control_pkg serial_bridge.launch.py \
 
 파라미터는
 `src/drive_pkg/config/drive_pipeline.yaml` 한 곳에서 노드별로 관리합니다.
-통합 준비 구성은 `ros2 launch drive_pkg drive_pipeline.launch.py`를 사용하며
-이 구성에는 `/auto_*` publisher가 없다. 상세 토픽과 실행 예시는
+차선 후보 구성은 `ros2 launch drive_pkg drive_pipeline.launch.py`를
+사용한다. 상세 토픽과 실행 예시는
 `src/drive_pkg/howtorun.md`를 참고하세요.
 
 필요 패키지:

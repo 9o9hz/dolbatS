@@ -1,0 +1,34 @@
+mission_manager:
+  ros__parameters:
+    publish_rate_hz: 30.0
+    log_rate_hz: 1.0
+
+    lane_steer_topic: "/control/candidate/lane/steer_angle"
+    lane_valid_topic: "/control/candidate/lane/valid"
+
+    obstacle_steer_topic: "/control/candidate/obstacle/steer_angle"
+    obstacle_valid_topic: "/control/candidate/obstacle/valid"
+    obstacle_detected_topic: "/detect/obstacle/detected"
+
+    traffic_detected_topic: "/detect/traffic_light/detected"
+    traffic_color_topic: "/detect/traffic_light/color"
+    traffic_confidence_topic: "/detect/traffic_light/confidence"
+
+    final_steer_topic: "/auto_steer_angle"
+    final_throttle_topic: "/auto_throttle"
+    mission_state_topic: "/mission_state"
+    status_topic: "/mission_manager/status"
+
+    auto_steer_angle_abs_max: 23.0
+    auto_throttle_max: 1.0
+    throttle_curve_k: 0.0
+
+    lane_throttle_min: 0.4
+    lane_throttle_max: 0.8
+    obstacle_throttle_min: 0.4
+    obstacle_throttle_max: 0.8
+
+    yellow_deceleration_sec: 3.0
+    green_forward_duration_sec: 3.0
+    green_forward_throttle: 0.4
+    green_forward_steer_deg: 0.0

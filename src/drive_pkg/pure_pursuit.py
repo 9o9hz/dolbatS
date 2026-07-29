@@ -23,18 +23,14 @@ PARAMETER_DEFAULTS = {
     "path_topic": "/lane/path",
     "path_status_topic": "/lane/path/status",
     "steer_angle_topic": "/control/candidate/lane/steer_angle",
-    "throttle_topic": "/control/candidate/lane/throttle",
     "candidate_valid_topic": "/control/candidate/lane/valid",
-    "max_speed_mps": 1.0,       # 이 속도(m/s)에서 throttle=1.0(포화)
-    "auto_throttle_max": 1.0,   # 발행 직전 최종 안전 클램프 (|throttle| <= 이 값)
+    "throttle_feedback_topic": "/auto_throttle",
     "status_topic": "/lane/control/status",
-    "speed_mps": 0.18,
-    "hold_speed_scale": 0.75,
-    "turn_speed_min_scale": 0.25,
-    "turn_speed_reduction": 0.70,
     "wheelbase_m": 0.545,
-    "lookahead_min_m": 1.10,
-    "lookahead_max_m": 2.50,
+    "ld_throttle_min": 0.4,
+    "ld_throttle_max": 0.8,
+    "lookahead_min_m": 2.30,
+    "lookahead_max_m": 2.80,
     "lookahead_m": -1.0,
     "max_steer_deg": 18.0,
     "steering_ema_alpha": 0.35,
@@ -76,14 +72,13 @@ class SteeringCommand:
     path_valid: bool
     reason: str
     steering_deg: float
-    speed_mps: float
     lookahead_m: float
     target_distance_m: float
     target_index: int
 
 
 class PurePursuitController:
-    """Pure Pursuit steering/speed math, independent of ROS.
+    """Pure Pursuit steering math, independent of ROS.
 
     Extracted out of ``PurePursuitNode`` so the same steering logic can be
     called directly (no topic round trip) from an integrated node such as
@@ -93,11 +88,9 @@ class PurePursuitController:
 
     def __init__(
         self,
-        speed_mps: float,
-        hold_speed_scale: float,
-        turn_speed_min_scale: float,
-        turn_speed_reduction: float,
         wheelbase_m: float,
+        ld_throttle_min: float,
+        ld_throttle_max: float,
         lookahead_min_m: float,
         lookahead_max_m: float,
         fixed_lookahead_m: float,
@@ -106,17 +99,15 @@ class PurePursuitController:
         max_steering_change_deg: float,
         lookahead_search_mode: str = "simple",
     ) -> None:
-        self.speed_mps = max(0.0, float(speed_mps))
-        self.hold_speed_scale = float(
-            np.clip(float(hold_speed_scale), 0.0, 1.0)
-        )
-        self.turn_speed_min_scale = float(
-            np.clip(float(turn_speed_min_scale), 0.0, 1.0)
-        )
-        self.turn_speed_reduction = float(
-            np.clip(float(turn_speed_reduction), 0.0, 1.0)
-        )
         self.wheelbase_m = float(wheelbase_m)
+        self.ld_throttle_min = float(ld_throttle_min)
+        self.ld_throttle_max = float(ld_throttle_max)
+        if self.ld_throttle_max < self.ld_throttle_min:
+            self.ld_throttle_min, self.ld_throttle_max = (
+                self.ld_throttle_max,
+                self.ld_throttle_min,
+            )
+        self.current_throttle = self.ld_throttle_min
         self.lookahead_min_m = float(lookahead_min_m)
         self.lookahead_max_m = float(lookahead_max_m)
         if float(fixed_lookahead_m) > 0.0:
@@ -141,6 +132,10 @@ class PurePursuitController:
             raise ValueError(
                 "lookahead must satisfy 0 < min <= max"
             )
+        if self.ld_throttle_max <= self.ld_throttle_min:
+            raise ValueError(
+                "ld throttle range must satisfy min < max"
+            )
         if self.max_steer_deg <= 0.0:
             raise ValueError("max_steer_deg must be positive")
         if not 0.0 <= self.steering_ema_alpha <= 1.0:
@@ -159,6 +154,17 @@ class PurePursuitController:
     def set_path_fallback(self, fallback: bool) -> None:
         self.path_fallback = bool(fallback)
 
+    def set_current_throttle(self, throttle: float) -> None:
+        if not math.isfinite(throttle):
+            return
+        self.current_throttle = float(
+            np.clip(
+                throttle,
+                self.ld_throttle_min,
+                self.ld_throttle_max,
+            )
+        )
+
     def compute(self, points: np.ndarray) -> SteeringCommand:
         if (
             points is None
@@ -168,7 +174,7 @@ class PurePursuitController:
         ):
             return self.stop("empty_or_invalid_path")
 
-        lookahead_m = self._dynamic_lookahead(self.last_steering_deg)
+        lookahead_m = self._dynamic_lookahead()
         distances = np.linalg.norm(points, axis=1)
         target_index = self._find_lookahead_index(
             points, distances, lookahead_m
@@ -211,7 +217,7 @@ class PurePursuitController:
                 self.max_steer_deg,
             )
         )
-        lookahead_m = self._dynamic_lookahead(self.last_steering_deg)
+        lookahead_m = self._dynamic_lookahead()
         visual_target_index = self._find_lookahead_index(
             points, distances, lookahead_m
         )
@@ -219,15 +225,10 @@ class PurePursuitController:
             float(distances[visual_target_index]),
             1e-3,
         )
-        speed = self._target_speed(self.last_steering_deg)
-        if self.path_fallback:
-            speed *= self.hold_speed_scale
-
         return SteeringCommand(
             path_valid=True,
             reason="ok",
             steering_deg=self.last_steering_deg,
-            speed_mps=speed,
             lookahead_m=lookahead_m,
             target_distance_m=visual_target_distance,
             target_index=visual_target_index,
@@ -238,8 +239,7 @@ class PurePursuitController:
             path_valid=False,
             reason=reason,
             steering_deg=self.last_steering_deg,
-            speed_mps=0.0,
-            lookahead_m=self._dynamic_lookahead(self.last_steering_deg),
+            lookahead_m=self._dynamic_lookahead(),
             target_distance_m=0.0,
             target_index=-1,
         )
@@ -316,32 +316,37 @@ class PurePursuitController:
 
         return int(order[-1])
 
-    def _dynamic_lookahead(self, steering_deg: float) -> float:
-        ratio = float(
+    def _dynamic_lookahead(self) -> float:
+        if self.lookahead_min_m == self.lookahead_max_m:
+            return self.lookahead_min_m
+        throttle_ratio = float(
             np.clip(
-                abs(steering_deg) / self.max_steer_deg,
+                (
+                    self.current_throttle - self.ld_throttle_min
+                )
+                / (
+                    self.ld_throttle_max
+                    - self.ld_throttle_min
+                    + 1e-6
+                ),
                 0.0,
                 1.0,
             )
         )
-        return self.lookahead_max_m - (
+        lookahead = self.lookahead_min_m + (
             self.lookahead_max_m - self.lookahead_min_m
-        ) * ratio
-
-    def _target_speed(self, steering_deg: float) -> float:
-        turn_ratio = min(
-            1.0,
-            abs(steering_deg) / self.max_steer_deg,
+        ) * throttle_ratio
+        return float(
+            np.clip(
+                lookahead,
+                self.lookahead_min_m,
+                self.lookahead_max_m,
+            )
         )
-        scale = max(
-            self.turn_speed_min_scale,
-            1.0 - self.turn_speed_reduction * turn_ratio,
-        )
-        return self.speed_mps * scale
 
 
 class PurePursuitNode(Node):
-    """Publish lane steering and recommended-throttle candidates."""
+    """Publish lane steering candidates from a metric path."""
 
     def __init__(self) -> None:
         super().__init__("pure_pursuit")
@@ -350,15 +355,9 @@ class PurePursuitNode(Node):
         parameter = lambda name: self.get_parameter(name).value
 
         self.controller = PurePursuitController(
-            speed_mps=float(parameter("speed_mps")),
-            hold_speed_scale=float(parameter("hold_speed_scale")),
-            turn_speed_min_scale=float(
-                parameter("turn_speed_min_scale")
-            ),
-            turn_speed_reduction=float(
-                parameter("turn_speed_reduction")
-            ),
             wheelbase_m=float(parameter("wheelbase_m")),
+            ld_throttle_min=float(parameter("ld_throttle_min")),
+            ld_throttle_max=float(parameter("ld_throttle_max")),
             lookahead_min_m=float(parameter("lookahead_min_m")),
             lookahead_max_m=float(parameter("lookahead_max_m")),
             fixed_lookahead_m=float(parameter("lookahead_m")),
@@ -377,18 +376,13 @@ class PurePursuitNode(Node):
         path_topic = str(parameter("path_topic"))
         path_status_topic = str(parameter("path_status_topic"))
         steer_angle_topic = str(parameter("steer_angle_topic"))
-        throttle_topic = str(parameter("throttle_topic"))
-        candidate_valid_topic = str(parameter("candidate_valid_topic"))
-        self.max_speed_mps = max(1e-6, float(parameter("max_speed_mps")))
-        self.auto_throttle_max = min(
-            1.0, abs(float(parameter("auto_throttle_max")))
+        throttle_feedback_topic = str(
+            parameter("throttle_feedback_topic")
         )
+        candidate_valid_topic = str(parameter("candidate_valid_topic"))
         status_topic = str(parameter("status_topic"))
         self.steer_publisher = self.create_publisher(
             Float32, steer_angle_topic, 10
-        )
-        self.throttle_publisher = self.create_publisher(
-            Float32, throttle_topic, 10
         )
         self.candidate_valid_publisher = self.create_publisher(
             Bool, candidate_valid_topic, 10
@@ -408,6 +402,12 @@ class PurePursuitNode(Node):
             String,
             path_status_topic,
             self.on_path_status,
+            10,
+        )
+        self.throttle_feedback_subscription = self.create_subscription(
+            Float32,
+            throttle_feedback_topic,
+            self.on_throttle_feedback,
             10,
         )
 
@@ -469,8 +469,12 @@ class PurePursuitNode(Node):
 
         self.get_logger().info(
             f"{path_topic} -> lane candidates: {steer_angle_topic}, "
-            f"{throttle_topic}, {candidate_valid_topic}"
+            f"{candidate_valid_topic}; throttle feedback: "
+            f"{throttle_feedback_topic}"
         )
+
+    def on_throttle_feedback(self, message: Float32) -> None:
+        self.controller.set_current_throttle(float(message.data))
 
     def on_path_status(self, message: String) -> None:
         if self.visualizer is not None:
@@ -494,19 +498,7 @@ class PurePursuitNode(Node):
 
     def _publish_command(self, command: SteeringCommand) -> None:
         steering_deg = command.steering_deg  # path_valid=False여도 last_steering_deg 유지
-        if command.path_valid:
-            throttle = command.speed_mps / self.max_speed_mps
-            throttle = float(
-                np.clip(
-                    throttle,
-                    -self.auto_throttle_max,
-                    self.auto_throttle_max,
-                )
-            )
-        else:
-            throttle = 0.0
         self.steer_publisher.publish(Float32(data=float(steering_deg)))
-        self.throttle_publisher.publish(Float32(data=throttle))
         self.candidate_valid_publisher.publish(Bool(data=command.path_valid))
         status = {
             "path_valid": command.path_valid,
@@ -518,9 +510,10 @@ class PurePursuitNode(Node):
                 command.target_distance_m, 3
             ),
             "lookahead_target_index": int(command.target_index),
-            "desired_speed_mps": round(command.speed_mps, 3),
+            "current_final_throttle": round(
+                self.controller.current_throttle, 3
+            ),
             "candidate_steer_deg": round(steering_deg, 2),
-            "candidate_throttle": round(throttle, 3),
             "candidate_valid": command.path_valid,
         }
         self.status_publisher.publish(
@@ -532,7 +525,6 @@ class PurePursuitNode(Node):
     def destroy_node(self) -> bool:
         if rclpy.ok():
             self.steer_publisher.publish(Float32(data=0.0))
-            self.throttle_publisher.publish(Float32(data=0.0))
             self.candidate_valid_publisher.publish(Bool(data=False))
         if self.visualizer is not None:
             self.visualizer.destroy()

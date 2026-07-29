@@ -79,26 +79,20 @@ pure_pursuit:
     path_topic: "/lane/path"
     path_status_topic: "/lane/path/status"
     # 통합 구성: pure_pursuit는 최종 /auto_*가 아닌 lane 후보만 발행한다.
-    # Float32 후보에는 timestamp가 없으므로 추후 mission_manager가 callback
-    # 수신 시각과 아래 valid 토픽을 함께 저장해 freshness를 판단한다.
+    # mission_manager는 valid일 때 받은 마지막 조향 후보를 유지한다.
     steer_angle_topic: "/control/candidate/lane/steer_angle"
-    throttle_topic: "/control/candidate/lane/throttle"
     candidate_valid_topic: "/control/candidate/lane/valid"
-    max_speed_mps: 1.0
-    auto_throttle_max: 1.0
+    throttle_feedback_topic: "/auto_throttle"
     status_topic: "/lane/control/status"
-
-    speed_mps: 0.18
-    hold_speed_scale: 0.75
-    turn_speed_min_scale: 0.50
-    turn_speed_reduction: 0.70
 
     wheelbase_m: 0.545
     max_steer_deg: 18.0
     # -1.0이면 아래 min/max로 동적 look-ahead 사용.
     lookahead_m: -1.0
-    lookahead_min_m: 1.10
-    lookahead_max_m: 2.00
+    ld_throttle_min: 0.4
+    ld_throttle_max: 0.8
+    lookahead_min_m: 2.30
+    lookahead_max_m: 2.80
     # lookahead 목표점 탐색 방식: "simple"(전방점 중 |거리-LD| 최소, 기본값) /
     # "arc_length"(가장 가까운 점부터 누적 호길이로 LD 지점 탐색).
     lookahead_search_mode: "simple"

@@ -23,20 +23,39 @@ ros2 launch drive_pkg drive_pipeline.launch.py
 
 ```text
 /control/candidate/lane/steer_angle  std_msgs/Float32 (deg)
-/control/candidate/lane/throttle     std_msgs/Float32 (-1.0~1.0 추천값)
 /control/candidate/lane/valid        std_msgs/Bool
 ```
 
-추후 mission_manager가 후보와 인식 결과를 판단해 최종
-`/auto_steer_angle`, `/auto_throttle`을 발행한다. 현재 통합 구성에는
-mission_manager가 없으므로 `/auto_*` publisher가 없는 것이 정상이다.
+`mission_manager`가 후보와 인식 결과를 판단해 최종
+`/auto_steer_angle`, `/auto_throttle`을 발행한다.
 
 후보 확인:
 
 ```bash
 ros2 topic echo /control/candidate/lane/steer_angle
-ros2 topic echo /control/candidate/lane/throttle
 ros2 topic echo /control/candidate/lane/valid
+```
+
+## Mission manager
+
+```bash
+ros2 launch mission_manager_pkg mission_manager.launch.py
+```
+
+차선·장애물 후보와 detector 결과를 받아 `lane`, `traffic_light`,
+`obstacle` 중 하나를 선택한다. 마지막 유효 candidate는 timeout 없이
+유지한다. 노드 시작 후 유효한 차선 candidate를 한 번도 받지 않았다면
+최종 조향과 throttle을 0으로 발행한다.
+
+장애물 회피 candidate publisher는 아직 없다. 장애물이 검출된 상태에서
+유효한 장애물 candidate를 한 번도 받지 못했다면 lane 조향으로 대체하지
+않고 정지한다.
+
+```bash
+ros2 topic echo /mission_state
+ros2 topic echo /mission_manager/status
+ros2 topic echo /auto_steer_angle
+ros2 topic echo /auto_throttle
 ```
 
 ## 카메라와 detector
