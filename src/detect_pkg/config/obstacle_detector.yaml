@@ -1,9 +1,9 @@
 obstacle_detector_publisher:
   ros__parameters:
     confidence_threshold: 0.5
-    # 회피 제어기가 초음파 장애물을 확인한 동안에만 true를 발행한다.
+    # 새 회피 파이프라인은 YOLO 검출을 선행 조건으로 사용하므로 상시 추론한다.
     enable_topic: /detect/obstacle/enable
-    enabled_at_startup: false
+    enabled_at_startup: true
     compressed_image_topic: /camera/lane/image_raw/compressed
     detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
@@ -19,8 +19,8 @@ obstacle_detector_publisher:
 
 ultrasonic_obstacle_event:
   ros__parameters:
-    left_distance_topic: /ultrasonic/left_distance
-    right_distance_topic: /ultrasonic/right_distance
+    left_distance_topic: /ultrasonic/left_rear_distance
+    right_distance_topic: /ultrasonic/right_rear_distance
     event_topic: /detect/obstacle_event
     detect_threshold_cm: 40.0
     clear_threshold_cm: 45.0
@@ -29,9 +29,11 @@ ultrasonic_obstacle_event:
 
 yolo_obstacle_turn:
   ros__parameters:
-    left_distance_topic: /ultrasonic/left_distance
-    right_distance_topic: /ultrasonic/right_distance
-    yolo_enable_topic: /detect/obstacle/enable
+    yolo_detected_topic: /detect/obstacle/detected
+    left_front_distance_topic: /ultrasonic/left_front_distance
+    left_rear_distance_topic: /ultrasonic/left_rear_distance
+    right_front_distance_topic: /ultrasonic/right_front_distance
+    right_rear_distance_topic: /ultrasonic/right_rear_distance
     avoidance_active_topic: /detect/obstacle/avoidance_active
     candidate_steer_topic: /control/candidate/obstacle/steer_angle
     candidate_valid_topic: /control/candidate/obstacle/valid
@@ -39,6 +41,9 @@ yolo_obstacle_turn:
     detect_threshold_cm: 40.0
     clear_threshold_cm: 45.0
     consecutive_frames: 3
+    # 펌웨어의 -1.0(에코 없음)을 연속 프레임일 때 뒤 장애물 해제로 취급한다.
+    rear_no_echo_is_clear: true
+    yolo_timeout_sec: 0.5
     full_steer_angle_deg: 20.0
     trend_epsilon_cm: 0.5
     minimum_drop_cm: 2.0

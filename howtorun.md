@@ -47,11 +47,11 @@ ros2 launch mission_manager_pkg mission_manager.launch.py
 timeout 없이 유지한다. 노드 시작 후 유효한 차선 candidate를 한 번도
 받지 않았다면 최종 조향과 throttle을 0으로 발행한다.
 
-장애물 판단에는 YOLO의 프레임별 `/detect/obstacle/detected` 대신
-초음파 감지부터 회전 완료까지 유지되는
-`/detect/obstacle/avoidance_active`를 사용한다. 회피 중 obstacle
-candidate가 invalid가 되면 과거 풀조향값을 유지하지 않고 최종 조향과
-throttle을 모두 0으로 발행한다.
+장애물 회피 노드는 YOLO의 `/detect/obstacle/detected`와 좌우 뒤 초음파를
+함께 확인해 회피 시작 여부와 방향을 정한다. 회피가 시작되면
+`/detect/obstacle/avoidance_active`를 회전 완료까지 유지한다.
+회피 중 obstacle candidate가 invalid가 되면 과거 풀조향값을 유지하지 않고
+최종 조향과 throttle을 모두 0으로 발행한다.
 
 ```bash
 ros2 topic echo /mission_state
@@ -87,24 +87,33 @@ ros2 launch detect_pkg obstacle_detection.launch.py
 회피 candidate publisher를 함께 실행한다.
 
 ```text
-/detect/obstacle/enable                    YOLO 추론 활성화
+/detect/obstacle/detected                  YOLO 객체 검출 여부
 /detect/obstacle/avoidance_active          obstacle mission 활성화
 /control/candidate/obstacle/steer_angle    장애물 후보 조향각(deg)
 /control/candidate/obstacle/valid          현재 후보 유효 여부
 /detect/avoidance/status                   회피 상태 JSON
+/ultrasonic/left_front_distance            왼쪽 앞 거리(cm)
+/ultrasonic/left_rear_distance             왼쪽 뒤 거리(cm)
+/ultrasonic/right_front_distance           오른쪽 앞 거리(cm)
+/ultrasonic/right_rear_distance            오른쪽 뒤 거리(cm)
 ```
 
 상태 전이:
 
 ```text
 차선 주행
-  -> 좌/우 초음파 임계값 이하 연속 감지
-  -> avoidance_active=true, YOLO ON, 직진 조향 후보 0도
-  -> 감지됐던 쪽 초음파에서 장애물이 사라짐
+  -> YOLO 객체 검출 + 좌/우 뒤 초음파 임계값 이하 연속 감지
+  -> avoidance_active=true, 직진 조향 후보 0도
+  -> 감지됐던 쪽의 뒤 초음파에서 장애물이 사라짐
   -> 같은 방향 풀조향 후보
-  -> 해당 센서 거리가 감소한 뒤 증가
-  -> avoidance_active=false, YOLO OFF, lane candidate로 복귀
+  -> 반대 방향 앞 초음파 거리가 감소한 뒤 증가
+  -> avoidance_active=false, lane candidate로 복귀
 ```
+
+예를 들어 왼쪽 뒤 센서로 장애물을 잡았다면, 왼쪽 뒤 센서가 해제되는
+순간 왼쪽 풀조향을 발행하고 오른쪽 앞 센서의 거리 감소→증가를 기다린다.
+오른쪽 뒤에서 시작한 경우에는 반대로 오른쪽 풀조향과 왼쪽 앞 센서를
+사용한다.
 
 YOLO bbox 하단 중앙점과 차량 폭의 BEV 결과는 다음 토픽에서 확인한다.
 
@@ -116,6 +125,8 @@ ros2 topic echo /detect/avoidance/status
 시각화는 `rqt_image_view`에서 `/detect/obstacle/bev_view`를 선택한다.
 임계값, 풀조향각, 거리 증감 판정과 timeout은
 `src/detect_pkg/config/obstacle_detector.yaml`에서 조정한다.
+뒤 센서의 `-1.0`은 에코 없음이므로 `rear_no_echo_is_clear: true`일 때
+연속 프레임 조건을 만족하면 장애물 해제로 처리한다.
 
 ## Arduino serial bridge
 
@@ -158,8 +169,12 @@ Arduino는 유효한 `D,...` 명령이 500ms 동안 없으면 별도 watchdog으
 ```text
 /vehicle/current_steering_angle  실제 조향각(deg)
 /vehicle/drive_pwm               명령 PWM(-255~255), 실제 측정 속도 아님
-/ultrasonic/left_distance        cm
-/ultrasonic/right_distance       cm
+/ultrasonic/left_front_distance  왼쪽 앞 거리(cm)
+/ultrasonic/left_rear_distance   왼쪽 뒤 거리(cm)
+/ultrasonic/right_front_distance 오른쪽 앞 거리(cm)
+/ultrasonic/right_rear_distance  오른쪽 뒤 거리(cm)
+/ultrasonic/left_distance        왼쪽 앞·뒤 중 가까운 유효 거리(cm)
+/ultrasonic/right_distance       오른쪽 앞·뒤 중 가까운 유효 거리(cm)
 ```
 
 실차 구동 전에는 바퀴를 지면에서 띄우고 조향 부호, 전후진 방향,

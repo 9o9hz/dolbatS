@@ -33,15 +33,22 @@ S,15.3\n
 
 자세한 내용은 `steering_test.py` 파일 안에 `send_steer()`, `send_drive()` 함수를 참조하면 됩니다.
 
-Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 핀은 오른쪽 센서의 ECHO/TRIG로 사용합니다. 아두이노는 10ms마다 `signed_drive_pwm,현재조향각,왼쪽거리cm,오른쪽거리cm` 형식으로 최신 상태를 송출합니다. 첫 값은 실제 측정 속도가 아니라 현재 구동 명령 PWM이며 범위는 `-255~255`입니다(양수=전진, 음수=후진). 초음파 센서는 상호 간섭을 줄이기 위해 좌우를 번갈아 측정하며, 측정 실패 또는 범위 초과는 `-1.0`으로 표시합니다.
+Arduino Mega의 초음파 핀은 `ECHO/TRIG` 순서로 왼쪽 앞 22/23번,
+왼쪽 뒤 24/25번, 오른쪽 앞 26/27번, 오른쪽 뒤 28/29번입니다.
+아두이노는 10ms마다
+`signed_drive_pwm,현재조향각,왼쪽앞cm,왼쪽뒤cm,오른쪽앞cm,오른쪽뒤cm`
+형식으로 최신 상태를 송출합니다. 첫 값은 실제 측정 속도가 아니라 현재
+구동 명령 PWM이며 범위는 `-255~255`입니다(양수=전진, 음수=후진).
+초음파 센서는 상호 간섭을 줄이기 위해 네 개를 하나씩 순차 측정하며,
+측정 실패 또는 범위 초과는 `-1.0`으로 표시합니다.
 
 유효한 `D,...` 명령이 500ms 동안 들어오지 않으면 Arduino watchdog이
 구동 PWM을 0으로 만들고 정지한다. 새 유효 명령이 오면 정상 제어로
 복귀하며, timeout 때 조향 목표는 갑자기 중앙으로 바꾸지 않고 유지한다.
 
 ```
-128,5.2,35.2,41.8
--80,-10.1,-1.0,120.4
+128,5.2,35.2,40.1,41.8,38.7
+-80,-10.1,-1.0,120.4,80.2,-1.0
 ```
 
 ## ROS2 카메라 인식 토픽 발행
@@ -162,8 +169,12 @@ source install/setup.bash
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
 | `/detect/obstacle/bottom_center` | `std_msgs/Float32MultiArray` | 감지된 경우에만 바운딩 박스 하단 중심 `[x, y]` 발행 |
-| `/ultrasonic/left_distance` | `std_msgs/Float32` | 왼쪽 초음파 거리(cm), 측정 실패는 `-1.0` |
-| `/ultrasonic/right_distance` | `std_msgs/Float32` | 오른쪽 초음파 거리(cm), 측정 실패는 `-1.0` |
+| `/ultrasonic/left_distance` | `std_msgs/Float32` | 왼쪽 앞·뒤 중 가까운 유효 거리(cm), 모두 실패하면 `-1.0` |
+| `/ultrasonic/right_distance` | `std_msgs/Float32` | 오른쪽 앞·뒤 중 가까운 유효 거리(cm), 모두 실패하면 `-1.0` |
+| `/ultrasonic/left_front_distance` | `std_msgs/Float32` | 왼쪽 앞 초음파 거리(cm) |
+| `/ultrasonic/left_rear_distance` | `std_msgs/Float32` | 왼쪽 뒤 초음파 거리(cm) |
+| `/ultrasonic/right_front_distance` | `std_msgs/Float32` | 오른쪽 앞 초음파 거리(cm) |
+| `/ultrasonic/right_rear_distance` | `std_msgs/Float32` | 오른쪽 뒤 초음파 거리(cm) |
 | `/vehicle/drive_pwm` | `std_msgs/Float32` | Arduino의 구동 명령 PWM(`-255~255`), 실제 측정 속도 아님 |
 | `/detect/obstacle_event` | `std_msgs/Int8MultiArray` | 초음파 장애물 상태가 바뀔 때만 `[event, avoid_direction]` 발행 |
 

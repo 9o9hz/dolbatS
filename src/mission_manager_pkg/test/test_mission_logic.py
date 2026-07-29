@@ -79,7 +79,7 @@ class TrafficStateTest(unittest.TestCase):
         self.logic = MissionLogic()
         self.logic.lane.update_steer(0.0)
         self.logic.lane.update_valid(True)
-        self.assertAlmostEqual(self.logic.step(0.0).throttle, 0.8)
+        self.assertAlmostEqual(self.logic.step(0.0).throttle, 0.6)
 
     def set_traffic(self, detected, color):
         self.logic.traffic_detected = detected
@@ -108,10 +108,10 @@ class TrafficStateTest(unittest.TestCase):
         self.assertEqual(
             output.traffic_substate, TRAFFIC_YELLOW_DECELERATING
         )
-        self.assertAlmostEqual(output.throttle, 0.8)
+        self.assertAlmostEqual(output.throttle, 0.6)
 
         self.set_traffic(False, "none")
-        self.assertAlmostEqual(self.logic.step(2.5).throttle, 0.4)
+        self.assertAlmostEqual(self.logic.step(2.5).throttle, 0.3)
         output = self.logic.step(4.0)
         self.assertEqual(output.traffic_substate, TRAFFIC_YELLOW_HOLD)
         self.assertEqual(output.throttle, 0.0)
