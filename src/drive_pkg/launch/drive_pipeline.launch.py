@@ -1,5 +1,6 @@
-"""Launch drive_main (perception + path), pure_pursuit (control), and the
-debug visualizer."""
+"""Launch drive_main (perception + path) and pure_pursuit (control). The
+debug visualizer runs in-process inside pure_pursuit (see
+pure_pursuit.py's ``local_display`` parameter)."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -36,13 +37,6 @@ def generate_launch_description() -> LaunchDescription:
                 package="drive_pkg",
                 executable="pure_pursuit",
                 name="pure_pursuit",
-                output="screen",
-                parameters=[params_file],
-            ),
-            Node(
-                package="drive_pkg",
-                executable="path_visualizer",
-                name="path_visualizer",
                 output="screen",
                 parameters=[params_file],
             ),

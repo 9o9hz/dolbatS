@@ -2,8 +2,10 @@
 
 `drive_pkg`는 두 개의 필수 노드로 나뉜다: `drive_main`(인식 + 경로 생성,
 `/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 제어, `/cmd_vel` 발행).
-`path_visualizer`는 별도 노드로, `drive_main`이 발행하는 디버그 토픽과
-`pure_pursuit`가 발행하는 제어 상태를 구독해 한 창에 시각화한다.
+시각화는 별도 노드 없이 `pure_pursuit` 프로세스 안에 통합돼 있다
+(main5.py 스타일 로컬 cv2 창) — `drive_main`이 발행하는 디버그 토픽 4개와
+자기 자신의 제어 상태(토픽 왕복 없이 직접 전달)를 모아 한 창에 표시하며,
+`local_display` 파라미터로 켜고 끈다.
 
 ```text
 /image_raw/compressed
@@ -14,9 +16,9 @@
 ```
 
 전체 파라미터는 `config/drive_pipeline.yaml`에서 `drive_main:`/`pure_pursuit:`
-두 블록으로 나뉘어 있다(`path_visualizer:` 블록은 그대로다). 검출·경로 생성
-관련 파라미터는 `drive_main:`에, 조향/속도 제어 관련 파라미터는
-`pure_pursuit:`에 있다.
+두 블록으로 나뉘어 있다. 검출·경로 생성 관련 파라미터는 `drive_main:`에,
+조향/속도 제어와 통합 시각화(옛 `path_visualizer:` 블록의 모든 키) 관련
+파라미터는 `pure_pursuit:`에 있다.
 
 경로 생성 내부 알고리즘(`lane_processing.py`)은 자매 프로젝트
 `yolotl_ros2`의 `main5.py`(검출 bbox 단위 최대 성분 추출, 프레임 간 좌/우
@@ -33,8 +35,9 @@ source install/setup.bash
 ros2 launch drive_pkg drive_pipeline.launch.py
 ```
 
-`drive_pipeline.launch.py`는 `drive_main`, `pure_pursuit`, `path_visualizer`
-세 노드를 함께 띄운다.
+`drive_pipeline.launch.py`는 `drive_main`, `pure_pursuit` 두 노드를 함께
+띄운다. `pure_pursuit`의 `local_display`(기본값 true)가 켜져 있으면 통합
+시각화 창도 이때 함께 뜬다.
 
 소스 트리의 YAML을 바로 지정하려면:
 
@@ -62,6 +65,11 @@ ros2 run drive_pkg drive_main --weights /path/to/best.pt \
 ros2 run drive_pkg pure_pursuit --ros-args \
   --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
+
+`pure_pursuit`는 `local_display: true`(기본값)일 때 segmentation | BEV
+제어 | 검출선+경로 세 패널을 합친 cv2 창을 띄운다. 창에서 `q` 또는 ESC를
+누르면 노드가 종료된다. 디스플레이가 없는 환경(헤드리스)에서는
+`local_display: false`로 꺼야 한다.
 
 ## 카메라 undistort (옵션)
 

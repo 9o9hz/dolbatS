@@ -14,7 +14,10 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
+
+from visualizer import LOW_LATENCY_QOS, DrivingVisualizer
 
 
 PARAMETER_DEFAULTS = {
@@ -38,6 +41,28 @@ PARAMETER_DEFAULTS = {
     # the nearest point until Ld is reached (main5's alternate, disabled by
     # default there too).
     "lookahead_search_mode": "simple",
+    # main5.py-style local cv2 window (segmentation + BEV control + lines/
+    # path), merged in-process from what used to be the separate
+    # path_visualizer node. Set to false for headless runs.
+    "local_display": True,
+    "segmentation_topic": "/lane/detection/segmentation/compressed",
+    "bev_topic": "/lane/detection/bev/compressed",
+    "debug_topic": "/lane/path/debug/compressed",
+    "instances_topic": "/lane/detection/instances",
+    "window_name": (
+        "drive visualizer: segmentation | BEV control | lines + path"
+    ),
+    "window_x": 20,
+    "window_y": 60,
+    "display_scale": 0.90,
+    "box_ema_alpha": 0.15,
+    "type_switch_frames": 5,
+    "track_max_missed_frames": 12,
+    "track_match_distance_px": 140.0,
+    "confidence_full_hits": 5,
+    "yolo_confidence_aggregation": "mean",
+    "lookahead_target_hold_sec": 0.45,
+    "reference_path_hold_sec": 0.45,
 }
 
 
@@ -383,6 +408,63 @@ class PurePursuitNode(Node):
             self.on_path_status,
             10,
         )
+
+        self.visualizer: Optional[DrivingVisualizer] = None
+        if bool(parameter("local_display")):
+            self.visualizer = DrivingVisualizer(
+                window_name=str(parameter("window_name")),
+                window_x=int(parameter("window_x")),
+                window_y=int(parameter("window_y")),
+                display_scale=float(parameter("display_scale")),
+                box_ema_alpha=float(parameter("box_ema_alpha")),
+                type_switch_frames=int(
+                    parameter("type_switch_frames")
+                ),
+                track_max_missed_frames=int(
+                    parameter("track_max_missed_frames")
+                ),
+                track_match_distance_px=float(
+                    parameter("track_match_distance_px")
+                ),
+                confidence_full_hits=int(
+                    parameter("confidence_full_hits")
+                ),
+                yolo_confidence_aggregation=str(
+                    parameter("yolo_confidence_aggregation")
+                ),
+                lookahead_target_hold_sec=float(
+                    parameter("lookahead_target_hold_sec")
+                ),
+                reference_path_hold_sec=float(
+                    parameter("reference_path_hold_sec")
+                ),
+                logger=self.get_logger(),
+            )
+            self.segmentation_subscription = self.create_subscription(
+                CompressedImage,
+                str(parameter("segmentation_topic")),
+                self.visualizer.on_segmentation_image,
+                LOW_LATENCY_QOS,
+            )
+            self.bev_subscription = self.create_subscription(
+                CompressedImage,
+                str(parameter("bev_topic")),
+                self.visualizer.on_bev_image,
+                LOW_LATENCY_QOS,
+            )
+            self.debug_subscription = self.create_subscription(
+                CompressedImage,
+                str(parameter("debug_topic")),
+                self.visualizer.on_debug_image,
+                LOW_LATENCY_QOS,
+            )
+            self.instances_subscription = self.create_subscription(
+                String,
+                str(parameter("instances_topic")),
+                self.visualizer.on_yolo_instances,
+                10,
+            )
+
         self.get_logger().info(f"{path_topic} -> {cmd_vel_topic}")
 
     # ------------------------------------------------------------------
@@ -398,6 +480,8 @@ class PurePursuitNode(Node):
         return command
 
     def on_path_status(self, message: String) -> None:
+        if self.visualizer is not None:
+            self.visualizer.on_path_status(message)
         try:
             status = json.loads(message.data)
         except (json.JSONDecodeError, TypeError):
@@ -423,46 +507,31 @@ class PurePursuitNode(Node):
             else Twist()
         )
         self.cmd_publisher.publish(twist)
+        status = {
+            "path_valid": command.path_valid,
+            "reason": command.reason,
+            "fallback": self.controller.path_fallback,
+            "steering_deg": round(command.steering_deg, 2),
+            "lookahead_m": round(command.lookahead_m, 3),
+            "lookahead_target_m": round(
+                command.target_distance_m, 3
+            ),
+            "lookahead_target_index": int(command.target_index),
+            "desired_speed_mps": round(command.speed_mps, 3),
+            "published_linear_x": round(twist.linear.x, 3),
+            "published_angular_z": round(twist.angular.z, 3),
+        }
         self.status_publisher.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "path_valid": command.path_valid,
-                        "reason": command.reason,
-                        "fallback": self.controller.path_fallback,
-                        "steering_deg": round(
-                            command.steering_deg,
-                            2,
-                        ),
-                        "lookahead_m": round(command.lookahead_m, 3),
-                        "lookahead_target_m": round(
-                            command.target_distance_m,
-                            3,
-                        ),
-                        "lookahead_target_index": int(
-                            command.target_index
-                        ),
-                        "desired_speed_mps": round(
-                            command.speed_mps,
-                            3,
-                        ),
-                        "published_linear_x": round(
-                            twist.linear.x,
-                            3,
-                        ),
-                        "published_angular_z": round(
-                            twist.angular.z,
-                            3,
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            String(data=json.dumps(status, ensure_ascii=False))
         )
+        if self.visualizer is not None:
+            self.visualizer.on_control_status(status)
 
     def destroy_node(self) -> bool:
         if rclpy.ok():
             self.cmd_publisher.publish(Twist())
+        if self.visualizer is not None:
+            self.visualizer.destroy()
         return super().destroy_node()
 
 

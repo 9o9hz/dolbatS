@@ -67,8 +67,9 @@ drive_main:
     path_frame_id: "base_link"
 
     debug_jpeg_quality: 80
-    # 별도 path_visualizer가 segmentation과 경로를 한 창에 표시.
-    # local_display를 켜면 drive_main 자체 프로세스에서도 cv2.imshow로 확인 가능.
+    # drive_main 자체 프로세스에서 segmentation/경로 미리보기만 보고 싶을 때
+    # 켜는 간단한 디버그 창(제어 오버레이 없음). 통합 시각화는
+    # pure_pursuit의 local_display를 쓴다.
     local_display: false
     display_scale: 1.0
 
@@ -98,14 +99,13 @@ pure_pursuit:
     steering_ema_alpha: 0.35
     max_steering_change_deg: 3.0
 
-
-path_visualizer:
-  ros__parameters:
+    # main5.py 스타일 통합 cv2 창(segmentation | BEV 제어 | 검출선+경로).
+    # path_visualizer 별도 노드를 없애고 이 프로세스에 흡수한 것 — 헤드리스
+    # 환경에서는 false로 끈다.
+    local_display: true
     segmentation_topic: "/lane/detection/segmentation/compressed"
     bev_topic: "/lane/detection/bev/compressed"
     debug_topic: "/lane/path/debug/compressed"
-    status_topic: "/lane/path/status"
-    control_status_topic: "/lane/control/status"
     instances_topic: "/lane/detection/instances"
     window_name: "drive visualizer: segmentation | BEV control | lines + path"
     window_x: 20
