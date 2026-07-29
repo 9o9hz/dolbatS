@@ -10,14 +10,12 @@ setup(
     version="0.1.0",
     py_modules=[
         "drive_main",
-        "drive_pipeline",
         "lane_detect",
         "lane_processing",
         "path_plan",
         "path_visualizer",
         "pure_pursuit",
         "test_yolo_usb_cam",
-        "yolo_lane_driver",
     ],
     data_files=[
         (
@@ -51,8 +49,6 @@ setup(
             "path_plan = path_plan:main",
             "path_visualizer = path_visualizer:main",
             "pure_pursuit = pure_pursuit:main",
-            "drive_pipeline = drive_main:main",
-            "yolo_lane_driver = drive_main:main",
             "yolo_topic_test = test_yolo_usb_cam:main",
         ],
     },

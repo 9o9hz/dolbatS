@@ -201,10 +201,9 @@ class CameraCalibration:
 
 
 def load_calibration(path: Path) -> CameraCalibration:
-    """Load a ``camera_calibration.npz`` file (same schema as the one used
-    by ``validate_lane_video.py``: ``camera_matrix``,
+    """Load a ``camera_calibration.npz`` file with keys ``camera_matrix``,
     ``distortion_coefficients``, ``new_camera_matrix``, ``image_width``,
-    ``image_height``)."""
+    ``image_height``."""
     if not path.is_file():
         raise FileNotFoundError(f"Calibration file not found: {path}")
 

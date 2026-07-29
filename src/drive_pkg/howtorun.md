@@ -52,14 +52,6 @@ ros2 run drive_pkg drive_main --weights /path/to/best.pt \
   --ros-args --params-file config/drive_pipeline.yaml
 ```
 
-기존 명령과의 호환을 위해 `drive_pipeline`/`yolo_lane_driver` 실행 커맨드도
-여전히 남아 있으며, 내부적으로 `drive_main`과 동일하게 동작한다.
-
-```bash
-ros2 run drive_pkg yolo_lane_driver --ros-args \
-  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
-```
-
 ## 노드별 실행 (구조 디버깅용)
 
 `lane_detect`/`path_plan`/`pure_pursuit`는 검출·경로 생성·제어 로직을
