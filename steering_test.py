@@ -2,8 +2,8 @@ import serial
 import time
 
 
-# 시리얼 포트 설정 (사용자 환경에 맞게 변경)
-ser = serial.Serial("/dev/ttyUSB0", 9600)
+# dol-soi.ino의 Serial.begin() 및 현재 Arduino Mega 연결 장치와 일치시킨다.
+ser = serial.Serial("/dev/ttyACM0", 115200)
 time.sleep(3)
 
 def send_drive(direction, speed):
@@ -42,4 +42,3 @@ while True:
 
 # 시리얼 포트 닫기
 ser.close()
-

@@ -10,10 +10,28 @@ const int REAR_R_IN1 = 6;
 const int REAR_R_IN2 = 7;
 
 // ---------------- Ultrasonic Sensors ----------------
-const int LEFT_ULTRASONIC_ECHO = 22;
-const int LEFT_ULTRASONIC_TRIG = 23;
-const int RIGHT_ULTRASONIC_ECHO = 24;
-const int RIGHT_ULTRASONIC_TRIG = 25;
+const int LEFT_FRONT_ULTRASONIC_ECHO = 22;
+const int LEFT_FRONT_ULTRASONIC_TRIG = 23;
+const int LEFT_REAR_ULTRASONIC_ECHO = 24;
+const int LEFT_REAR_ULTRASONIC_TRIG = 25;
+const int RIGHT_FRONT_ULTRASONIC_ECHO = 26;
+const int RIGHT_FRONT_ULTRASONIC_TRIG = 27;
+const int RIGHT_REAR_ULTRASONIC_ECHO = 28;
+const int RIGHT_REAR_ULTRASONIC_TRIG = 29;
+
+const int ULTRASONIC_SENSOR_COUNT = 4;
+const int ULTRASONIC_ECHO_PINS[ULTRASONIC_SENSOR_COUNT] = {
+  LEFT_FRONT_ULTRASONIC_ECHO,
+  LEFT_REAR_ULTRASONIC_ECHO,
+  RIGHT_FRONT_ULTRASONIC_ECHO,
+  RIGHT_REAR_ULTRASONIC_ECHO
+};
+const int ULTRASONIC_TRIG_PINS[ULTRASONIC_SENSOR_COUNT] = {
+  LEFT_FRONT_ULTRASONIC_TRIG,
+  LEFT_REAR_ULTRASONIC_TRIG,
+  RIGHT_FRONT_ULTRASONIC_TRIG,
+  RIGHT_REAR_ULTRASONIC_TRIG
+};
 
 const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
 const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 30;
@@ -28,17 +46,17 @@ UltrasonicState ultrasonicState = ULTRASONIC_IDLE;
 unsigned long ultrasonicTriggerStartUs = 0;
 unsigned long ultrasonicEchoStartUs = 0;
 unsigned long lastUltrasonicTriggerMs = 0;
-int activeUltrasonicEchoPin = LEFT_ULTRASONIC_ECHO;
-bool activeUltrasonicIsLeft = true;
-bool nextUltrasonicIsLeft = true;
-float leftDistanceCm = -1.0f;
-float rightDistanceCm = -1.0f;
+int activeUltrasonicSensor = 0;
+int nextUltrasonicSensor = 0;
+float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
+  -1.0f, -1.0f, -1.0f, -1.0f
+};
 
 // ---------------- Steering Sensor ----------------
 const int STEER_SENSOR_PIN = A0;
 
 // A0 값이 618일 때 조향각 0도
-const int STEER_CENTER_RAW = 595;
+const int STEER_CENTER_RAW = 510;
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
@@ -51,8 +69,8 @@ const int STEER_SIGN = 1;
 
 // 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
 // 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
-const int STEER_RAW_MIN = 500;
-const int STEER_RAW_MAX = 690;
+const int STEER_RAW_MIN = 436;
+const int STEER_RAW_MAX = 584;
 const int STEER_RAW_TOLERANCE = 2;
 
 // 조향 모터 PWM
@@ -89,12 +107,11 @@ void setup() {
   pinMode(REAR_R_IN1, OUTPUT);
   pinMode(REAR_R_IN2, OUTPUT);
 
-  pinMode(LEFT_ULTRASONIC_TRIG, OUTPUT);
-  pinMode(LEFT_ULTRASONIC_ECHO, INPUT);
-  pinMode(RIGHT_ULTRASONIC_TRIG, OUTPUT);
-  pinMode(RIGHT_ULTRASONIC_ECHO, INPUT);
-  digitalWrite(LEFT_ULTRASONIC_TRIG, LOW);
-  digitalWrite(RIGHT_ULTRASONIC_TRIG, LOW);
+  for (int sensor = 0; sensor < ULTRASONIC_SENSOR_COUNT; sensor++) {
+    pinMode(ULTRASONIC_TRIG_PINS[sensor], OUTPUT);
+    pinMode(ULTRASONIC_ECHO_PINS[sensor], INPUT);
+    digitalWrite(ULTRASONIC_TRIG_PINS[sensor], LOW);
+  }
 
   pinMode(STEER_SENSOR_PIN, INPUT);
 
@@ -126,37 +143,35 @@ void loop() {
 
 // ---------------- 비차단 초음파 거리 측정 ----------------
 
-void startUltrasonicMeasurement(int trigPin, int echoPin, bool isLeft) {
+void startUltrasonicMeasurement(int sensor) {
+  int trigPin = ULTRASONIC_TRIG_PINS[sensor];
+
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  activeUltrasonicEchoPin = echoPin;
-  activeUltrasonicIsLeft = isLeft;
+  activeUltrasonicSensor = sensor;
   ultrasonicTriggerStartUs = micros();
   ultrasonicState = ULTRASONIC_WAIT_RISE;
 }
 
 void finishUltrasonicMeasurement(float distanceCm) {
-  if (activeUltrasonicIsLeft) {
-    leftDistanceCm = distanceCm;
-  }
-  else {
-    rightDistanceCm = distanceCm;
-  }
+  ultrasonicDistanceCm[activeUltrasonicSensor] = distanceCm;
 
   ultrasonicState = ULTRASONIC_IDLE;
   lastUltrasonicTriggerMs = millis();
-  nextUltrasonicIsLeft = !activeUltrasonicIsLeft;
+  nextUltrasonicSensor =
+    (activeUltrasonicSensor + 1) % ULTRASONIC_SENSOR_COUNT;
 }
 
 void updateUltrasonicSensors() {
   unsigned long nowUs = micros();
+  int activeEchoPin = ULTRASONIC_ECHO_PINS[activeUltrasonicSensor];
 
   if (ultrasonicState == ULTRASONIC_WAIT_RISE) {
-    if (digitalRead(activeUltrasonicEchoPin) == HIGH) {
+    if (digitalRead(activeEchoPin) == HIGH) {
       ultrasonicEchoStartUs = nowUs;
       ultrasonicState = ULTRASONIC_WAIT_FALL;
     }
@@ -167,7 +182,7 @@ void updateUltrasonicSensors() {
   }
 
   if (ultrasonicState == ULTRASONIC_WAIT_FALL) {
-    if (digitalRead(activeUltrasonicEchoPin) == LOW) {
+    if (digitalRead(activeEchoPin) == LOW) {
       unsigned long durationUs = nowUs - ultrasonicEchoStartUs;
       float distanceCm = durationUs * 0.0343f / 2.0f;
       finishUltrasonicMeasurement(distanceCm <= 400.0f ? distanceCm : -1.0f);
@@ -182,20 +197,8 @@ void updateUltrasonicSensors() {
     return;
   }
 
-  if (nextUltrasonicIsLeft) {
-    startUltrasonicMeasurement(
-      LEFT_ULTRASONIC_TRIG,
-      LEFT_ULTRASONIC_ECHO,
-      true
-    );
-  }
-  else {
-    startUltrasonicMeasurement(
-      RIGHT_ULTRASONIC_TRIG,
-      RIGHT_ULTRASONIC_ECHO,
-      false
-    );
-  }
+  // 한 번에 하나만 발사해 네 센서 사이의 초음파 간섭을 줄인다.
+  startUltrasonicMeasurement(nextUltrasonicSensor);
 }
 
 // ---------------- 상태 송출 ----------------
@@ -214,15 +217,20 @@ void publishTelemetry() {
     signedSpeed = -driveSpeed;
   }
 
-  // 형식: signed_drive_pwm,current_steer,left_cm,right_cm
+  // 형식: signed_drive_pwm,current_steer,left_front_cm,left_rear_cm,
+  //       right_front_cm,right_rear_cm
   // 첫 필드는 측정 속도가 아니라 명령된 PWM(-255~255)이다.
   Serial.print(signedSpeed);
   Serial.print(",");
   Serial.print(currentSteerDeg, 1);
   Serial.print(",");
-  Serial.print(leftDistanceCm, 1);
+  Serial.print(ultrasonicDistanceCm[0], 1);
   Serial.print(",");
-  Serial.println(rightDistanceCm, 1);
+  Serial.print(ultrasonicDistanceCm[1], 1);
+  Serial.print(",");
+  Serial.print(ultrasonicDistanceCm[2], 1);
+  Serial.print(",");
+  Serial.println(ultrasonicDistanceCm[3], 1);
 
   lastTelemetryMs = now;
 }

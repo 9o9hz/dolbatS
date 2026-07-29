@@ -25,7 +25,7 @@ class SerialBridge(Node):
 
         self.declare_parameter("steer_command_topic", "/auto_steer_angle")
         self.declare_parameter("throttle_command_topic", "/auto_throttle")
-        self.declare_parameter("serial_port", serial_port or "/dev/ttyUSB0")
+        self.declare_parameter("serial_port", serial_port or "/dev/ttyACM0")
         self.declare_parameter("baud_rate", 115200 if baudrate is None else baudrate)
         self.declare_parameter("serial_startup_delay", 2.0)
         self.declare_parameter("reconnect_interval_sec", 1.0)
@@ -47,6 +47,18 @@ class SerialBridge(Node):
         )
         self.declare_parameter(
             "right_distance_topic", "/ultrasonic/right_distance"
+        )
+        self.declare_parameter(
+            "left_front_distance_topic", "/ultrasonic/left_front_distance"
+        )
+        self.declare_parameter(
+            "left_rear_distance_topic", "/ultrasonic/left_rear_distance"
+        )
+        self.declare_parameter(
+            "right_front_distance_topic", "/ultrasonic/right_front_distance"
+        )
+        self.declare_parameter(
+            "right_rear_distance_topic", "/ultrasonic/right_rear_distance"
         )
 
         steer_command_topic = str(
@@ -94,6 +106,18 @@ class SerialBridge(Node):
         right_distance_topic = str(
             self.get_parameter("right_distance_topic").value
         )
+        left_front_distance_topic = str(
+            self.get_parameter("left_front_distance_topic").value
+        )
+        left_rear_distance_topic = str(
+            self.get_parameter("left_rear_distance_topic").value
+        )
+        right_front_distance_topic = str(
+            self.get_parameter("right_front_distance_topic").value
+        )
+        right_rear_distance_topic = str(
+            self.get_parameter("right_rear_distance_topic").value
+        )
 
         self.serial = None
         self.serial_lock = threading.RLock()
@@ -130,6 +154,18 @@ class SerialBridge(Node):
         self.right_distance_pub = self.create_publisher(
             Float32, right_distance_topic, 10
         )
+        self.left_front_distance_pub = self.create_publisher(
+            Float32, left_front_distance_topic, 10
+        )
+        self.left_rear_distance_pub = self.create_publisher(
+            Float32, left_rear_distance_topic, 10
+        )
+        self.right_front_distance_pub = self.create_publisher(
+            Float32, right_front_distance_topic, 10
+        )
+        self.right_rear_distance_pub = self.create_publisher(
+            Float32, right_rear_distance_topic, 10
+        )
 
         self.reconnect_timer = self.create_timer(
             reconnect_interval, self.try_connect
@@ -151,7 +187,9 @@ class SerialBridge(Node):
             "Publishing Arduino telemetry: "
             f"{steering_angle_topic}, {drive_pwm_topic} (commanded -255..255, "
             "not measured speed), "
-            f"{left_distance_topic}, {right_distance_topic}"
+            f"{left_front_distance_topic}, {left_rear_distance_topic}, "
+            f"{right_front_distance_topic}, {right_rear_distance_topic}; "
+            f"side minima: {left_distance_topic}, {right_distance_topic}"
         )
 
         # A missing device must not abort node construction.
@@ -322,12 +360,10 @@ class SerialBridge(Node):
     def publish_telemetry_line(self, raw_line: bytes) -> None:
         try:
             fields = raw_line.decode("ascii").strip().split(",")
-            if len(fields) != 4:
-                raise ValueError("expected four comma-separated fields")
-            drive_pwm, steering_angle, left_distance, right_distance = [
-                float(field) for field in fields
-            ]
-            values = (drive_pwm, steering_angle, left_distance, right_distance)
+            if len(fields) not in (4, 6):
+                raise ValueError("expected four or six comma-separated fields")
+            values = tuple(float(field) for field in fields)
+            drive_pwm, steering_angle = values[:2]
             if not all(math.isfinite(value) for value in values):
                 raise ValueError("telemetry contains a non-finite value")
             if not -255.0 <= drive_pwm <= 255.0:
@@ -341,8 +377,36 @@ class SerialBridge(Node):
 
         self.steering_angle_pub.publish(Float32(data=steering_angle))
         self.drive_pwm_pub.publish(Float32(data=drive_pwm))
+        if len(values) == 4:
+            # 이전 2센서 펌웨어의 직렬 형식도 계속 받을 수 있게 한다.
+            left_distance, right_distance = values[2:]
+            self.left_distance_pub.publish(Float32(data=left_distance))
+            self.right_distance_pub.publish(Float32(data=right_distance))
+            return
+
+        (
+            left_front_distance,
+            left_rear_distance,
+            right_front_distance,
+            right_rear_distance,
+        ) = values[2:]
+        left_distance = self.nearest_valid_distance(
+            left_front_distance, left_rear_distance
+        )
+        right_distance = self.nearest_valid_distance(
+            right_front_distance, right_rear_distance
+        )
+        self.left_front_distance_pub.publish(Float32(data=left_front_distance))
+        self.left_rear_distance_pub.publish(Float32(data=left_rear_distance))
+        self.right_front_distance_pub.publish(Float32(data=right_front_distance))
+        self.right_rear_distance_pub.publish(Float32(data=right_rear_distance))
         self.left_distance_pub.publish(Float32(data=left_distance))
         self.right_distance_pub.publish(Float32(data=right_distance))
+
+    @staticmethod
+    def nearest_valid_distance(first: float, second: float) -> float:
+        valid = [distance for distance in (first, second) if distance >= 0.0]
+        return min(valid) if valid else -1.0
 
     def _write_command(self, command: str, force: bool, kind: str) -> bool:
         with self.serial_lock:

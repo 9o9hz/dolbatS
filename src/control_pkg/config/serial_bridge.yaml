@@ -3,7 +3,7 @@ serial_bridge:
     steer_command_topic: "/auto_steer_angle"
     throttle_command_topic: "/auto_throttle"
 
-    serial_port: "/dev/ttyUSB0"
+    serial_port: "/dev/ttyACM0"
     baud_rate: 115200
     serial_startup_delay: 2.0
     reconnect_interval_sec: 1.0
@@ -24,3 +24,7 @@ serial_bridge:
     drive_pwm_topic: "/vehicle/drive_pwm"
     left_distance_topic: "/ultrasonic/left_distance"
     right_distance_topic: "/ultrasonic/right_distance"
+    left_front_distance_topic: "/ultrasonic/left_front_distance"
+    left_rear_distance_topic: "/ultrasonic/left_rear_distance"
+    right_front_distance_topic: "/ultrasonic/right_front_distance"
+    right_rear_distance_topic: "/ultrasonic/right_rear_distance"
