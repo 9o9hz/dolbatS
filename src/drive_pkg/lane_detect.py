@@ -1,52 +1,23 @@
 #!/usr/bin/env python3
-"""ROS 2 node: camera image -> BEV lane-mask topics."""
+"""BEV warp + YOLO lane segmentation core, used directly by drive_main.py.
+
+Extracted from what used to be a standalone ``lane_detect`` ROS node so the
+same detection code can be called in-process (no topic round trip); the
+standalone node wrapper was removed once ``drive_main.py`` took over that
+role -- see howtorun.md.
+"""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 import time
-from typing import Any, Optional, Sequence
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
-import rclpy
-from rclpy.executors import ExternalShutdownException
-from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
 
-from lane_processing import (
-    DEFAULT_BEV_PARAMS,
-    DEFAULT_MODEL,
-    decode_compressed_image,
-    load_bev_parameters,
-)
-
-
-PARAMETER_DEFAULTS = {
-    "model_path": str(DEFAULT_MODEL),
-    "bev_params": str(DEFAULT_BEV_PARAMS),
-    "image_topic": "/image_raw/compressed",
-    "bev_topic": "/lane/detection/bev/compressed",
-    "mask_topic": "/lane/detection/mask/compressed",
-    "segmentation_topic": "/lane/detection/segmentation/compressed",
-    "status_topic": "/lane/detection/status",
-    "instances_topic": "/lane/detection/instances",
-    "confidence": 0.25,
-    "image_size": 640,
-    "device": "auto",
-    "calibration_width": 640,
-    "calibration_height": 480,
-    "process_every_nth_frame": 1,
-    "debug_jpeg_quality": 80,
-    "display": False,
-    "display_scale": 1.0,
-    "display_window_x": 20,
-    "display_window_y": 60,
-}
+from lane_processing import load_bev_parameters
 
 
 def resolve_device(requested: str) -> Any:
@@ -70,13 +41,7 @@ class DetectionOutput:
 
 
 class LaneDetectorCore:
-    """Pure BEV warp + YOLO segmentation logic, independent of ROS.
-
-    Extracted out of ``LaneDetectNode`` so the same detection code can be
-    called directly (no topic round trip) from an integrated node such as
-    ``drive_main.LaneDriveNode``, while ``LaneDetectNode`` keeps working
-    unchanged as a thin ROS wrapper around it.
-    """
+    """Pure BEV warp + YOLO segmentation logic, independent of ROS."""
 
     def __init__(
         self,
@@ -211,219 +176,3 @@ class LaneDetectorCore:
                 }
             )
         return combined, instances
-
-
-class LaneDetectNode(Node):
-    """Runs only perspective conversion and YOLO mask inference."""
-
-    def __init__(self) -> None:
-        super().__init__("lane_detect")
-        for name, default in PARAMETER_DEFAULTS.items():
-            self.declare_parameter(name, default)
-
-        parameter = lambda name: self.get_parameter(name).value
-        model_path = Path(str(parameter("model_path")))
-        bev_path_value = str(parameter("bev_params")).strip()
-        bev_path = (
-            Path(bev_path_value)
-            if bev_path_value
-            else DEFAULT_BEV_PARAMS
-        )
-
-        self.core = LaneDetectorCore(
-            model_path=model_path,
-            bev_path=bev_path,
-            calibration_width=int(parameter("calibration_width")),
-            calibration_height=int(parameter("calibration_height")),
-            confidence=float(parameter("confidence")),
-            image_size=int(parameter("image_size")),
-            device_request=str(parameter("device")),
-        )
-        self.process_every_nth_frame = max(
-            1, int(parameter("process_every_nth_frame"))
-        )
-        self.jpeg_quality = int(
-            np.clip(int(parameter("debug_jpeg_quality")), 1, 100)
-        )
-        self.display = bool(parameter("display"))
-        self.display_scale = max(
-            0.1, float(parameter("display_scale"))
-        )
-        self.display_window_x = int(parameter("display_window_x"))
-        self.display_window_y = int(parameter("display_window_y"))
-        self.display_window_ready = False
-        self.frame_count = 0
-
-        image_topic = str(parameter("image_topic"))
-        bev_topic = str(parameter("bev_topic"))
-        mask_topic = str(parameter("mask_topic"))
-        segmentation_topic = str(parameter("segmentation_topic"))
-        status_topic = str(parameter("status_topic"))
-        instances_topic = str(parameter("instances_topic"))
-        self.bev_publisher = self.create_publisher(
-            CompressedImage,
-            bev_topic,
-            qos_profile_sensor_data,
-        )
-        self.mask_publisher = self.create_publisher(
-            CompressedImage,
-            mask_topic,
-            qos_profile_sensor_data,
-        )
-        self.segmentation_publisher = self.create_publisher(
-            CompressedImage,
-            segmentation_topic,
-            qos_profile_sensor_data,
-        )
-        self.status_publisher = self.create_publisher(
-            String,
-            status_topic,
-            10,
-        )
-        self.instances_publisher = self.create_publisher(
-            String,
-            instances_topic,
-            10,
-        )
-        self.image_subscription = self.create_subscription(
-            CompressedImage,
-            image_topic,
-            self.on_image,
-            qos_profile_sensor_data,
-        )
-        self.get_logger().info(
-            f"{image_topic} -> {mask_topic}; model={model_path}, "
-            f"bev={bev_path}, device={self.core.device}"
-        )
-
-    def on_image(self, message: CompressedImage) -> None:
-        self.frame_count += 1
-        if (self.frame_count - 1) % self.process_every_nth_frame:
-            return
-
-        try:
-            output = self.core.detect(decode_compressed_image(message))
-        except Exception as exc:
-            self.get_logger().error(
-                f"Lane detection failed: {exc}",
-                throttle_duration_sec=2.0,
-            )
-            return
-
-        self._publish_image(
-            output.bev,
-            message,
-            self.bev_publisher,
-            ".jpg",
-            [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
-        )
-        self._publish_image(
-            output.mask,
-            message,
-            self.mask_publisher,
-            ".png",
-            [],
-        )
-        self._publish_image(
-            output.segmentation,
-            message,
-            self.segmentation_publisher,
-            ".jpg",
-            [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
-        )
-        self.status_publisher.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "lane_instances": len(output.instances),
-                        "mask_pixels": int(
-                            np.count_nonzero(output.mask)
-                        ),
-                        "inference_ms": round(output.inference_ms, 1),
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        )
-        timestamp_ns = (
-            int(message.header.stamp.sec) * 1_000_000_000
-            + int(message.header.stamp.nanosec)
-        )
-        self.instances_publisher.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "timestamp_ns": timestamp_ns,
-                        "instances": output.instances,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        )
-
-        if self.display:
-            preview = cv2.resize(
-                output.segmentation,
-                None,
-                fx=self.display_scale,
-                fy=self.display_scale,
-                interpolation=cv2.INTER_NEAREST,
-            )
-            window_name = "lane_detect: segmentation"
-            if not self.display_window_ready:
-                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                cv2.moveWindow(
-                    window_name,
-                    self.display_window_x,
-                    self.display_window_y,
-                )
-                self.display_window_ready = True
-            cv2.resizeWindow(
-                window_name,
-                preview.shape[1],
-                preview.shape[0],
-            )
-            cv2.imshow(window_name, preview)
-            if cv2.waitKey(1) & 0xFF in (27, ord("q")):
-                rclpy.shutdown()
-
-    @staticmethod
-    def _publish_image(
-        image: np.ndarray,
-        source: CompressedImage,
-        publisher: Any,
-        extension: str,
-        options: list[int],
-    ) -> None:
-        success, encoded = cv2.imencode(extension, image, options)
-        if not success:
-            raise RuntimeError(f"Could not encode {extension} image")
-        output = CompressedImage()
-        output.header = source.header
-        output.format = "png" if extension == ".png" else "jpeg"
-        output.data = encoded.tobytes()
-        publisher.publish(output)
-
-    def destroy_node(self) -> bool:
-        if self.display:
-            cv2.destroyAllWindows()
-        return super().destroy_node()
-
-
-def main(args: Optional[Sequence[str]] = None) -> None:
-    rclpy.init(args=args)
-    node: Optional[LaneDetectNode] = None
-    try:
-        node = LaneDetectNode()
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        if node is not None:
-            node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()

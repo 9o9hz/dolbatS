@@ -1,29 +1,29 @@
-# drive_pkg 모듈형 파이프라인
+# drive_pkg 2노드 파이프라인
 
-`drive_pkg`의 기본 실행 경로는 `drive_main` 하나의 통합 노드다. 카메라
-이미지 구독 콜백 안에서 검출 → 경로 생성 → Pure Pursuit 제어가 토픽 왕복
-없이 순서대로 호출된다(예전처럼 3개 노드로 나눠 토픽으로 연결하고 싶을 때를
-대비해 `lane_detect`/`path_plan`/`pure_pursuit` 개별 실행도 그대로 남아
-있다). `path_visualizer`는 여전히 별도 노드로, `drive_main`이 발행하는
-디버그 토픽을 구독해 한 창에 시각화한다.
+`drive_pkg`는 두 개의 필수 노드로 나뉜다: `drive_main`(인식 + 경로 생성,
+`/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 제어, `/cmd_vel` 발행).
+`path_visualizer`는 별도 노드로, `drive_main`이 발행하는 디버그 토픽과
+`pure_pursuit`가 발행하는 제어 상태를 구독해 한 창에 시각화한다.
 
 ```text
 /image_raw/compressed
-  -> drive_main (undistort -> BEV/YOLO 검출 -> 경로 생성 -> Pure Pursuit)
+  -> drive_main (undistort -> BEV/YOLO 검출 -> 경로 생성)
+  -> /lane/path
+  -> pure_pursuit (Pure Pursuit 제어)
   -> /cmd_vel
 ```
 
-전체 파라미터는 `config/drive_pipeline.yaml`에서 `drive_main:` 블록 하나로
-조정한다(예전 `lane_detect:`/`path_plan:`/`pure_pursuit:` 세 블록이 이
-블록으로 합쳐졌다. `path_visualizer:` 블록은 그대로다).
+전체 파라미터는 `config/drive_pipeline.yaml`에서 `drive_main:`/`pure_pursuit:`
+두 블록으로 나뉘어 있다(`path_visualizer:` 블록은 그대로다). 검출·경로 생성
+관련 파라미터는 `drive_main:`에, 조향/속도 제어 관련 파라미터는
+`pure_pursuit:`에 있다.
 
-경로 생성 내부 알고리즘(`lane_processing.py`)은 YOLO 검출(바운딩박스) 단위로
-가장 큰 성분 하나만 뽑고, 프레임 간 좌/우 트래킹으로 이어붙인 뒤,
-b-spline으로 공간 평활화하고 마지막에 기존 EMA로 시간축 평활화한다
-(자매 프로젝트 `yolotl_ros2`의 `main6.py` 방식을 이식한 것). 실선/점선
-판별과 1차선/2차선(`which_lane`) 판정, 실선 우선 히스테리시스는 이 대회
-규정 특화 로직이라 그대로 유지된다. `scipy`(b-spline)가 런타임 의존성으로
-추가됐다.
+경로 생성 내부 알고리즘(`lane_processing.py`)은 자매 프로젝트
+`yolotl_ros2`의 `main5.py`(검출 bbox 단위 최대 성분 추출, 프레임 간 좌/우
+트래킹, b-spline 공간 평활화 + 기존 EMA 시간축 평활화, Pure Pursuit
+lookahead 탐색)를 기반으로 한다. 실선/점선 판별과 1차선/2차선(`which_lane`)
+판정, 실선 우선 히스테리시스는 이 대회 규정 특화 로직이라 그대로 유지된다.
+`scipy`(b-spline)가 런타임 의존성으로 추가돼 있다.
 
 ## 전체 실행
 
@@ -32,6 +32,9 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch drive_pkg drive_pipeline.launch.py
 ```
+
+`drive_pipeline.launch.py`는 `drive_main`, `pure_pursuit`, `path_visualizer`
+세 노드를 함께 띄운다.
 
 소스 트리의 YAML을 바로 지정하려면:
 
@@ -52,33 +55,13 @@ ros2 run drive_pkg drive_main --weights /path/to/best.pt \
   --ros-args --params-file config/drive_pipeline.yaml
 ```
 
-## 노드별 실행 (구조 디버깅용)
-
-`lane_detect`/`path_plan`/`pure_pursuit`는 검출·경로 생성·제어 로직을
-각각 독립된 토픽 연결 노드로 실행하고 싶을 때(예: 특정 단계만 따로 확인,
-장애 격리, 재시작 필요 시) 쓴다. `drive_main`과 정확히 같은 코드를
-호출하므로(각 노드는 `drive_main`이 쓰는 것과 같은 `LaneDetectorCore` /
-`SegmentationLaneProcessor` / `PurePursuitController`를 감싸는 얇은
-wrapper) 결과는 동일하다. 세 터미널에서 공통 YAML을 넘겨 개별 실행한다.
-
-```bash
-ros2 run drive_pkg lane_detect --ros-args \
-  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
-```
-
-```bash
-ros2 run drive_pkg path_plan --ros-args \
-  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
-```
+`pure_pursuit`는 별도 프로세스로 직접 실행해야 실제로 `/cmd_vel`이
+발행된다 (`drive_main`은 더 이상 조향/속도를 계산하지 않는다):
 
 ```bash
 ros2 run drive_pkg pure_pursuit --ros-args \
   --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
-
-이 개별 노드들은 여전히 `config/drive_pipeline.yaml`의 옛 블록 이름
-(`lane_detect:`/`path_plan:`/`pure_pursuit:`)을 참조하므로, 개별 실행용
-YAML을 따로 두거나 필요한 블록만 별도 파일로 분리해서 쓴다.
 
 ## 카메라 undistort (옵션)
 
@@ -91,10 +74,16 @@ YAML을 따로 두거나 필요한 블록만 별도 파일로 분리해서 쓴�
 
 ## 미션 훅 (자리만 마련, 미구현)
 
-`drive_main.LaneDriveNode`에 `preprocess_frame()`(undistort 직후, BEV/검출
-직전 호출)과 `postprocess_result()`(Pure Pursuit 계산 직후 호출) 두 훅이
-비어 있는 상태로 존재한다. 이후 장애물회피/신호등/수직주차 같은 미션
-로직을 여기에 얹을 예정이며, 이번 단계에서는 구조만 마련하고 실제 판정은
+두 노드에 각각 훅이 있다:
+
+- `drive_main.LaneDriveNode`: `preprocess_frame()`(undistort 직후, BEV/검출
+  직전 호출), `postprocess_path()`(경로 생성 직후, `/lane/path` 발행 직전
+  호출 — 정지선/장애물 회피처럼 경로 자체를 바꾸는 미션 로직의 자리).
+- `pure_pursuit.PurePursuitNode`: `postprocess_command()`(Pure Pursuit
+  계산 직후, `/cmd_vel` 발행 직전 호출 — 신호등/수직주차처럼 조향·속도
+  결과를 바꾸는 미션 로직의 자리).
+
+둘 다 현재는 pass-through이며, 이번 단계에서는 구조만 마련하고 실제 판정은
 구현하지 않았다.
 
 ## 주요 토픽
@@ -105,18 +94,19 @@ YAML을 따로 두거나 필요한 블록만 별도 파일로 분리해서 쓴�
 | 검출 | `/lane/detection/mask/compressed` | `sensor_msgs/CompressedImage` | BEV 이진 차선 마스크(PNG) |
 | 검출 | `/lane/detection/segmentation/compressed` | `sensor_msgs/CompressedImage` | YOLO 시각화 |
 | 검출 | `/lane/detection/status` | `std_msgs/String` | 검출 개수·추론 시간 JSON |
-| 검출 | `/lane/detection/instances` | `std_msgs/String` | 검출별 bbox·confidence JSON (`path_plan`이 마스크와 timestamp로 매칭해 bbox 단위 추출에 사용) |
-| 계획 | `/lane/path` | `nav_msgs/Path` | `base_link` 기준 metric 경로 |
+| 검출 | `/lane/detection/instances` | `std_msgs/String` | 검출별 bbox·confidence JSON (`drive_main` 내부에서 bbox 단위 추출에 사용) |
+| 계획 | `/lane/path` | `nav_msgs/Path` | `base_link` 기준 metric 경로 (`drive_main` -> `pure_pursuit`) |
 | 계획 | `/lane/path/debug/compressed` | `sensor_msgs/CompressedImage` | 생성 경로 시각화 |
 | 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |
 | 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
-| 제어 | `/cmd_vel` | `geometry_msgs/Twist` | 주행 속도·각속도 명령 |
-| 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON |
+| 제어 | `/cmd_vel` | `geometry_msgs/Twist` | 주행 속도·각속도 명령 (`pure_pursuit` 발행) |
+| 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON (`pure_pursuit` 발행) |
 | 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
-항상 실제 주행 명령을 `/cmd_vel`에 발행한다(dry-run 모드 없음). 경로가
-유효하지 않거나 `path_timeout_sec` 동안 새 경로가 없으면 정지 명령을
-발행한다.
+항상 실제 주행 명령을 `/cmd_vel`에 발행한다(dry-run 모드 없음). `pure_pursuit`가
+빈 경로(`poses` 없음)를 받으면 자동으로 정지 명령을 낸다 — `drive_main`이
+검출/경로 생성에 실패하면 빈 `/lane/path`를 발행해서 이 경로로 정지시킨다.
+별도의 경로-끊김 워치독(`path_timeout_sec`)은 없다.
 
 각 단계 확인 예:
 

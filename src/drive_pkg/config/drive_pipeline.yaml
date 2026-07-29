@@ -66,6 +66,20 @@ drive_main:
     which_lane_topic: "/which/lane"
     path_frame_id: "base_link"
 
+    debug_jpeg_quality: 80
+    # 별도 path_visualizer가 segmentation과 경로를 한 창에 표시.
+    # local_display를 켜면 drive_main 자체 프로세스에서도 cv2.imshow로 확인 가능.
+    local_display: false
+    display_scale: 1.0
+
+
+pure_pursuit:
+  ros__parameters:
+    path_topic: "/lane/path"
+    path_status_topic: "/lane/path/status"
+    cmd_vel_topic: "/cmd_vel"
+    status_topic: "/lane/control/status"
+
     speed_mps: 0.18
     hold_speed_scale: 0.75
     turn_speed_min_scale: 0.50
@@ -77,20 +91,12 @@ drive_main:
     lookahead_m: -1.0
     lookahead_min_m: 1.10
     lookahead_max_m: 2.00
+    # lookahead 목표점 탐색 방식: "simple"(전방점 중 |거리-LD| 최소, 기본값) /
+    # "arc_length"(가장 가까운 점부터 누적 호길이로 LD 지점 탐색).
+    lookahead_search_mode: "simple"
 
     steering_ema_alpha: 0.35
-    steering_deadband_deg: 0.8
     max_steering_change_deg: 3.0
-    path_timeout_sec: 0.5
-
-    cmd_vel_topic: "/cmd_vel"
-    control_status_topic: "/lane/control/status"
-
-    debug_jpeg_quality: 80
-    # 별도 path_visualizer가 segmentation과 경로를 한 창에 표시.
-    # local_display를 켜면 drive_main 자체 프로세스에서도 cv2.imshow로 확인 가능.
-    local_display: false
-    display_scale: 1.0
 
 
 path_visualizer:
@@ -114,6 +120,5 @@ path_visualizer:
     # 같은 선과 겹치는 여러 YOLO 마스크 confidence 집계 방식: mean/max.
     yolo_confidence_aggregation: "mean"
     # 토픽 한두 프레임 누락 시에만 표시를 유지하고 이후 자동 제거.
-    # pure_pursuit의 path_timeout_sec(0.5초)보다 짧게 유지.
     lookahead_target_hold_sec: 0.45
     reference_path_hold_sec: 0.45

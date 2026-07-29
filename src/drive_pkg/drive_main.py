@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""Integrated ROS 2 node: camera image -> lane path -> cmd_vel, one process.
+"""ROS 2 node: camera image -> lane path, one process.
 
-Structurally modeled after ``yolotl_ros2``'s single-node style (argparse +
-package-share weight loading, an optional undistort step, and preprocess/
-postprocess hooks reserved for future mission logic), but the lane
-detection, path generation, and steering *algorithms* are unchanged: this
-module only wires together the existing, still-independently-runnable
-``lane_detect`` / ``path_plan`` / ``pure_pursuit`` building blocks inside one
-image callback instead of three topic-connected nodes.
+Detection and path planning for one frame happen in a single image callback
+instead of topic-connected ``lane_detect``/``path_plan`` nodes. Steering/
+speed control lives in a separate ``pure_pursuit`` node that subscribes to
+this node's published path -- see howtorun.md for the two-node pipeline.
 
 Input:
     /image_raw/compressed (sensor_msgs/CompressedImage)
 
-Outputs (identical topics/payloads to the split-node pipeline, so
-``path_visualizer`` keeps working unchanged):
+Outputs:
     /lane/detection/bev/compressed
     /lane/detection/mask/compressed
     /lane/detection/segmentation/compressed
@@ -23,8 +19,6 @@ Outputs (identical topics/payloads to the split-node pipeline, so
     /lane/path/debug/compressed
     /lane/path/status
     /which/lane
-    /cmd_vel
-    /lane/control/status
 """
 
 from __future__ import annotations
@@ -36,7 +30,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import cv2
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as PathMessage
 import numpy as np
 import rclpy
@@ -59,7 +53,6 @@ from lane_processing import (
     load_calibration,
     undistort_frame,
 )
-from pure_pursuit import PurePursuitController, SteeringCommand
 
 
 def _default_calibration_path() -> Path:
@@ -166,21 +159,6 @@ class LaneDriveNode(Node):
             "path_status_topic": "/lane/path/status",
             "which_lane_topic": "/which/lane",
             "path_frame_id": "base_link",
-            "cmd_vel_topic": "/cmd_vel",
-            "control_status_topic": "/lane/control/status",
-            "speed_mps": 0.18,
-            "hold_speed_scale": 0.75,
-            "turn_speed_min_scale": 0.50,
-            "turn_speed_reduction": 0.70,
-            "wheelbase_m": 0.545,
-            "max_steer_deg": 18.0,
-            "lookahead_m": -1.0,
-            "lookahead_min_m": 1.10,
-            "lookahead_max_m": 2.00,
-            "steering_ema_alpha": 0.35,
-            "steering_deadband_deg": 0.8,
-            "max_steering_change_deg": 3.0,
-            "path_timeout_sec": 0.5,
             "debug_jpeg_quality": 80,
             "local_display": bool(cli_args.display),
             "display_scale": 1.0,
@@ -259,32 +237,6 @@ class LaneDriveNode(Node):
         self.path_frame_id = str(parameter("path_frame_id"))
         self.debug_canvas_size = (bev.height, bev.width)
 
-        self.controller = PurePursuitController(
-            speed_mps=float(parameter("speed_mps")),
-            hold_speed_scale=float(parameter("hold_speed_scale")),
-            turn_speed_min_scale=float(
-                parameter("turn_speed_min_scale")
-            ),
-            turn_speed_reduction=float(
-                parameter("turn_speed_reduction")
-            ),
-            wheelbase_m=float(parameter("wheelbase_m")),
-            lookahead_min_m=float(parameter("lookahead_min_m")),
-            lookahead_max_m=float(parameter("lookahead_max_m")),
-            fixed_lookahead_m=float(parameter("lookahead_m")),
-            max_steer_deg=float(parameter("max_steer_deg")),
-            steering_ema_alpha=float(parameter("steering_ema_alpha")),
-            steering_deadband_deg=float(
-                parameter("steering_deadband_deg")
-            ),
-            max_steering_change_deg=float(
-                parameter("max_steering_change_deg")
-            ),
-        )
-        self.path_timeout_sec = max(
-            0.0, float(parameter("path_timeout_sec"))
-        )
-
         self.calibration: Optional[CameraCalibration] = None
         self.use_undistort = bool(parameter("use_undistort"))
         calib_value = str(parameter("calib_file")).strip()
@@ -314,8 +266,6 @@ class LaneDriveNode(Node):
         self.display_scale = max(0.1, float(parameter("display_scale")))
         self.display_window_ready = False
         self.frame_count = 0
-        self.last_path_time = None
-        self.timed_out = False
 
         image_topic = str(parameter("image_topic"))
         self.bev_publisher = self.create_publisher(
@@ -347,24 +297,16 @@ class LaneDriveNode(Node):
         self.which_lane_publisher = self.create_publisher(
             String, str(parameter("which_lane_topic")), 10
         )
-        self.cmd_publisher = self.create_publisher(
-            Twist,
-            str(parameter("cmd_vel_topic")),
-            10,
-        )
-        self.control_status_publisher = self.create_publisher(
-            String, str(parameter("control_status_topic")), 10
-        )
         self.image_subscription = self.create_subscription(
             CompressedImage,
             image_topic,
             self.on_image,
             qos_profile_sensor_data,
         )
-        self.watchdog = self.create_timer(0.1, self.check_path_timeout)
 
         self.get_logger().info(
-            f"{image_topic} -> /cmd_vel (integrated); model={model_path}, "
+            f"{image_topic} -> {str(parameter('path_topic'))}; "
+            f"model={model_path}, "
             f"bev={bev_path}, device={self.detector.device}, "
             f"undistort={self.use_undistort}"
         )
@@ -381,15 +323,16 @@ class LaneDriveNode(Node):
         """
         return frame
 
-    def postprocess_result(
-        self, command: SteeringCommand
-    ) -> SteeringCommand:
-        """Called after Pure Pursuit computes a steering command.
+    def postprocess_path(self, plan: PathPlanResult) -> PathPlanResult:
+        """Called after path planning, before publishing ``/lane/path``.
 
-        Future home for mission logic that overrides speed/steering (stop
-        line, traffic light, parking). Currently a pass-through.
+        Future home for mission logic that overrides the planned path
+        (stop line, obstacle avoidance, parking). Currently a
+        pass-through. Steering/speed itself is computed downstream in the
+        ``pure_pursuit`` node, which has its own ``postprocess_command``
+        hook for post-control mission logic.
         """
-        return command
+        return plan
 
     # ------------------------------------------------------------------
     # Main pipeline.
@@ -404,15 +347,13 @@ class LaneDriveNode(Node):
             if self.use_undistort and self.calibration is not None:
                 frame = undistort_frame(self.calibration, frame)
             frame = self.preprocess_frame(frame)
-            self.last_path_time = self.get_clock().now()
-            self.timed_out = False
             detection = self.detector.detect(frame)
         except Exception as exc:
             self.get_logger().error(
                 f"Lane detection failed: {exc}",
                 throttle_duration_sec=2.0,
             )
-            self._publish_control(self.controller.stop("detection_failed"))
+            self._publish_path(None, message)
             return
 
         self._publish_detection(detection, message)
@@ -427,25 +368,10 @@ class LaneDriveNode(Node):
                 throttle_duration_sec=2.0,
             )
             self._publish_path(None, message)
-            self._publish_control(
-                self.controller.stop("path_planning_failed")
-            )
             return
 
+        plan = self.postprocess_path(plan)
         self._publish_path(plan, message)
-        self.controller.set_path_fallback(plan.used_fallback)
-        points = (
-            np.asarray(plan.path_meters, dtype=np.float64)
-            if plan.path_meters is not None
-            else None
-        )
-        command = (
-            self.controller.compute(points)
-            if points is not None
-            else self.controller.stop(plan.reason)
-        )
-        command = self.postprocess_result(command)
-        self._publish_control(command)
 
         if self.local_display:
             self._show_local_debug(detection, plan)
@@ -633,62 +559,6 @@ class LaneDriveNode(Node):
         return debug
 
     # ------------------------------------------------------------------
-    # Control publishing (mirrors pure_pursuit.py's on_path payloads).
-    # ------------------------------------------------------------------
-    def _publish_control(self, command: SteeringCommand) -> None:
-        twist = (
-            self.controller.make_twist(command)
-            if command.path_valid
-            else Twist()
-        )
-        self.cmd_publisher.publish(twist)
-        self.control_status_publisher.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "path_valid": command.path_valid,
-                        "reason": command.reason,
-                        "fallback": self.controller.path_fallback,
-                        "steering_deg": round(command.steering_deg, 2),
-                        "lookahead_m": round(command.lookahead_m, 3),
-                        "lookahead_target_m": round(
-                            command.target_distance_m, 3
-                        ),
-                        "lookahead_target_index": int(
-                            command.target_index
-                        ),
-                        "desired_speed_mps": round(
-                            command.speed_mps, 3
-                        ),
-                        "published_linear_x": round(twist.linear.x, 3),
-                        "published_angular_z": round(
-                            twist.angular.z, 3
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        )
-
-    def check_path_timeout(self) -> None:
-        if (
-            self.last_path_time is None
-            or self.timed_out
-            or self.path_timeout_sec <= 0.0
-        ):
-            return
-        elapsed = (
-            self.get_clock().now() - self.last_path_time
-        ).nanoseconds / 1e9
-        if elapsed < self.path_timeout_sec:
-            return
-        self.timed_out = True
-        self._publish_control(self.controller.stop("path_timeout"))
-        self.get_logger().warning(
-            f"No frame processed for {elapsed:.2f}s: vehicle stopped"
-        )
-
-    # ------------------------------------------------------------------
     # Optional local debug windows (yolotl-style, off by default).
     # ------------------------------------------------------------------
     def _show_local_debug(
@@ -737,8 +607,6 @@ class LaneDriveNode(Node):
         publisher.publish(output)
 
     def destroy_node(self) -> bool:
-        if rclpy.ok():
-            self.cmd_publisher.publish(Twist())
         if self.local_display:
             cv2.destroyAllWindows()
         return super().destroy_node()

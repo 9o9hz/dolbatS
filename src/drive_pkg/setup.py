@@ -12,7 +12,6 @@ setup(
         "drive_main",
         "lane_detect",
         "lane_processing",
-        "path_plan",
         "path_visualizer",
         "pure_pursuit",
         "test_yolo_usb_cam",
@@ -45,8 +44,6 @@ setup(
     entry_points={
         "console_scripts": [
             "drive_main = drive_main:main",
-            "lane_detect = lane_detect:main",
-            "path_plan = path_plan:main",
             "path_visualizer = path_visualizer:main",
             "pure_pursuit = pure_pursuit:main",
             "yolo_topic_test = test_yolo_usb_cam:main",

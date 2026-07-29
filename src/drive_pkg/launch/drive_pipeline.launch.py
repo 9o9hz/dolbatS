@@ -1,4 +1,5 @@
-"""Launch the integrated drive_main node plus the debug visualizer."""
+"""Launch drive_main (perception + path), pure_pursuit (control), and the
+debug visualizer."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -28,6 +29,13 @@ def generate_launch_description() -> LaunchDescription:
                 package="drive_pkg",
                 executable="drive_main",
                 name="drive_main",
+                output="screen",
+                parameters=[params_file],
+            ),
+            Node(
+                package="drive_pkg",
+                executable="pure_pursuit",
+                name="pure_pursuit",
                 output="screen",
                 parameters=[params_file],
             ),

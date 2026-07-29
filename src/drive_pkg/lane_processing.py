@@ -107,14 +107,6 @@ class LaneConfig:
     path_spline_points: int = 100
     # Forward distance from the rear-axle center to the BEV bottom reference.
     bev_reference_forward_offset_m: float = 1.04
-    lookahead_min_m: float = 1.1
-    lookahead_max_m: float = 2.5
-    wheelbase_m: float = 0.545
-    max_steering_deg: float = 20.0
-    steering_ema_alpha: float = 0.35
-    steering_deadband_deg: float = 0.8
-    max_steering_change_deg: float = 3.0
-    target_speed_mps: float = 0.20
 
 
 @dataclass
@@ -333,7 +325,6 @@ class SegmentationLaneProcessor:
         self._last_path_source: Optional[str] = None
         self._path_transition_frames = 0
         self._missing_frames = 0
-        self._last_steering_deg = 0.0
         self._tracked_lanes: Dict[str, Dict[str, Any]] = {
             "left": {"group": None, "age": 0},
             "right": {"group": None, "age": 0},
@@ -365,16 +356,6 @@ class SegmentationLaneProcessor:
                 "bev_reference_forward_offset_m must be finite"
             )
         if (
-            cfg.lookahead_min_m <= 0.0
-            or cfg.lookahead_max_m < cfg.lookahead_min_m
-        ):
-            raise ValueError(
-                "Dynamic lookahead range must satisfy "
-                "0 < lookahead_min_m <= lookahead_max_m"
-            )
-        if cfg.max_steering_deg <= 0.0:
-            raise ValueError("max_steering_deg must be positive")
-        if (
             cfg.center_sample_step <= 0
             or cfg.path_step_px <= 0
             or cfg.path_resample_step_px <= 0
@@ -405,14 +386,6 @@ class SegmentationLaneProcessor:
         if cfg.max_path_lateral_step_m <= 0.0:
             raise ValueError(
                 "max_path_lateral_step_m must be positive"
-            )
-        if not 0.0 <= cfg.steering_ema_alpha <= 1.0:
-            raise ValueError("steering_ema_alpha must be between 0 and 1")
-        if cfg.steering_deadband_deg < 0.0:
-            raise ValueError("steering_deadband_deg cannot be negative")
-        if cfg.max_steering_change_deg <= 0.0:
-            raise ValueError(
-                "max_steering_change_deg must be positive"
             )
         if cfg.bbox_close_ksize < 1:
             raise ValueError("bbox_close_ksize must be at least 1")
@@ -912,101 +885,82 @@ class SegmentationLaneProcessor:
             return None
         return best
 
-    def _disambiguate_single_tracked_side(
-        self, groups: List[LaneGroup]
-    ) -> Optional[Dict[str, LaneGroup]]:
-        """Resolve which of exactly two newly-visible candidates is the
-        already-tracked side vs. a new/noise candidate, when only one side
-        currently has a track.
-
-        Ported from yolotl_ros2's tracking: instead of bucketing candidates
-        by static geometric side first (as the normal per-side matching
-        below does), compare both candidates' distance to the one tracked
-        side's last position and let the closer one win that side. This
-        matters specifically where the static left/right split can itself
-        be wrong (e.g. near-horizon convergence on a sharp curve).
-        """
-
-        left_previous = self._tracked_lanes["left"]["group"]
-        right_previous = self._tracked_lanes["right"]["group"]
-        if (left_previous is None) == (right_previous is None):
-            return None
-
-        overlapping = [
-            group for group in groups if self._group_has_path_overlap(group)
-        ]
-        if len(overlapping) != 2:
-            return None
-
-        candidate_a, candidate_b = sorted(
-            overlapping, key=lambda group: float(group["x_ref"])
-        )
-
-        if right_previous is not None:
-            distance_a = self._group_match_distance(
-                right_previous, candidate_a
-            )
-            distance_b = self._group_match_distance(
-                right_previous, candidate_b
-            )
-            if distance_a < distance_b:
-                # candidate_b is to the right of the tracked right boundary
-                # and thus more likely noise than a newly-appeared lane.
-                return {"right": candidate_a}
-            return {"left": candidate_a, "right": candidate_b}
-
-        distance_a = self._group_match_distance(left_previous, candidate_a)
-        distance_b = self._group_match_distance(left_previous, candidate_b)
-        if distance_b < distance_a:
-            return {"left": candidate_b}
-        return {"left": candidate_a, "right": candidate_b}
-
     def _update_lane_tracks(
         self, groups: List[LaneGroup]
     ) -> Tuple[Optional[LaneGroup], Optional[LaneGroup]]:
-        disambiguated = self._disambiguate_single_tracked_side(groups)
-        if disambiguated is not None:
-            assignments: Dict[str, LaneGroup] = dict(disambiguated)
-            used_group_ids = {
-                id(group) for group in disambiguated.values()
-            }
-            overlapping_ids = {
-                id(group)
+        """Frame-to-frame left/right tracking, ported from yolotl_ros2
+        main5.py's ``process_image`` step 5 (``tracked_lanes``).
+
+        Candidates are sorted by ``x_ref`` (dolbatS's stand-in for main5's
+        ``x_bottom``). With exactly two candidates, they're assigned
+        left/right directly by that order regardless of tracking state --
+        no distance threshold, unlike the curve-matching this replaces.
+        With exactly one candidate, it's assigned to whichever side's last
+        position it's closer to (or by BEV-center split on a cold start).
+        Faithfully keeps main5's own limitation: 0 or 3+ candidates in a
+        frame are ignored entirely and existing tracks just age.
+        """
+
+        candidates = sorted(
+            (
+                group
                 for group in groups
                 if self._group_has_path_overlap(group)
-            }
-            used_group_ids |= overlapping_ids
-        else:
-            match_options: List[Tuple[float, str, LaneGroup]] = []
-            for side in ("left", "right"):
-                previous = self._tracked_lanes[side]["group"]
-                if previous is None:
-                    continue
-                for group in groups:
-                    if (
-                        self._group_side(group) != side
-                        or not self._group_has_path_overlap(group)
-                    ):
-                        continue
-                    score = self._group_match_distance(previous, group)
-                    if score <= self.config.lane_track_match_threshold_px:
-                        match_options.append((score, side, group))
+            ),
+            key=lambda group: float(group["x_ref"]),
+        )
 
-            assignments = {}
-            used_group_ids = set()
-            for _, side, group in sorted(
-                match_options, key=lambda item: item[0]
+        left_track = self._tracked_lanes["left"]
+        right_track = self._tracked_lanes["right"]
+        current_left: Optional[LaneGroup] = None
+        current_right: Optional[LaneGroup] = None
+
+        if len(candidates) == 2:
+            current_left, current_right = candidates[0], candidates[1]
+        elif len(candidates) == 1:
+            detected = candidates[0]
+            left_previous = left_track["group"]
+            right_previous = right_track["group"]
+            distance_to_left = (
+                abs(
+                    float(detected["x_ref"])
+                    - float(left_previous["x_ref"])
+                )
+                if left_previous is not None
+                else float("inf")
+            )
+            distance_to_right = (
+                abs(
+                    float(detected["x_ref"])
+                    - float(right_previous["x_ref"])
+                )
+                if right_previous is not None
+                else float("inf")
+            )
+            if (
+                distance_to_left < distance_to_right
+                and left_previous is not None
             ):
-                if side in assignments or id(group) in used_group_ids:
-                    continue
-                assignments[side] = group
-                used_group_ids.add(id(group))
+                current_left = detected
+            elif (
+                distance_to_right < distance_to_left
+                and right_previous is not None
+            ):
+                current_right = detected
+            else:
+                center_x = self.config.warp_width * 0.5
+                if float(detected["x_ref"]) < center_x:
+                    current_left = detected
+                else:
+                    current_right = detected
 
-        for side in ("left", "right"):
+        for side, current in (
+            ("left", current_left),
+            ("right", current_right),
+        ):
             track = self._tracked_lanes[side]
-            matched = assignments.get(side)
-            if matched is not None:
-                track["group"] = matched
+            if current is not None:
+                track["group"] = current
                 track["age"] = 0
                 continue
             if track["group"] is not None:
@@ -1017,30 +971,6 @@ class SegmentationLaneProcessor:
                 ):
                     track["group"] = None
                     track["age"] = 0
-
-        center_x = self.config.warp_width * 0.5
-        for side in ("left", "right"):
-            track = self._tracked_lanes[side]
-            if track["group"] is not None:
-                continue
-            candidates = [
-                group
-                for group in groups
-                if self._group_side(group) == side
-                and self._group_has_path_overlap(group)
-                and id(group) not in used_group_ids
-            ]
-            if not candidates:
-                continue
-            initialized = min(
-                candidates,
-                key=lambda group: abs(
-                    float(group["x_ref"]) - center_x
-                ),
-            )
-            track["group"] = initialized
-            track["age"] = 0
-            used_group_ids.add(id(initialized))
 
         return (
             self._tracked_lanes["left"]["group"],
@@ -1641,109 +1571,6 @@ class SegmentationLaneProcessor:
         )
         left = (vehicle_x - path[:, 0]) / self.config.pixels_per_meter
         return np.column_stack((forward, left)).astype(np.float32)
-
-    def _raw_steering_deg(
-        self,
-        path_meters: PointArray,
-        lookahead_m: float,
-    ) -> float:
-        if path_meters is None or not len(path_meters):
-            return 0.0
-
-        distances = np.linalg.norm(path_meters, axis=1)
-        target_index = int(
-            np.argmin(np.abs(distances - lookahead_m))
-        )
-        forward, left = path_meters[target_index]
-        distance = max(float(distances[target_index]), 1e-3)
-        heading_error = math.atan2(
-            float(left), max(float(forward), 1e-3)
-        )
-        raw_steering_rad = math.atan2(
-            2.0
-            * self.config.wheelbase_m
-            * math.sin(heading_error),
-            distance,
-        )
-        return float(
-            np.clip(
-                math.degrees(raw_steering_rad),
-                -self.config.max_steering_deg,
-                self.config.max_steering_deg,
-            )
-        )
-
-    @staticmethod
-    def _nearest_path_distance(
-        path_meters: PointArray,
-        lookahead_m: float,
-    ) -> float:
-        if path_meters is None or not len(path_meters):
-            return 0.0
-        distances = np.linalg.norm(path_meters, axis=1)
-        target_index = int(
-            np.argmin(np.abs(distances - lookahead_m))
-        )
-        return float(distances[target_index])
-
-    def _lookahead_for_steering(self, steering_deg: float) -> float:
-        steering_ratio = float(
-            np.clip(
-                abs(steering_deg) / self.config.max_steering_deg,
-                0.0,
-                1.0,
-            )
-        )
-        lookahead_range = (
-            self.config.lookahead_max_m
-            - self.config.lookahead_min_m
-        )
-        return (
-            self.config.lookahead_max_m
-            - lookahead_range * steering_ratio
-        )
-
-    def _steering(
-        self, path_meters: PointArray
-    ) -> Tuple[float, float]:
-        # Use the previous filtered command to choose this frame's LD. This
-        # avoids an algebraic steering/LD loop and keeps LD changes smooth.
-        lookahead_m = self._lookahead_for_steering(
-            self._last_steering_deg
-        )
-        raw_steering_deg = self._raw_steering_deg(
-            path_meters, lookahead_m
-        )
-
-        if (
-            abs(raw_steering_deg)
-            < self.config.steering_deadband_deg
-        ):
-            raw_steering_deg = 0.0
-
-        filtered = (
-            self.config.steering_ema_alpha * raw_steering_deg
-            + (1.0 - self.config.steering_ema_alpha)
-            * self._last_steering_deg
-        )
-        steering_step = float(
-            np.clip(
-                filtered - self._last_steering_deg,
-                -self.config.max_steering_change_deg,
-                self.config.max_steering_change_deg,
-            )
-        )
-        self._last_steering_deg = float(
-            np.clip(
-                self._last_steering_deg + steering_step,
-                -self.config.max_steering_deg,
-                self.config.max_steering_deg,
-            )
-        )
-        lookahead_m = self._lookahead_for_steering(
-            self._last_steering_deg
-        )
-        return math.radians(self._last_steering_deg), lookahead_m
 
     def _debug_image(
         self,
