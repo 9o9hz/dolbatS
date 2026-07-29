@@ -126,8 +126,8 @@ class MissionLogic:
         auto_steer_angle_abs_max: float = 23.0,
         auto_throttle_max: float = 1.0,
         throttle_curve_k: float = 0.0,
-        lane_throttle_min: float = 0.3
-        lane_throttle_max: float = 0.6
+        lane_throttle_min: float = 0.3,
+        lane_throttle_max: float = 0.6,
         obstacle_throttle_min: float = 0.4,
         obstacle_throttle_max: float = 0.8,
         yellow_deceleration_sec: float = 3.0,
