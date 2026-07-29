@@ -52,6 +52,12 @@ class LaneDetectorCore:
         confidence: float,
         image_size: int,
         device_request: str,
+        pixels_per_meter: float,
+        line_width_target_m: float,
+        line_width_tolerance_m: float,
+        line_width_recovery_tolerance_m: float,
+        line_width_recovery_aspect_ratio: float,
+        line_width_measurement_scale: float,
     ) -> None:
         if not model_path.is_file():
             raise FileNotFoundError(
@@ -66,10 +72,14 @@ class LaneDetectorCore:
                 "Lane detector requires a segmentation model, "
                 f"got {self.model.task!r}"
             )
+        lane_class_names = {"lane", "dashed", "solid"}
         self.lane_class_ids = {
             int(class_id)
             for class_id, name in self.model.names.items()
-            if "lane" in str(name).lower()
+            if any(
+                token in str(name).strip().lower()
+                for token in lane_class_names
+            )
         }
         if not self.lane_class_ids:
             raise ValueError(
@@ -85,6 +95,23 @@ class LaneDetectorCore:
         self.confidence = float(confidence)
         self.image_size = max(1, int(image_size))
         self.device = resolve_device(str(device_request))
+        self.pixels_per_meter = max(1e-6, float(pixels_per_meter))
+        self.line_width_target_m = max(
+            0.0, float(line_width_target_m)
+        )
+        self.line_width_tolerance_m = max(
+            0.0, float(line_width_tolerance_m)
+        )
+        self.line_width_recovery_tolerance_m = max(
+            self.line_width_tolerance_m,
+            float(line_width_recovery_tolerance_m),
+        )
+        self.line_width_recovery_aspect_ratio = max(
+            1.0, float(line_width_recovery_aspect_ratio)
+        )
+        self.line_width_measurement_scale = max(
+            1e-6, float(line_width_measurement_scale)
+        )
 
     def make_bev(self, frame: np.ndarray) -> np.ndarray:
         height, width = frame.shape[:2]
@@ -129,6 +156,27 @@ class LaneDetectorCore:
             inference_ms=inference_ms,
         )
 
+    def _component_width_m(self, component: np.ndarray) -> float:
+        distance = cv2.distanceTransform(
+            component.astype(np.uint8), cv2.DIST_L2, 5
+        )
+        positive = distance[distance > 0.0]
+        if positive.size == 0:
+            return 0.0
+        width_px = 2.0 * float(np.percentile(positive, 95.0))
+        return (
+            width_px
+            / self.pixels_per_meter
+            * self.line_width_measurement_scale
+        )
+
+    def _width_is_lane(self, width_m: float) -> bool:
+        return (
+            self.line_width_target_m - self.line_width_tolerance_m
+            <= width_m
+            <= self.line_width_target_m + self.line_width_tolerance_m
+        )
+
     def _combined_mask(
         self,
         result: Any,
@@ -159,8 +207,36 @@ class LaneDetectorCore:
                 (width, height),
                 interpolation=cv2.INTER_NEAREST,
             )
-            combined[resized > 0] = 255
-            y_values, x_values = np.nonzero(resized)
+            filtered = np.zeros_like(resized)
+            accepted_widths = []
+            component_count, labels, stats, _ = (
+                cv2.connectedComponentsWithStats(resized, 8)
+            )
+            for component_id in range(1, component_count):
+                if stats[component_id, cv2.CC_STAT_AREA] < 20:
+                    continue
+                component = labels == component_id
+                width_m = self._component_width_m(component)
+                component_width = float(
+                    stats[component_id, cv2.CC_STAT_WIDTH]
+                )
+                component_height = float(
+                    stats[component_id, cv2.CC_STAT_HEIGHT]
+                )
+                longitudinal_recovery = (
+                    abs(width_m - self.line_width_target_m)
+                    <= self.line_width_recovery_tolerance_m
+                    and component_height
+                    >= component_width
+                    * self.line_width_recovery_aspect_ratio
+                )
+                if self._width_is_lane(width_m) or longitudinal_recovery:
+                    filtered[component] = 1
+                    accepted_widths.append(width_m)
+            if not accepted_widths:
+                continue
+            combined[filtered > 0] = 255
+            y_values, x_values = np.nonzero(filtered)
             if len(x_values) == 0:
                 continue
             instances.append(
@@ -168,6 +244,9 @@ class LaneDetectorCore:
                     "class_id": int(class_id),
                     "class_name": str(self.model.names[int(class_id)]),
                     "confidence": round(float(confidence), 4),
+                    "width_mm": round(
+                        float(np.median(accepted_widths)) * 1000.0, 1
+                    ),
                     "x_min": int(np.min(x_values)),
                     "y_min": int(np.min(y_values)),
                     "x_max": int(np.max(x_values)),

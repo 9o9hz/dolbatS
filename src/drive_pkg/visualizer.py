@@ -894,10 +894,19 @@ class DrivingVisualizer:
         target_m = float(
             control_status.get("lookahead_target_m", 0.0)
         )
+        lookahead_mode = (
+            "DYNAMIC"
+            if bool(
+                control_status.get(
+                    "dynamic_lookahead_enabled", True
+                )
+            )
+            else "FIXED"
+        )
         info_lines = (
             f"STEERING: {steering_deg:+.2f} deg",
             (
-                f"DYNAMIC LOOK-AHEAD: {lookahead_m:.2f} m  "
+                f"{lookahead_mode} LOOK-AHEAD: {lookahead_m:.2f} m  "
                 f"TARGET: {target_m:.2f} m"
             ),
             (

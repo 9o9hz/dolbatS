@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-from scipy.interpolate import splev, splprep
 from sensor_msgs.msg import CompressedImage
 
 
@@ -64,6 +63,23 @@ PointArray = Optional[np.ndarray]
 LaneGroup = Dict[str, Any]
 
 
+def resolve_data_path(value: str, fallback: Path) -> Path:
+    """Resolve absolute, current-working-dir, or workspace-relative data."""
+    normalized = str(value).strip()
+    if not normalized:
+        return fallback
+    requested = Path(normalized).expanduser()
+    candidates = [requested]
+    if not requested.is_absolute():
+        candidates.append(
+            Path(__file__).resolve().parents[2] / requested
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return requested
+
+
 @dataclass(frozen=True)
 class LaneConfig:
     confidence: float = 0.25
@@ -94,8 +110,10 @@ class LaneConfig:
     )
     warp_width: int = 640
     warp_height: int = 640
-    pixels_per_meter: float = 600.0
-    lane_width_m: float = 0.90
+    pixels_per_meter: float = 254.0
+    lane_width_m: float = 0.85
+    min_boundary_spacing_m: float = 0.80
+    max_boundary_spacing_m: float = 0.90
     min_component_area: int = 250
     center_sample_step: int = 5
     same_line_threshold_px: float = 75.0
@@ -103,6 +121,8 @@ class LaneConfig:
     min_group_area: int = 500
     dashed_piece_threshold: int = 2
     prefer_solid_when_dashed: bool = True
+    initial_lane: str = "auto"
+    lane_state_confirm_frames: int = 3
     lane_track_max_age_frames: int = 7
     lane_track_match_threshold_px: float = 90.0
     solid_enter_frames: int = 4
@@ -111,6 +131,7 @@ class LaneConfig:
     path_bottom_margin: int = 30
     path_step_px: int = 10
     path_resample_step_px: int = 5
+    path_polynomial_degree: int = 3
     path_ema_alpha: float = 0.35
     path_transition_blend_frames: int = 6
     max_path_lateral_step_m: float = 0.04
@@ -118,10 +139,6 @@ class LaneConfig:
     # Morphological close kernel size used when isolating one detection's
     # largest mask component within its own bounding box.
     bbox_close_ksize: int = 5
-    # B-spline smoothing factor and output point count for spatial smoothing
-    # (see scipy.interpolate.splprep's ``s`` parameter).
-    path_spline_smooth_factor: float = 10.0
-    path_spline_points: int = 100
     # Forward distance from the rear-axle center to the BEV bottom reference.
     bev_reference_forward_offset_m: float = 1.04
 
@@ -163,17 +180,33 @@ def load_bev_parameters(path: Path) -> BevParameters:
         raise FileNotFoundError(f"BEV parameter file not found: {path}")
 
     with np.load(path, allow_pickle=False) as data:
-        required = {"src_points", "dst_points", "warp_w", "warp_h"}
+        required = {"src_points", "dst_points"}
         missing = required - set(data.files)
         if missing:
             raise KeyError(f"BEV parameter keys missing: {sorted(missing)}")
+        width_key = (
+            "warp_width" if "warp_width" in data.files else "warp_w"
+        )
+        height_key = (
+            "warp_height" if "warp_height" in data.files else "warp_h"
+        )
+        size_missing = [
+            key
+            for key in (width_key, height_key)
+            if key not in data.files
+        ]
+        if size_missing:
+            raise KeyError(
+                "BEV parameter keys missing: expected warp_w/warp_h "
+                "or warp_width/warp_height"
+            )
 
         source_points = np.asarray(data["src_points"], dtype=np.float32)
         destination_points = np.asarray(
             data["dst_points"], dtype=np.float32
         )
-        width = _scalar_int(data, "warp_w")
-        height = _scalar_int(data, "warp_h")
+        width = _scalar_int(data, width_key)
+        height = _scalar_int(data, height_key)
 
     if (
         source_points.shape != (4, 2)
@@ -353,6 +386,14 @@ class SegmentationLaneProcessor:
         self._solid_active_side: Optional[str] = None
         self._solid_missing_frames = 0
         self._using_tracked_boundary = False
+        configured_lane = str(config.initial_lane).strip().lower()
+        self._current_lane: Optional[str] = (
+            configured_lane
+            if configured_lane in ("lane_1", "lane_2")
+            else None
+        )
+        self._lane_candidate: Optional[str] = None
+        self._lane_candidate_streak = 0
 
     def _validate_config(self) -> None:
         cfg = self.config
@@ -368,6 +409,18 @@ class SegmentationLaneProcessor:
             raise ValueError("BEV dimensions must be positive")
         if cfg.pixels_per_meter <= 0.0 or cfg.lane_width_m <= 0.0:
             raise ValueError("Metric conversion values must be positive")
+        if (
+            cfg.min_boundary_spacing_m <= 0.0
+            or cfg.min_boundary_spacing_m > cfg.lane_width_m
+        ):
+            raise ValueError(
+                "min_boundary_spacing_m must satisfy "
+                "0 < minimum <= lane_width_m"
+            )
+        if cfg.max_boundary_spacing_m < cfg.lane_width_m:
+            raise ValueError(
+                "max_boundary_spacing_m must be >= lane_width_m"
+            )
         if not math.isfinite(cfg.bev_reference_forward_offset_m):
             raise ValueError(
                 "bev_reference_forward_offset_m must be finite"
@@ -380,6 +433,18 @@ class SegmentationLaneProcessor:
             raise ValueError("Path sampling steps must be positive")
         if cfg.dashed_piece_threshold < 2:
             raise ValueError("dashed_piece_threshold must be at least 2")
+        if str(cfg.initial_lane).strip().lower() not in (
+            "auto",
+            "lane_1",
+            "lane_2",
+        ):
+            raise ValueError(
+                "initial_lane must be auto, lane_1, or lane_2"
+            )
+        if cfg.lane_state_confirm_frames <= 0:
+            raise ValueError(
+                "lane_state_confirm_frames must be positive"
+            )
         if cfg.lane_track_max_age_frames < 0:
             raise ValueError(
                 "lane_track_max_age_frames cannot be negative"
@@ -394,6 +459,10 @@ class SegmentationLaneProcessor:
             )
         if cfg.path_bottom_margin < 0:
             raise ValueError("path_bottom_margin cannot be negative")
+        if cfg.path_polynomial_degree not in (2, 3):
+            raise ValueError(
+                "path_polynomial_degree must be 2 or 3"
+            )
         if not 0.0 <= cfg.path_ema_alpha <= 1.0:
             raise ValueError("path_ema_alpha must be between 0 and 1")
         if cfg.path_transition_blend_frames <= 0:
@@ -406,12 +475,6 @@ class SegmentationLaneProcessor:
             )
         if cfg.bbox_close_ksize < 1:
             raise ValueError("bbox_close_ksize must be at least 1")
-        if cfg.path_spline_smooth_factor < 0.0:
-            raise ValueError(
-                "path_spline_smooth_factor cannot be negative"
-            )
-        if cfg.path_spline_points < 4:
-            raise ValueError("path_spline_points must be at least 4")
 
     @staticmethod
     def _resolve_device(requested: str) -> Any:
@@ -652,8 +715,9 @@ class SegmentationLaneProcessor:
     def _extract_mask_pieces(
         self,
         mask: np.ndarray,
+        instances: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> Tuple[List[LaneGroup], np.ndarray]:
-        """Extract lane components from a mask received through a ROS topic."""
+        """Extract mask components and attach overlapping YOLO semantics."""
 
         if mask.ndim == 3:
             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
@@ -674,6 +738,41 @@ class SegmentationLaneProcessor:
             if area < self.config.min_component_area:
                 continue
             component = (labels == label).astype(np.uint8)
+            semantic_type: Optional[str] = None
+            semantic_confidence = 0.0
+            best_semantic_score = 0.0
+            if instances:
+                for instance in instances:
+                    class_name = str(
+                        instance.get("class_name", "")
+                    ).strip().lower()
+                    if "dashed" in class_name:
+                        candidate_type = "DASHED"
+                    elif "solid" in class_name:
+                        candidate_type = "SOLID"
+                    else:
+                        continue
+                    x1 = max(0, int(instance.get("x_min", 0)))
+                    y1 = max(0, int(instance.get("y_min", 0)))
+                    x2 = min(
+                        total_mask.shape[1],
+                        int(instance.get("x_max", 0)) + 1,
+                    )
+                    y2 = min(
+                        total_mask.shape[0],
+                        int(instance.get("y_max", 0)) + 1,
+                    )
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    overlap = int(
+                        np.count_nonzero(component[y1:y2, x1:x2])
+                    )
+                    confidence = float(instance.get("confidence", 0.0))
+                    score = overlap * max(confidence, 0.0)
+                    if score > best_semantic_score:
+                        best_semantic_score = score
+                        semantic_type = candidate_type
+                        semantic_confidence = confidence
             points = self._component_center_points(
                 component,
                 self.config.center_sample_step,
@@ -693,7 +792,9 @@ class SegmentationLaneProcessor:
                     "y_min": y_min,
                     "y_max": y_max,
                     "area": area,
-                    "confidence": 1.0,
+                    "confidence": semantic_confidence,
+                    "semantic_type": semantic_type,
+                    "semantic_confidence": semantic_confidence,
                     "x_ref": self._curve_x(
                         curve,
                         x_reference_y,
@@ -786,9 +887,197 @@ class SegmentationLaneProcessor:
         center_x = self.config.warp_width * 0.5
         return "left" if group["x_ref"] < center_x else "right"
 
-    def _classify_which_lane(
+    def _group_type(
+        self, group: LaneGroup
+    ) -> Tuple[str, Optional[float], str]:
+        votes = {"DASHED": 0.0, "SOLID": 0.0}
+        confidences: Dict[str, List[float]] = {
+            "DASHED": [],
+            "SOLID": [],
+        }
+        for piece in group["pieces"]:
+            semantic_type = piece.get("semantic_type")
+            confidence = float(
+                piece.get("semantic_confidence", 0.0)
+            )
+            if semantic_type in votes and confidence > 0.0:
+                votes[semantic_type] += confidence
+                confidences[semantic_type].append(confidence)
+
+        if votes["DASHED"] > 0.0 or votes["SOLID"] > 0.0:
+            lane_type = max(votes, key=votes.get)
+            return (
+                lane_type,
+                float(np.mean(confidences[lane_type])),
+                "yolo",
+            )
+
+        fallback_type = (
+            "DASHED"
+            if len(group["pieces"])
+            >= self.config.dashed_piece_threshold
+            else "SOLID"
+        )
+        return fallback_type, None, "piece_count"
+
+    def _group_is_dashed(self, group: LaneGroup) -> bool:
+        lane_type, _, _ = self._group_type(group)
+        return lane_type == "DASHED"
+
+    def _filter_boundary_spacing(
+        self,
+        left: Optional[LaneGroup],
+        right: Optional[LaneGroup],
+    ) -> Tuple[Optional[LaneGroup], Optional[LaneGroup]]:
+        """Keep one boundary when a detected pair is physically too close."""
+        if left is None or right is None:
+            return left, right
+        spacing_px = float(right["x_ref"]) - float(left["x_ref"])
+        minimum_px = (
+            self.config.min_boundary_spacing_m
+            * self.config.pixels_per_meter
+        )
+        maximum_px = (
+            self.config.max_boundary_spacing_m
+            * self.config.pixels_per_meter
+        )
+        if minimum_px <= spacing_px <= maximum_px:
+            return left, right
+
+        if self._group_reliability(left) >= self._group_reliability(right):
+            return left, None
+        return None, right
+
+    def _group_reliability(
+        self, group: LaneGroup
+    ) -> Tuple[float, float, float]:
+        _, confidence, source = self._group_type(group)
+        semantic_score = (
+            float(confidence)
+            if source == "yolo" and confidence is not None
+            else 0.0
+        )
+        return (
+            semantic_score,
+            float(group.get("span", 0.0)),
+            float(group.get("area", 0.0)),
+        )
+
+    def _solid_dashed_solid_topology(
+        self, groups: List[LaneGroup]
+    ) -> Tuple[
+        Optional[LaneGroup],
+        Optional[LaneGroup],
+        Optional[LaneGroup],
+    ]:
+        """Find the most plausible SOLID-DASHED-SOLID road topology."""
+        usable = [
+            group
+            for group in groups
+            if self._group_has_path_overlap(group)
+        ]
+        dashed_groups = [
+            group
+            for group in usable
+            if self._group_is_dashed(group)
+        ]
+        solid_groups = [
+            group
+            for group in usable
+            if not self._group_is_dashed(group)
+        ]
+        if not dashed_groups or not solid_groups:
+            return None, None, None
+
+        expected_spacing = (
+            self.config.lane_width_m
+            * self.config.pixels_per_meter
+        )
+        minimum_spacing = (
+            self.config.min_boundary_spacing_m
+            * self.config.pixels_per_meter
+        )
+        maximum_spacing = (
+            self.config.max_boundary_spacing_m
+            * self.config.pixels_per_meter
+        )
+        candidates = []
+        for dashed in dashed_groups:
+            dashed_x = float(dashed["x_ref"])
+            left_options = [
+                group
+                for group in solid_groups
+                if dashed_x - float(group["x_ref"])
+                >= minimum_spacing
+                and dashed_x - float(group["x_ref"])
+                <= maximum_spacing
+            ]
+            right_options = [
+                group
+                for group in solid_groups
+                if float(group["x_ref"]) - dashed_x
+                >= minimum_spacing
+                and float(group["x_ref"]) - dashed_x
+                <= maximum_spacing
+            ]
+            left = (
+                min(
+                    left_options,
+                    key=lambda group: dashed_x
+                    - float(group["x_ref"]),
+                )
+                if left_options
+                else None
+            )
+            right = (
+                min(
+                    right_options,
+                    key=lambda group: float(group["x_ref"])
+                    - dashed_x,
+                )
+                if right_options
+                else None
+            )
+            if left is None and right is None:
+                continue
+            spacing_error = 0.0
+            if left is not None:
+                spacing_error += abs(
+                    dashed_x
+                    - float(left["x_ref"])
+                    - expected_spacing
+                )
+            if right is not None:
+                spacing_error += abs(
+                    float(right["x_ref"])
+                    - dashed_x
+                    - expected_spacing
+                )
+            completeness = int(left is not None) + int(right is not None)
+            candidates.append(
+                (-completeness, spacing_error, dashed_x, left, dashed, right)
+            )
+        if not candidates:
+            return None, None, None
+        _, _, _, left, dashed, right = min(
+            candidates, key=lambda item: item[:3]
+        )
+        return left, dashed, right
+
+    def _infer_lane_from_groups(
         self, groups: List[LaneGroup]
     ) -> Optional[str]:
+        solid_left, dashed, solid_right = (
+            self._solid_dashed_solid_topology(groups)
+        )
+        if dashed is not None and (
+            solid_left is not None or solid_right is not None
+        ):
+            center_x = self.config.warp_width * 0.5
+            if center_x < float(dashed["x_ref"]):
+                return "lane_1"
+            return "lane_2"
+
         center_x = self.config.warp_width * 0.5
         nearest_groups: Dict[str, LaneGroup] = {}
         for side in ("left", "right"):
@@ -809,19 +1098,41 @@ class SegmentationLaneProcessor:
         if "left" not in nearest_groups or "right" not in nearest_groups:
             return None
 
-        left_is_dashed = (
-            len(nearest_groups["left"]["pieces"])
-            >= self.config.dashed_piece_threshold
+        left_is_dashed = self._group_is_dashed(
+            nearest_groups["left"]
         )
-        right_is_dashed = (
-            len(nearest_groups["right"]["pieces"])
-            >= self.config.dashed_piece_threshold
+        right_is_dashed = self._group_is_dashed(
+            nearest_groups["right"]
         )
         if not left_is_dashed and right_is_dashed:
             return "lane_1"
         if left_is_dashed and not right_is_dashed:
             return "lane_2"
         return None
+
+    def _classify_which_lane(
+        self, groups: List[LaneGroup]
+    ) -> Optional[str]:
+        """Latch the starting lane; never switch without an explicit command."""
+        if self._current_lane is not None:
+            return self._current_lane
+
+        inferred = self._infer_lane_from_groups(groups)
+        if inferred is None:
+            self._lane_candidate = None
+            self._lane_candidate_streak = 0
+            return None
+        if inferred == self._lane_candidate:
+            self._lane_candidate_streak += 1
+        else:
+            self._lane_candidate = inferred
+            self._lane_candidate_streak = 1
+        if (
+            self._lane_candidate_streak
+            >= self.config.lane_state_confirm_frames
+        ):
+            self._current_lane = inferred
+        return self._current_lane
 
     def _group_has_path_overlap(self, group: LaneGroup) -> bool:
         overlap_min = max(
@@ -905,79 +1216,37 @@ class SegmentationLaneProcessor:
     def _update_lane_tracks(
         self, groups: List[LaneGroup]
     ) -> Tuple[Optional[LaneGroup], Optional[LaneGroup]]:
-        """Frame-to-frame left/right tracking, ported from yolotl_ros2
-        main5.py's ``process_image`` step 5 (``tracked_lanes``).
+        """Use local curve-distance association without stale geometry."""
+        match_options: List[Tuple[float, str, LaneGroup]] = []
+        for side in ("left", "right"):
+            previous = self._tracked_lanes[side]["group"]
+            if previous is None:
+                continue
+            for group in groups:
+                if (
+                    self._group_side(group) != side
+                    or not self._group_has_path_overlap(group)
+                ):
+                    continue
+                score = self._group_match_distance(previous, group)
+                if score <= self.config.lane_track_match_threshold_px:
+                    match_options.append((score, side, group))
 
-        Candidates are sorted by ``x_ref`` (dolbatS's stand-in for main5's
-        ``x_bottom``). With exactly two candidates, they're assigned
-        left/right directly by that order regardless of tracking state --
-        no distance threshold, unlike the curve-matching this replaces.
-        With exactly one candidate, it's assigned to whichever side's last
-        position it's closer to (or by BEV-center split on a cold start).
-        Faithfully keeps main5's own limitation: 0 or 3+ candidates in a
-        frame are ignored entirely and existing tracks just age.
-        """
-
-        candidates = sorted(
-            (
-                group
-                for group in groups
-                if self._group_has_path_overlap(group)
-            ),
-            key=lambda group: float(group["x_ref"]),
-        )
-
-        left_track = self._tracked_lanes["left"]
-        right_track = self._tracked_lanes["right"]
-        current_left: Optional[LaneGroup] = None
-        current_right: Optional[LaneGroup] = None
-
-        if len(candidates) == 2:
-            current_left, current_right = candidates[0], candidates[1]
-        elif len(candidates) == 1:
-            detected = candidates[0]
-            left_previous = left_track["group"]
-            right_previous = right_track["group"]
-            distance_to_left = (
-                abs(
-                    float(detected["x_ref"])
-                    - float(left_previous["x_ref"])
-                )
-                if left_previous is not None
-                else float("inf")
-            )
-            distance_to_right = (
-                abs(
-                    float(detected["x_ref"])
-                    - float(right_previous["x_ref"])
-                )
-                if right_previous is not None
-                else float("inf")
-            )
-            if (
-                distance_to_left < distance_to_right
-                and left_previous is not None
-            ):
-                current_left = detected
-            elif (
-                distance_to_right < distance_to_left
-                and right_previous is not None
-            ):
-                current_right = detected
-            else:
-                center_x = self.config.warp_width * 0.5
-                if float(detected["x_ref"]) < center_x:
-                    current_left = detected
-                else:
-                    current_right = detected
-
-        for side, current in (
-            ("left", current_left),
-            ("right", current_right),
+        assignments: Dict[str, LaneGroup] = {}
+        used_group_ids = set()
+        for _, side, group in sorted(
+            match_options, key=lambda item: item[0]
         ):
+            if side in assignments or id(group) in used_group_ids:
+                continue
+            assignments[side] = group
+            used_group_ids.add(id(group))
+
+        for side in ("left", "right"):
             track = self._tracked_lanes[side]
-            if current is not None:
-                track["group"] = current
+            matched = assignments.get(side)
+            if matched is not None:
+                track["group"] = matched
                 track["age"] = 0
                 continue
             if track["group"] is not None:
@@ -989,10 +1258,32 @@ class SegmentationLaneProcessor:
                     track["group"] = None
                     track["age"] = 0
 
-        return (
-            self._tracked_lanes["left"]["group"],
-            self._tracked_lanes["right"]["group"],
-        )
+        center_x = self.config.warp_width * 0.5
+        for side in ("left", "right"):
+            track = self._tracked_lanes[side]
+            if track["group"] is not None:
+                continue
+            candidates = [
+                group
+                for group in groups
+                if self._group_side(group) == side
+                and self._group_has_path_overlap(group)
+                and id(group) not in used_group_ids
+            ]
+            if not candidates:
+                continue
+            initialized = min(
+                candidates,
+                key=lambda group: abs(
+                    float(group["x_ref"]) - center_x
+                ),
+            )
+            track["group"] = initialized
+            track["age"] = 0
+            assignments[side] = initialized
+            used_group_ids.add(id(initialized))
+
+        return assignments.get("left"), assignments.get("right")
 
     def _raw_solid_candidate(
         self,
@@ -1008,7 +1299,7 @@ class SegmentationLaneProcessor:
         solid_candidates = [
             group
             for group in groups
-            if len(group["pieces"]) == 1
+            if not self._group_is_dashed(group)
             and self._group_has_path_overlap(group)
         ]
         if not solid_candidates:
@@ -1070,6 +1361,7 @@ class SegmentationLaneProcessor:
             if confirmed:
                 self._solid_active_group = candidate
                 self._solid_missing_frames = 0
+                return candidate, candidate_side
             else:
                 self._solid_missing_frames += 1
 
@@ -1077,10 +1369,9 @@ class SegmentationLaneProcessor:
                 self._solid_missing_frames
                 < self.config.solid_exit_frames
             ):
-                return (
-                    self._solid_active_group,
-                    self._solid_active_side,
-                )
+                # Preserve only the preference latch. Never feed a stale
+                # boundary into a path with current-frame geometry.
+                return None, None
             self._solid_active_group = None
             self._solid_active_side = None
             self._solid_missing_frames = 0
@@ -1105,10 +1396,132 @@ class SegmentationLaneProcessor:
         int,
     ]:
         dashed_region_count = max(
-            (len(group["pieces"]) for group in groups),
+            (
+                max(
+                    len(group["pieces"]),
+                    self.config.dashed_piece_threshold,
+                )
+                for group in groups
+                if self._group_is_dashed(group)
+            ),
             default=0,
         )
-        left, right = self._update_lane_tracks(groups)
+        solid_left, dashed, solid_right = (
+            self._solid_dashed_solid_topology(groups)
+        )
+        if dashed is not None:
+            lane_state = (
+                self._current_lane
+                or self._infer_lane_from_groups(groups)
+            )
+            if lane_state == "lane_1":
+                self._using_tracked_boundary = False
+                return (
+                    solid_left,
+                    dashed,
+                    (
+                        "lane1_solid_dashed_hold"
+                        if solid_left is not None
+                        else "lane1_dashed_right_boundary_hold"
+                    ),
+                    dashed_region_count,
+                )
+            if lane_state == "lane_2":
+                self._using_tracked_boundary = False
+                return (
+                    dashed,
+                    solid_right,
+                    (
+                        "lane2_dashed_solid_hold"
+                        if solid_right is not None
+                        else "lane2_dashed_left_boundary_hold"
+                    ),
+                    dashed_region_count,
+                )
+
+        # Both semantic types are visible but no pair satisfies the
+        # 800--900 mm geometry. Treat one as a likely false detection and
+        # follow only the group with the stronger original YOLO confidence.
+        semantic_dashed = [
+            group
+            for group in groups
+            if self._group_is_dashed(group)
+            and self._group_has_path_overlap(group)
+        ]
+        semantic_solid = [
+            group
+            for group in groups
+            if not self._group_is_dashed(group)
+            and self._group_has_path_overlap(group)
+        ]
+        lane_state = self._current_lane or self._infer_lane_from_groups(groups)
+        if semantic_dashed and semantic_solid and lane_state is not None:
+            strongest = max(
+                semantic_dashed + semantic_solid,
+                key=self._group_reliability,
+            )
+            strongest_is_dashed = self._group_is_dashed(strongest)
+            self._using_tracked_boundary = False
+            if lane_state == "lane_2":
+                return (
+                    strongest if strongest_is_dashed else None,
+                    strongest if not strongest_is_dashed else None,
+                    "invalid_spacing_yolo_confidence",
+                    dashed_region_count,
+                )
+            return (
+                strongest if not strongest_is_dashed else None,
+                strongest if strongest_is_dashed else None,
+                "invalid_spacing_yolo_confidence",
+                dashed_region_count,
+            )
+
+        if self._current_lane in ("lane_1", "lane_2"):
+            center_x = self.config.warp_width * 0.5
+            dashed_candidates = [
+                group
+                for group in groups
+                if self._group_is_dashed(group)
+                and self._group_has_path_overlap(group)
+            ]
+            if self._current_lane == "lane_2":
+                left_dashed = [
+                    group
+                    for group in dashed_candidates
+                    if float(group["x_ref"]) < center_x
+                ]
+                if left_dashed:
+                    self._using_tracked_boundary = False
+                    return (
+                        max(
+                            left_dashed,
+                            key=lambda group: float(group["x_ref"]),
+                        ),
+                        None,
+                        "lane2_dashed_left_boundary_hold",
+                        dashed_region_count,
+                    )
+            else:
+                right_dashed = [
+                    group
+                    for group in dashed_candidates
+                    if float(group["x_ref"]) >= center_x
+                ]
+                if right_dashed:
+                    self._using_tracked_boundary = False
+                    return (
+                        None,
+                        min(
+                            right_dashed,
+                            key=lambda group: float(group["x_ref"]),
+                        ),
+                        "lane1_dashed_right_boundary_hold",
+                        dashed_region_count,
+                    )
+
+        left, right = self._filter_boundary_spacing(
+            *self._update_lane_tracks(groups)
+        )
         solid_candidate, solid_side = self._raw_solid_candidate(
             groups, dashed_region_count
         )
@@ -1133,11 +1546,9 @@ class SegmentationLaneProcessor:
                 dashed_region_count,
             )
 
-        self._using_tracked_boundary = any(
-            self._tracked_lanes[side]["group"] is not None
-            and self._tracked_lanes[side]["age"] > 0
-            for side in ("left", "right")
-        )
+        # No current boundary means _build_path() returns no path and
+        # _smooth_temporal() alone may reuse the last complete path.
+        self._using_tracked_boundary = False
         if solid_candidate is not None:
             selection_mode = "solid_candidate_pending"
         elif (
@@ -1368,7 +1779,7 @@ class SegmentationLaneProcessor:
 
         return center_xs, center_ys
 
-    def _build_path(
+    def _build_path_spline(
         self,
         left: Optional[LaneGroup],
         right: Optional[LaneGroup],
@@ -1432,6 +1843,8 @@ class SegmentationLaneProcessor:
         instead. Falls back to the raw input when there are too few
         distinct points for a cubic fit."""
 
+        from scipy.interpolate import splev, splprep
+
         if len(xs) < 4:
             return xs, ys
 
@@ -1457,7 +1870,7 @@ class SegmentationLaneProcessor:
         except Exception:
             return xs, ys
 
-    def _smooth_spatial(self, path: PointArray) -> PointArray:
+    def _smooth_spatial_spline(self, path: PointArray) -> PointArray:
         if path is None or len(path) < 3:
             return None
 
@@ -1502,6 +1915,217 @@ class SegmentationLaneProcessor:
         return np.column_stack(
             (x_values, y_values[valid])
         ).astype(np.float32)
+
+    def _raw_path_y_values(self) -> np.ndarray:
+        return np.arange(
+            self.config.warp_height
+            - self.config.path_bottom_margin,
+            self.config.path_top_y - 1,
+            -self.config.path_step_px,
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _sample_group_on_y(
+        group: Optional[LaneGroup],
+        y_values: np.ndarray,
+    ) -> np.ndarray:
+        sampled = np.full(y_values.shape, np.nan, dtype=np.float32)
+        if group is None:
+            return sampled
+        valid = (
+            (y_values >= float(group["y_min"]))
+            & (y_values <= float(group["y_max"]))
+        )
+        if np.any(valid):
+            sampled[valid] = np.polyval(
+                group["curve"], y_values[valid]
+            ).astype(np.float32)
+        return sampled
+
+    def _normal_offset_on_y(
+        self,
+        group: Optional[LaneGroup],
+        y_values: np.ndarray,
+        direction: float,
+    ) -> np.ndarray:
+        sampled = np.full(y_values.shape, np.nan, dtype=np.float32)
+        if group is None:
+            return sampled
+        y_min = float(group["y_min"])
+        y_max = float(group["y_max"])
+        if y_max - y_min < 2.0:
+            return sampled
+
+        source_y = np.arange(
+            y_min, y_max + 1.0, 1.0, dtype=np.float32
+        )
+        coefficients = np.asarray(group["curve"], dtype=np.float64)
+        source_x = np.polyval(coefficients, source_y)
+        slope = 2.0 * coefficients[0] * source_y + coefficients[1]
+        normal_scale = np.sqrt(1.0 + np.square(slope))
+        offset_px = (
+            0.5
+            * self.config.lane_width_m
+            * self.config.pixels_per_meter
+        )
+        offset_x = source_x + direction * offset_px / normal_scale
+        offset_y = source_y - direction * offset_px * slope / normal_scale
+        finite = np.isfinite(offset_x) & np.isfinite(offset_y)
+        if np.count_nonzero(finite) < 2:
+            return sampled
+
+        order = np.argsort(offset_y[finite])
+        sorted_y = offset_y[finite][order]
+        sorted_x = offset_x[finite][order]
+        unique_y, unique_indices = np.unique(
+            sorted_y, return_index=True
+        )
+        unique_x = sorted_x[unique_indices]
+        if len(unique_y) < 2:
+            return sampled
+        valid = (
+            (y_values >= unique_y[0])
+            & (y_values <= unique_y[-1])
+        )
+        sampled[valid] = np.interp(
+            y_values[valid], unique_y, unique_x
+        ).astype(np.float32)
+
+        endpoint_gap = (
+            ~np.isfinite(sampled)
+            & (y_values >= y_min)
+            & (y_values <= y_max)
+        )
+        if np.any(endpoint_gap):
+            gap_y = y_values[endpoint_gap]
+            gap_x = np.polyval(coefficients, gap_y)
+            gap_slope = (
+                2.0 * coefficients[0] * gap_y + coefficients[1]
+            )
+            gap_scale = np.sqrt(1.0 + np.square(gap_slope))
+            sampled[endpoint_gap] = (
+                gap_x + direction * offset_px / gap_scale
+            ).astype(np.float32)
+        return sampled
+
+    def _build_path(
+        self,
+        left: Optional[LaneGroup],
+        right: Optional[LaneGroup],
+    ) -> Tuple[PointArray, str]:
+        if left is None and right is None:
+            return None, "no_boundary"
+
+        y_values = self._raw_path_y_values()
+        left_x = self._sample_group_on_y(left, y_values)
+        right_x = self._sample_group_on_y(right, y_values)
+        left_offset = self._normal_offset_on_y(
+            left, y_values, direction=1.0
+        )
+        right_offset = self._normal_offset_on_y(
+            right, y_values, direction=-1.0
+        )
+
+        path_x = np.full(y_values.shape, np.nan, dtype=np.float32)
+        both = (
+            np.isfinite(left_x)
+            & np.isfinite(right_x)
+            & (right_x > left_x)
+        )
+        path_x[both] = 0.5 * (left_x[both] + right_x[both])
+
+        left_only = ~np.isfinite(path_x) & np.isfinite(left_offset)
+        path_x[left_only] = left_offset[left_only]
+        right_only = ~np.isfinite(path_x) & np.isfinite(right_offset)
+        path_x[right_only] = right_offset[right_only]
+
+        valid = np.isfinite(path_x)
+        if np.count_nonzero(valid) < 3:
+            return None, "insufficient_path"
+        path_array = np.column_stack(
+            (path_x[valid], y_values[valid])
+        ).astype(np.float32)
+        margin = self.config.warp_width * 0.15
+        in_range = (
+            (path_array[:, 0] >= -margin)
+            & (path_array[:, 0] < self.config.warp_width + margin)
+        )
+        path_array = path_array[in_range]
+        if len(path_array) < 3:
+            return None, "path_out_of_range"
+        if left is not None and right is not None:
+            reason = "fused_boundaries"
+        elif left is not None:
+            reason = "left_boundary_normal_offset"
+        else:
+            reason = "right_boundary_normal_offset"
+        return path_array, reason
+
+    def _smooth_spatial(self, path: PointArray) -> PointArray:
+        if path is None or len(path) < 3:
+            return None
+        degree = self.config.path_polynomial_degree
+        if degree == 3 and len(np.unique(path[:, 1])) < 4:
+            degree = 2
+        try:
+            coefficients = np.polyfit(
+                path[:, 1], path[:, 0], degree
+            )
+        except (TypeError, ValueError, np.linalg.LinAlgError):
+            if degree != 3:
+                return path
+            try:
+                coefficients = np.polyfit(
+                    path[:, 1], path[:, 0], 2
+                )
+            except (TypeError, ValueError, np.linalg.LinAlgError):
+                return path
+        y_values = self._path_y_values()
+        x_values = np.polyval(coefficients, y_values)
+        if not np.all(np.isfinite(x_values)):
+            return None
+        margin = self.config.warp_width * 0.15
+        x_values = np.clip(
+            x_values,
+            -margin,
+            self.config.warp_width + margin,
+        )
+        return np.column_stack(
+            (x_values, y_values)
+        ).astype(np.float32)
+
+    def _anchor_path_to_vehicle_center(
+        self, path: PointArray
+    ) -> PointArray:
+        """Pin the nearest path end to the vehicle center without a kink."""
+        if path is None or len(path) == 0:
+            return None
+
+        anchored = np.asarray(path, dtype=np.float32).copy()
+        nearest_index = int(np.argmax(anchored[:, 1]))
+        farthest_y = float(np.min(anchored[:, 1]))
+        nearest_y = float(anchored[nearest_index, 1])
+        vehicle_x = float(self.config.warp_width) * 0.5
+        vehicle_y = float(self.config.warp_height - 1)
+        correction = vehicle_x - float(anchored[nearest_index, 0])
+
+        y_span = max(nearest_y - farthest_y, 1.0)
+        blend = np.clip(
+            (anchored[:, 1] - farthest_y) / y_span, 0.0, 1.0
+        )
+        blend = blend * blend * (3.0 - 2.0 * blend)
+        anchored[:, 0] += correction * blend.astype(np.float32)
+        anchored[nearest_index, 0] = vehicle_x
+
+        if nearest_y < vehicle_y:
+            vehicle_point = np.asarray(
+                [[vehicle_x, vehicle_y]], dtype=np.float32
+            )
+            anchored = np.insert(
+                anchored, nearest_index, vehicle_point, axis=0
+            )
+        return anchored
 
     def _smooth_temporal(
         self,
@@ -1619,11 +2243,17 @@ class SegmentationLaneProcessor:
                 cv2.polylines(debug, [points], False, color, 2)
                 label_point = tuple(points[len(points) // 2])
                 piece_count = len(group["pieces"])
+                lane_type, type_confidence, type_source = (
+                    self._group_type(group)
+                )
+                confidence_text = (
+                    f" {type_confidence * 100.0:.0f}%"
+                    if type_confidence is not None
+                    else ""
+                )
                 line_type = (
-                    f"DASHED x{piece_count}"
-                    if piece_count
-                    >= self.config.dashed_piece_threshold
-                    else "SOLID"
+                    f"{lane_type} x{piece_count}{confidence_text} "
+                    f"({type_source})"
                 )
                 cv2.putText(
                     debug,
@@ -1699,17 +2329,12 @@ class SegmentationLaneProcessor:
     ) -> PathPlanResult:
         """Plan only; detection and vehicle control belong to other nodes.
 
-        ``instances`` is the per-detection bbox list from
-        ``DetectionOutput.instances`` (lane_detect.py). When given, pieces
-        are extracted per detection bbox (``_extract_bbox_pieces``); when
-        omitted, this falls back to connected-components over the whole
-        combined mask (``_extract_mask_pieces``).
+        Local connected-component extraction remains authoritative for
+        geometry. YOLO instance boxes optionally attach dashed/solid class
+        confidence to each overlapping component.
         """
 
-        if instances:
-            pieces, _ = self._extract_bbox_pieces(mask, instances)
-        else:
-            pieces, _ = self._extract_mask_pieces(mask)
+        pieces, _ = self._extract_mask_pieces(mask, instances)
         groups = self._group_pieces(pieces)
         which_lane = self._classify_which_lane(groups)
         (
@@ -1724,7 +2349,9 @@ class SegmentationLaneProcessor:
             "solid_right_preferred",
         ):
             reason = selection_mode
-        spatial_path = self._smooth_spatial(raw_path)
+        spatial_path = self._anchor_path_to_vehicle_center(
+            self._smooth_spatial(raw_path)
+        )
         final_path, fallback = self._smooth_temporal(
             spatial_path,
             f"{selection_mode}:{reason}",
@@ -1737,15 +2364,19 @@ class SegmentationLaneProcessor:
                 continue
             label_point = points[len(points) // 2]
             piece_count = len(group["pieces"])
+            lane_type, type_confidence, type_source = (
+                self._group_type(group)
+            )
             box_padding = 15.0
             detected_lines.append(
                 {
-                    "type": (
-                        "DASHED"
-                        if piece_count
-                        >= self.config.dashed_piece_threshold
-                        else "SOLID"
+                    "type": lane_type,
+                    "type_confidence": (
+                        None
+                        if type_confidence is None
+                        else round(type_confidence, 4)
                     ),
+                    "type_source": type_source,
                     "x": round(float(label_point[0]), 1),
                     "y": round(float(label_point[1]), 1),
                     "x_min": round(

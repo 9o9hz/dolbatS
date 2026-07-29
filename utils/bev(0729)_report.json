@@ -1,0 +1,59 @@
+{
+  "input_image": "/home/hanjingyu/dolbatS/utils/rosbag2_2026_07_23-14_55_06_captured_frames/frame_000639_t000038969ms_ts1784786145048977827.jpg",
+  "calibration": "/home/hanjingyu/dolbatS/utils/camera_calibration.npz",
+  "src_points_order": [
+    "LB",
+    "RB",
+    "LT",
+    "RT"
+  ],
+  "src_points": [
+    [
+      -27.0,
+      525.0
+    ],
+    [
+      693.0,
+      554.0
+    ],
+    [
+      217.0,
+      212.0
+    ],
+    [
+      474.66949462890625,
+      222.37835693359375
+    ]
+  ],
+  "source_extension_px": 100,
+  "bev_padding_px": {
+    "left": 100,
+    "right": 100,
+    "top": 100,
+    "bottom": 0
+  },
+  "auto_crop_empty_bottom": true,
+  "output_size": [
+    431,
+    476
+  ],
+  "reference_box_inner_mm": [
+    560.0,
+    490.0
+  ],
+  "reference_box_target_ratio": 1.1428571428571428,
+  "reference_box_raw_ratios": [
+    3.5878975568527975
+  ],
+  "applied_x_scale": 0.31830020446283225,
+  "reference_box_ratios": [
+    1.1428571428571428
+  ],
+  "mean_ratio_error_percent": 0.0,
+  "max_ratio_error_percent": 0.0,
+  "reference_box_size_cv_percent": 0.0,
+  "horizontal_length_cv_percent": 0.4615553746163099,
+  "vertical_length_cv_percent": 0.9914578711437058,
+  "max_corner_angle_error_deg": 1.5992426214756392,
+  "reference_box_inside_roi": true
+}

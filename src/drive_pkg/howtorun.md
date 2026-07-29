@@ -23,10 +23,9 @@
 
 경로 생성 내부 알고리즘(`lane_processing.py`)은 자매 프로젝트
 `yolotl_ros2`의 `main5.py`(검출 bbox 단위 최대 성분 추출, 프레임 간 좌/우
-트래킹, b-spline 공간 평활화 + 기존 EMA 시간축 평활화, Pure Pursuit
+트래킹, 3차 다항식 공간 평활화 + 기존 EMA 시간축 평활화, Pure Pursuit
 lookahead 탐색)를 기반으로 한다. 실선/점선 판별과 1차선/2차선(`which_lane`)
 판정, 실선 우선 히스테리시스는 이 대회 규정 특화 로직이라 그대로 유지된다.
-`scipy`(b-spline)가 런타임 의존성으로 추가돼 있다.
 
 ## 전체 실행
 
@@ -112,13 +111,16 @@ invalid이면 과거 풀조향값을 사용하지 않고 정지한다.
 | 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
 | 후보 | `/control/candidate/lane/steer_angle` | `std_msgs/Float32` | 차선 후보 조향각(deg) |
 | 후보 | `/control/candidate/lane/valid` | `std_msgs/Bool` | 현재 path 기반 후보 유효 여부 |
-| 입력 | `/auto_throttle` | `std_msgs/Float32` | 최종 throttle 피드백(동적 LD 계산) |
+| 입력 | `/auto_throttle` | `std_msgs/Float32` | 최종 throttle 상태 표시용 피드백 |
 | 제어 | `/lane/control/status` | `std_msgs/String` | 후보 조향·LD JSON (`pure_pursuit` 발행) |
 | 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
 `pure_pursuit`는 실제 주행 명령이나 throttle 후보를 발행하지 않는다.
 빈 경로를 받으면 `valid=false`를 발행하고 마지막 조향값은 상태 표시용으로
 유지한다.
+가변 look-ahead는 현재 조향각이 커질수록 `lookahead_min_m` 쪽으로
+짧아진다. `dynamic_lookahead_enabled=false`이면 `lookahead_m`의 고정
+거리를 사용한다.
 
 각 단계 확인 예:
 
