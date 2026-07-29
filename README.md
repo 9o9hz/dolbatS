@@ -68,11 +68,7 @@ future mission_manager -> /auto_steer_angle, /auto_throttle
 파라미터는
 `src/drive_pkg/config/drive_pipeline.yaml` 한 곳에서 노드별로 관리합니다.
 통합 준비 구성은 `ros2 launch drive_pkg drive_pipeline.launch.py`를 사용하며
-이 구성에는 `/auto_*` publisher가 없다. 차량 없이 후보를 확인하거나
-lane-only로 명시적인 단독 시험을 할 때만
-`ros2 launch drive_pkg drive_standalone.launch.py`를 사용한다. 이 launch는
-후보 조향/추천 throttle 출력을 `/auto_*`로 바꾸므로 추후
-mission_manager와 동시에 실행하면 안 된다. 상세 토픽과 실행 예시는
+이 구성에는 `/auto_*` publisher가 없다. 상세 토픽과 실행 예시는
 `src/drive_pkg/howtorun.md`를 참고하세요.
 
 필요 패키지:

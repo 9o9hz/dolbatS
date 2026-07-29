@@ -39,15 +39,6 @@ ros2 topic echo /control/candidate/lane/throttle
 ros2 topic echo /control/candidate/lane/valid
 ```
 
-## 차선주행 단독 시험
-
-```bash
-ros2 launch drive_pkg drive_standalone.launch.py
-```
-
-이 launch만 Pure Pursuit 출력을 최종 `/auto_*` 토픽으로 연결한다.
-mission_manager와 동시에 실행하면 안 된다.
-
 ## 카메라와 detector
 
 ```bash

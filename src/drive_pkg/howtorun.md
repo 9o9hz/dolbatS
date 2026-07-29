@@ -42,14 +42,6 @@ ros2 launch drive_pkg drive_pipeline.launch.py
 `pure_pursuit`의 `local_display`(기본값 true)가 켜져 있으면 통합 시각화
 창도 이때 함께 뜬다.
 
-차선주행만 차량에 연결하는 명시적 단독 시험은 다음 launch를 사용한다.
-이 launch는 Pure Pursuit 출력 토픽 파라미터를 `/auto_*`로 덮어쓴다.
-추후 mission_manager와 동시에 실행하면 안 된다.
-
-```bash
-ros2 launch drive_pkg drive_standalone.launch.py
-```
-
 소스 트리의 YAML을 바로 지정하려면:
 
 ```bash
