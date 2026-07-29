@@ -32,8 +32,8 @@ DEFAULTS = {
     "auto_steer_angle_abs_max": 23.0,
     "auto_throttle_max": 1.0,
     "throttle_curve_k": 0.0,
-    "lane_throttle_min": 0.3,
-    "lane_throttle_max": 0.6,
+    "lane_throttle_min": 0.4,
+    "lane_throttle_max": 0.8,
     "obstacle_throttle_min": 0.4,
     "obstacle_throttle_max": 0.8,
     "yellow_deceleration_sec": 3.0,
@@ -126,8 +126,8 @@ class MissionLogic:
         auto_steer_angle_abs_max: float = 23.0,
         auto_throttle_max: float = 1.0,
         throttle_curve_k: float = 0.0,
-        lane_throttle_min: float = 0.3,
-        lane_throttle_max: float = 0.6,
+        lane_throttle_min: float = 0.3
+        lane_throttle_max: float = 0.6
         obstacle_throttle_min: float = 0.4,
         obstacle_throttle_max: float = 0.8,
         yellow_deceleration_sec: float = 3.0,
@@ -146,7 +146,7 @@ class MissionLogic:
         self.green_forward_duration_sec = green_forward_duration_sec
         self.green_forward_throttle = green_forward_throttle
         self.green_forward_steer_deg = green_forward_steer_deg
-
+                                                                                                                                                                     
         self.lane = CandidateMemory()
         self.obstacle = CandidateMemory()
         self.obstacle_active = False
