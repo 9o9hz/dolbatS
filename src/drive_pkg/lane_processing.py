@@ -40,7 +40,24 @@ def _default_bev_params_path() -> Path:
         return source_path
 
 
-DEFAULT_MODEL = Path("/home/tak/lane_yolo_project/weight/best1.pt")
+def _default_model_path() -> Path:
+    source_path = Path(__file__).resolve().parent / "resource" / "best1.pt"
+    if source_path.is_file():
+        return source_path
+
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        return (
+            Path(get_package_share_directory("drive_pkg"))
+            / "resource"
+            / "best1.pt"
+        )
+    except (ImportError, LookupError):
+        return source_path
+
+
+DEFAULT_MODEL = _default_model_path()
 DEFAULT_BEV_PARAMS = _default_bev_params_path()
 
 PointArray = Optional[np.ndarray]
@@ -1771,4 +1788,3 @@ class SegmentationLaneProcessor:
                 else np.asarray(right["points"], dtype=np.float32)
             ),
         )
-

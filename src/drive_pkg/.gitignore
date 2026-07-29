@@ -43,6 +43,7 @@ AMENT_IGNORE
 
 # Weight files
 *.pt
+!resource/best1.pt
 *.pth
 *.onnx
 

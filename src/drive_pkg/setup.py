@@ -23,7 +23,10 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (
             f"share/{package_name}/resource",
-            ["resource/bev_params_0728.npz"],
+            [
+                "resource/bev_params_0728.npz",
+                "resource/best1.pt",
+            ],
         ),
         (
             f"share/{package_name}/config",

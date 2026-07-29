@@ -1,7 +1,7 @@
 drive_main:
   ros__parameters:
     # 모델/BEV 파일. bev_params가 빈 문자열이면 패키지 resource 기본값 사용.
-    model_path: "/home/tak/lane_yolo_project/weight/best1.pt"
+    # 생략 시 drive_pkg가 설치한 resource/best1.pt 사용.
     bev_params: ""
     calibration_width: 640
     calibration_height: 480

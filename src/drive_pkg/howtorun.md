@@ -54,6 +54,9 @@ ros2 launch drive_pkg drive_pipeline.launch.py \
 우선순위의 기본값으로 들어가므로, `--ros-args --params-file`을 같이 주면
 YAML 값이 최종 적용된다):
 
+기본 차선 모델은 패키지의 `resource/best1.pt`이며 설치 후에도
+`share/drive_pkg/resource/best1.pt`에서 자동으로 찾는다.
+
 ```bash
 ros2 run drive_pkg drive_main --weights /path/to/best.pt \
   --bev-params /path/to/bev_params.npz \
