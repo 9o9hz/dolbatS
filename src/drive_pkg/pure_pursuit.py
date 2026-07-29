@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""ROS 2 node: nav_msgs/Path -> 조향각(deg) + 정규화 throttle(-1.0~1.0),
-Float32 두 토픽으로 발행."""
+"""ROS 2 node: nav_msgs/Path -> lane control candidate topics."""
 
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
 
 from visualizer import LOW_LATENCY_QOS, DrivingVisualizer
 
@@ -23,8 +22,9 @@ from visualizer import LOW_LATENCY_QOS, DrivingVisualizer
 PARAMETER_DEFAULTS = {
     "path_topic": "/lane/path",
     "path_status_topic": "/lane/path/status",
-    "steer_angle_topic": "/auto_steer_angle",
-    "throttle_topic": "/auto_throttle",
+    "steer_angle_topic": "/control/candidate/lane/steer_angle",
+    "throttle_topic": "/control/candidate/lane/throttle",
+    "candidate_valid_topic": "/control/candidate/lane/valid",
     "max_speed_mps": 1.0,       # 이 속도(m/s)에서 throttle=1.0(포화)
     "auto_throttle_max": 1.0,   # 발행 직전 최종 안전 클램프 (|throttle| <= 이 값)
     "status_topic": "/lane/control/status",
@@ -341,7 +341,7 @@ class PurePursuitController:
 
 
 class PurePursuitNode(Node):
-    """Pure Pursuit controller isolated behind path and steer/throttle topics."""
+    """Publish lane steering and recommended-throttle candidates."""
 
     def __init__(self) -> None:
         super().__init__("pure_pursuit")
@@ -378,6 +378,7 @@ class PurePursuitNode(Node):
         path_status_topic = str(parameter("path_status_topic"))
         steer_angle_topic = str(parameter("steer_angle_topic"))
         throttle_topic = str(parameter("throttle_topic"))
+        candidate_valid_topic = str(parameter("candidate_valid_topic"))
         self.max_speed_mps = max(1e-6, float(parameter("max_speed_mps")))
         self.auto_throttle_max = min(
             1.0, abs(float(parameter("auto_throttle_max")))
@@ -388,6 +389,9 @@ class PurePursuitNode(Node):
         )
         self.throttle_publisher = self.create_publisher(
             Float32, throttle_topic, 10
+        )
+        self.candidate_valid_publisher = self.create_publisher(
+            Bool, candidate_valid_topic, 10
         )
         self.status_publisher = self.create_publisher(
             String,
@@ -464,20 +468,9 @@ class PurePursuitNode(Node):
             )
 
         self.get_logger().info(
-            f"{path_topic} -> {steer_angle_topic}, {throttle_topic}"
+            f"{path_topic} -> lane candidates: {steer_angle_topic}, "
+            f"{throttle_topic}, {candidate_valid_topic}"
         )
-
-    # ------------------------------------------------------------------
-    # Mission hook (structure only; no mission logic implemented yet).
-    # ------------------------------------------------------------------
-    def postprocess_command(
-        self, command: SteeringCommand
-    ) -> SteeringCommand:
-        """Called after Pure Pursuit computes a steering command, before
-        publishing. Future home for mission logic that overrides speed/
-        steering (stop line, traffic light, parking). Currently a
-        pass-through."""
-        return command
 
     def on_path_status(self, message: String) -> None:
         if self.visualizer is not None:
@@ -497,7 +490,6 @@ class PurePursuitNode(Node):
             dtype=np.float64,
         )
         command = self.controller.compute(points)
-        command = self.postprocess_command(command)
         self._publish_command(command)
 
     def _publish_command(self, command: SteeringCommand) -> None:
@@ -515,6 +507,7 @@ class PurePursuitNode(Node):
             throttle = 0.0
         self.steer_publisher.publish(Float32(data=float(steering_deg)))
         self.throttle_publisher.publish(Float32(data=throttle))
+        self.candidate_valid_publisher.publish(Bool(data=command.path_valid))
         status = {
             "path_valid": command.path_valid,
             "reason": command.reason,
@@ -526,8 +519,9 @@ class PurePursuitNode(Node):
             ),
             "lookahead_target_index": int(command.target_index),
             "desired_speed_mps": round(command.speed_mps, 3),
-            "published_steer_deg": round(steering_deg, 2),
-            "published_throttle": round(throttle, 3),
+            "candidate_steer_deg": round(steering_deg, 2),
+            "candidate_throttle": round(throttle, 3),
+            "candidate_valid": command.path_valid,
         }
         self.status_publisher.publish(
             String(data=json.dumps(status, ensure_ascii=False))
@@ -539,6 +533,7 @@ class PurePursuitNode(Node):
         if rclpy.ok():
             self.steer_publisher.publish(Float32(data=0.0))
             self.throttle_publisher.publish(Float32(data=0.0))
+            self.candidate_valid_publisher.publish(Bool(data=False))
         if self.visualizer is not None:
             self.visualizer.destroy()
         return super().destroy_node()

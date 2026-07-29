@@ -11,7 +11,7 @@ S,ANGLE\n
 
 첫 번째 명령어는 돌쇠를 앞뒤로 움직이게 하는 명령어입니다. 
 
-`DIR`이 뜻하는 것은 방향으로, 앞으로 가기 위해서는 `F`, 뒤로 가기 위해서는 `B`를 작성하면 됩니다.
+`DIR`은 방향이며 전진은 `F`, 후진은 `R`, 정지는 `S`입니다.
 
 `SPEED`가 뜻하는 것은 속도입니다. 돌쇠는 `0`부터 `255`까지 속도를 가집니다.
 
@@ -33,7 +33,11 @@ S,15.3\n
 
 자세한 내용은 `steering_test.py` 파일 안에 `send_steer()`, `send_drive()` 함수를 참조하면 됩니다.
 
-Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 핀은 오른쪽 센서의 ECHO/TRIG로 사용합니다. 아두이노는 10ms마다 `현재속도,현재조향각,왼쪽거리cm,오른쪽거리cm` 형식으로 최신 상태를 송출합니다. 초음파 센서는 상호 간섭을 줄이기 위해 좌우를 번갈아 측정하며, 측정 실패 또는 범위 초과는 `-1.0`으로 표시합니다.
+Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 핀은 오른쪽 센서의 ECHO/TRIG로 사용합니다. 아두이노는 10ms마다 `signed_drive_pwm,현재조향각,왼쪽거리cm,오른쪽거리cm` 형식으로 최신 상태를 송출합니다. 첫 값은 실제 측정 속도가 아니라 현재 구동 명령 PWM이며 범위는 `-255~255`입니다(양수=전진, 음수=후진). 초음파 센서는 상호 간섭을 줄이기 위해 좌우를 번갈아 측정하며, 측정 실패 또는 범위 초과는 `-1.0`으로 표시합니다.
+
+유효한 `D,...` 명령이 500ms 동안 들어오지 않으면 Arduino watchdog이
+구동 PWM을 0으로 만들고 정지한다. 새 유효 명령이 오면 정상 제어로
+복귀하며, timeout 때 조향 목표는 갑자기 중앙으로 바꾸지 않고 유지한다.
 
 ```
 128,5.2,35.2,41.8
@@ -46,20 +50,29 @@ Arduino Mega의 22/23번 핀은 왼쪽 초음파 센서의 ECHO/TRIG, 24/25번 �
 
 ## ROS2 차선 주행 파이프라인
 
-차선 주행은 `drive_pkg` 안의 독립 노드 세 개가 토픽으로 연결됩니다.
+통합 구성에서 `pure_pursuit`는 최종 차량 명령이 아니라 차선 후보만
+발행합니다.
 
 ```text
 lane_detect -> /lane/detection/mask/compressed
             -> path_plan -> /lane/path
-                         -> pure_pursuit -> /auto_steer_angle
-                                         -> /auto_throttle
+                         -> pure_pursuit
+                              -> /control/candidate/lane/steer_angle
+                              -> /control/candidate/lane/throttle
+                              -> /control/candidate/lane/valid
+
+future mission_manager -> /auto_steer_angle, /auto_throttle
+                       -> serial_bridge -> Arduino
 ```
 
 파라미터는
 `src/drive_pkg/config/drive_pipeline.yaml` 한 곳에서 노드별로 관리합니다.
-전체 실행은 `ros2 launch drive_pkg drive_pipeline.launch.py`, 개별 실행은
-각각 `ros2 run drive_pkg lane_detect`, `path_plan`, `pure_pursuit`를
-사용합니다. 상세 토픽과 실행 예시는
+통합 준비 구성은 `ros2 launch drive_pkg drive_pipeline.launch.py`를 사용하며
+이 구성에는 `/auto_*` publisher가 없다. 차량 없이 후보를 확인하거나
+lane-only로 명시적인 단독 시험을 할 때만
+`ros2 launch drive_pkg drive_standalone.launch.py`를 사용한다. 이 launch는
+후보 조향/추천 throttle 출력을 `/auto_*`로 바꾸므로 추후
+mission_manager와 동시에 실행하면 안 된다. 상세 토픽과 실행 예시는
 `src/drive_pkg/howtorun.md`를 참고하세요.
 
 필요 패키지:
@@ -119,11 +132,15 @@ source install/setup.bash
 | `/camera/traffic_light/raw` | `sensor_msgs/Image` | 신호등 카메라 raw BGR 프레임 |
 | `/camera/lane/raw` | `sensor_msgs/Image` | 차선 카메라 raw BGR 프레임 |
 | `/camera/lane/detection_view` | `sensor_msgs/Image` | 차선 카메라의 RViz용 장애물 감지 영상 |
+| `/detect/traffic_light/detected` | `std_msgs/Bool` | 신호등 감지 여부 |
+| `/detect/traffic_light/color` | `std_msgs/String` | `red`, `yellow`, `green`, `none` |
+| `/detect/traffic_light/confidence` | `std_msgs/Float32` | 선택한 신호등 검출 confidence, 미검출은 `0.0` |
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
 | `/detect/obstacle/bottom_center` | `std_msgs/Float32MultiArray` | 감지된 경우에만 바운딩 박스 하단 중심 `[x, y]` 발행 |
 | `/ultrasonic/left_distance` | `std_msgs/Float32` | 왼쪽 초음파 거리(cm), 측정 실패는 `-1.0` |
 | `/ultrasonic/right_distance` | `std_msgs/Float32` | 오른쪽 초음파 거리(cm), 측정 실패는 `-1.0` |
+| `/vehicle/drive_pwm` | `std_msgs/Float32` | Arduino의 구동 명령 PWM(`-255~255`), 실제 측정 속도 아님 |
 | `/detect/obstacle_event` | `std_msgs/Int8MultiArray` | 초음파 장애물 상태가 바뀔 때만 `[event, avoid_direction]` 발행 |
 
 ## ROS2 초음파 장애물 이벤트

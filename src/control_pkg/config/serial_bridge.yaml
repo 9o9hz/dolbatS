@@ -1,0 +1,26 @@
+serial_bridge:
+  ros__parameters:
+    steer_command_topic: "/auto_steer_angle"
+    throttle_command_topic: "/auto_throttle"
+
+    serial_port: "/dev/ttyUSB0"
+    baud_rate: 115200
+    serial_startup_delay: 2.0
+    reconnect_interval_sec: 1.0
+    reconnect_log_interval_sec: 5.0
+
+    # 두 최종 명령이 모두 이 시간 안에 갱신돼야 구동 heartbeat를 보낸다.
+    command_timeout_sec: 0.3
+    control_output_rate_hz: 20.0
+    center_on_timeout: false
+
+    max_drive_pwm: 255
+    max_steer_angle: 20.0
+    throttle_deadband: 0.02
+    max_throttle: 1.0
+    invert_steer: false
+
+    steering_angle_topic: "/vehicle/current_steering_angle"
+    drive_pwm_topic: "/vehicle/drive_pwm"
+    left_distance_topic: "/ultrasonic/left_distance"
+    right_distance_topic: "/ultrasonic/right_distance"

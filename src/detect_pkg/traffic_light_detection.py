@@ -13,7 +13,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 
 
 DEFAULT_MODEL_FILENAME = "traffic_light_best.pt"
@@ -56,7 +56,10 @@ class TrafficLightDetectorPublisher(Node):
         self.declare_parameter("confidence_threshold", 0.5)
         self.declare_parameter("detected_topic", "/detect/traffic_light/detected")
         self.declare_parameter("color_topic", "/detect/traffic_light/color")
-        self.declare_parameter("raw_image_topic", "/camera/lane/raw")
+        self.declare_parameter(
+            "confidence_topic", "/detect/traffic_light/confidence"
+        )
+        self.declare_parameter("raw_image_topic", "/camera/traffic_light/raw")
         self.declare_parameter(
             "detection_image_topic", "/detect/traffic_light/detection_view"
         )
@@ -76,6 +79,9 @@ class TrafficLightDetectorPublisher(Node):
             self.get_parameter("detected_topic").get_parameter_value().string_value
         )
         color_topic = self.get_parameter("color_topic").get_parameter_value().string_value
+        confidence_topic = (
+            self.get_parameter("confidence_topic").get_parameter_value().string_value
+        )
         raw_image_topic = (
             self.get_parameter("raw_image_topic").get_parameter_value().string_value
         )
@@ -87,6 +93,9 @@ class TrafficLightDetectorPublisher(Node):
 
         self.detected_pub = self.create_publisher(Bool, detected_topic, 10)
         self.color_pub = self.create_publisher(String, color_topic, 10)
+        self.confidence_pub = self.create_publisher(
+            Float32, confidence_topic, 10
+        )
         self.detection_image_pub = self.create_publisher(
             Image, detection_image_topic, 10
         )
@@ -105,6 +114,7 @@ class TrafficLightDetectorPublisher(Node):
         self.get_logger().info(
             f"Subscribing to {raw_image_topic}=Image; publishing "
             f"{detected_topic}=Bool, {color_topic}=String(red/yellow/green/none), "
+            f"{confidence_topic}=Float32, "
             f"{detection_image_topic}=Image"
         )
 
@@ -125,6 +135,7 @@ class TrafficLightDetectorPublisher(Node):
         if frame is None:
             self.publish_detected(False)
             self.publish_color(None)
+            self.publish_confidence(0.0)
             return
 
         if not self.logged_first_frame:
@@ -132,10 +143,11 @@ class TrafficLightDetectorPublisher(Node):
             self.get_logger().info(f"First subscribed frame: {width}x{height}")
             self.logged_first_frame = True
 
-        color, bbox = self.detect_best_color(frame)
+        color, bbox, confidence = self.detect_best_color(frame)
         detected = color is not None
         self.publish_detected(detected)
         self.publish_color(color)
+        self.publish_confidence(confidence)
 
         detection_frame = frame.copy()
         self.draw_detection_overlay(detection_frame, color, bbox)
@@ -146,7 +158,11 @@ class TrafficLightDetectorPublisher(Node):
 
     def detect_best_color(
         self, frame
-    ) -> Tuple[Optional[str], Optional[Tuple[float, float, float, float]]]:
+    ) -> Tuple[
+        Optional[str],
+        Optional[Tuple[float, float, float, float]],
+        float,
+    ]:
         results = self.model.predict(frame, conf=self.confidence_threshold, verbose=False)
         best_color: Optional[str] = None
         best_bbox = None
@@ -172,7 +188,7 @@ class TrafficLightDetectorPublisher(Node):
                 best_color = color
                 best_bbox = (x1, y1, x2 - x1, y2 - y1)
 
-        return best_color, best_bbox
+        return best_color, best_bbox, max(0.0, best_conf)
 
     def publish_detected(self, detected: bool) -> None:
         msg = Bool()
@@ -183,6 +199,9 @@ class TrafficLightDetectorPublisher(Node):
         msg = String()
         msg.data = color if color is not None else "none"
         self.color_pub.publish(msg)
+
+    def publish_confidence(self, confidence: float) -> None:
+        self.confidence_pub.publish(Float32(data=float(confidence)))
 
     def image_message_to_bgr(self, msg: Image):
         if msg.encoding not in ("bgr8", "rgb8"):

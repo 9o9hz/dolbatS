@@ -1,8 +1,8 @@
 # drive_pkg 2노드 파이프라인
 
 `drive_pkg`는 두 개의 필수 노드로 나뉜다: `drive_main`(인식 + 경로 생성,
-`/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 제어, 조향각/정규화
-throttle을 `/auto_steer_angle`/`/auto_throttle`로 발행).
+`/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 차선 후보 조향각과
+추천 throttle, 유효 여부를 `/control/candidate/lane/*`로 발행).
 시각화는 별도 노드 없이 `pure_pursuit` 프로세스 안에 통합돼 있다
 (main5.py 스타일 로컬 cv2 창) — `drive_main`이 발행하는 디버그 토픽 4개와
 자기 자신의 제어 상태(토픽 왕복 없이 직접 전달)를 모아 한 창에 표시하며,
@@ -13,7 +13,7 @@ throttle을 `/auto_steer_angle`/`/auto_throttle`로 발행).
   -> drive_main (undistort -> BEV/YOLO 검출 -> 경로 생성)
   -> /lane/path
   -> pure_pursuit (Pure Pursuit 제어)
-  -> /auto_steer_angle, /auto_throttle
+  -> /control/candidate/lane/{steer_angle,throttle,valid}
 ```
 
 전체 파라미터는 `config/drive_pipeline.yaml`에서 `drive_main:`/`pure_pursuit:`
@@ -36,9 +36,19 @@ source install/setup.bash
 ros2 launch drive_pkg drive_pipeline.launch.py
 ```
 
-`drive_pipeline.launch.py`는 `drive_main`, `pure_pursuit` 두 노드를 함께
-띄운다. `pure_pursuit`의 `local_display`(기본값 true)가 켜져 있으면 통합
-시각화 창도 이때 함께 뜬다.
+`drive_pipeline.launch.py`는 통합 준비 구성으로 `drive_main`,
+`pure_pursuit` 두 노드를 함께 띄운다. 최종 판단 노드는 아직 없으므로
+이 구성의 `/auto_steer_angle`, `/auto_throttle` publisher 수는 0이다.
+`pure_pursuit`의 `local_display`(기본값 true)가 켜져 있으면 통합 시각화
+창도 이때 함께 뜬다.
+
+차선주행만 차량에 연결하는 명시적 단독 시험은 다음 launch를 사용한다.
+이 launch는 Pure Pursuit 출력 토픽 파라미터를 `/auto_*`로 덮어쓴다.
+추후 mission_manager와 동시에 실행하면 안 된다.
+
+```bash
+ros2 launch drive_pkg drive_standalone.launch.py
+```
 
 소스 트리의 YAML을 바로 지정하려면:
 
@@ -59,9 +69,8 @@ ros2 run drive_pkg drive_main --weights /path/to/best.pt \
   --ros-args --params-file config/drive_pipeline.yaml
 ```
 
-`pure_pursuit`는 별도 프로세스로 직접 실행해야 실제로 `/auto_steer_angle`/
-`/auto_throttle`이 발행된다 (`drive_main`은 더 이상 조향/속도를 계산하지
-않는다):
+`pure_pursuit`를 직접 실행하면 YAML에 정의된 lane candidate 토픽이
+발행된다:
 
 ```bash
 ros2 run drive_pkg pure_pursuit --ros-args \
@@ -82,19 +91,17 @@ ros2 run drive_pkg pure_pursuit --ros-args \
 `use_undistort: false`로 아예 끄거나, `calib_file`을 다른 경로로 지정할
 수 있다.
 
-## 미션 훅 (자리만 마련, 미구현)
+## 확장 경계
 
 두 노드에 각각 훅이 있다:
 
 - `drive_main.LaneDriveNode`: `preprocess_frame()`(undistort 직후, BEV/검출
   직전 호출), `postprocess_path()`(경로 생성 직후, `/lane/path` 발행 직전
   호출 — 정지선/장애물 회피처럼 경로 자체를 바꾸는 미션 로직의 자리).
-- `pure_pursuit.PurePursuitNode`: `postprocess_command()`(Pure Pursuit
-  계산 직후, `/auto_steer_angle`/`/auto_throttle` 발행 직전 호출 —
-  신호등/수직주차처럼 조향·속도 결과를 바꾸는 미션 로직의 자리).
-
-둘 다 현재는 pass-through이며, 이번 단계에서는 구조만 마련하고 실제 판정은
-구현하지 않았다.
+`pure_pursuit`에는 신호등·장애물·주차 판단을 넣지 않는다. 추후
+mission_manager가 candidate와 detector 결과를 구독해 최종 조향과 throttle을
+결정한다. Float32 candidate에는 timestamp가 없으므로 판단 노드는 각 callback
+수신 시각을 저장하고 `valid`와 함께 freshness를 검사해야 한다.
 
 ## 주요 토픽
 
@@ -109,24 +116,25 @@ ros2 run drive_pkg pure_pursuit --ros-args \
 | 계획 | `/lane/path/debug/compressed` | `sensor_msgs/CompressedImage` | 생성 경로 시각화 |
 | 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |
 | 계획 | `/which/lane` | `std_msgs/String` | `lane_1`, `lane_2`, `unknown` |
-| 제어 | `/auto_steer_angle` | `std_msgs/Float32` | 조향각(deg) (`pure_pursuit` 발행) |
-| 제어 | `/auto_throttle` | `std_msgs/Float32` | 정규화 throttle(`-1.0~1.0`, 음수=후진) (`pure_pursuit` 발행) |
+| 후보 | `/control/candidate/lane/steer_angle` | `std_msgs/Float32` | 차선 후보 조향각(deg) |
+| 후보 | `/control/candidate/lane/throttle` | `std_msgs/Float32` | 기존 속도 계산을 보존한 추천 throttle |
+| 후보 | `/control/candidate/lane/valid` | `std_msgs/Bool` | 현재 path 기반 후보 유효 여부 |
 | 제어 | `/lane/control/status` | `std_msgs/String` | 조향·LD·목표 속도 JSON (`pure_pursuit` 발행) |
 | 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
-항상 실제 주행 명령을 `/auto_steer_angle`/`/auto_throttle`에 발행한다
-(dry-run 모드 없음). `pure_pursuit`가 빈 경로(`poses` 없음)를 받으면
-자동으로 `throttle=0.0`을 낸다 — `drive_main`이 검출/경로 생성에 실패하면
-빈 `/lane/path`를 발행해서 이 경로로 정지시킨다. 별도의 경로-끊김
-워치독(`path_timeout_sec`)은 없다.
+통합 구성에서는 실제 주행 명령을 발행하지 않는다. `pure_pursuit`가 빈
+경로를 받으면 `valid=false`, 추천 `throttle=0.0`을 발행한다. 별도의
+경로-끊김 워치독은 없으므로 추후 판단 노드가 callback freshness를
+검사해야 한다.
 
 각 단계 확인 예:
 
 ```bash
 ros2 topic hz /lane/detection/mask/compressed
 ros2 topic echo /lane/path/status
-ros2 topic echo /auto_steer_angle
-ros2 topic echo /auto_throttle
+ros2 topic echo /control/candidate/lane/steer_angle
+ros2 topic echo /control/candidate/lane/throttle
+ros2 topic echo /control/candidate/lane/valid
 ```
 
 이미지는 `rqt_image_view`에서 검출/경로 디버그 토픽을 선택해 확인한다.

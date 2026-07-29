@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import setup
 
 
@@ -10,6 +12,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (f"share/{package_name}/config", glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

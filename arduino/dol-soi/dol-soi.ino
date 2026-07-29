@@ -66,6 +66,13 @@ int targetSteerRaw = STEER_CENTER_RAW;
 int driveSpeed = 0;
 char driveDir = 'S';
 
+// PC/ROS/USB 통신이 끊기면 마지막 구동 명령을 무기한 유지하지 않는다.
+// unsigned long 뺄셈은 millis() overflow에도 안전하다.
+const unsigned long DRIVE_COMMAND_TIMEOUT_MS = 500;
+unsigned long lastValidDriveCommandMs = 0;
+bool hasReceivedDriveCommand = false;
+bool driveWatchdogStopped = false;
+
 const unsigned long TELEMETRY_INTERVAL_MS = 10;
 unsigned long lastTelemetryMs = 0;
 
@@ -110,6 +117,7 @@ void loop() {
     parseCommand(cmd);
   }
 
+  updateDriveWatchdog();
   applyDrive();
   applySteer();
   updateUltrasonicSensors();
@@ -206,7 +214,8 @@ void publishTelemetry() {
     signedSpeed = -driveSpeed;
   }
 
-  // 형식: current_speed,current_steer,left_cm,right_cm
+  // 형식: signed_drive_pwm,current_steer,left_cm,right_cm
+  // 첫 필드는 측정 속도가 아니라 명령된 PWM(-255~255)이다.
   Serial.print(signedSpeed);
   Serial.print(",");
   Serial.print(currentSteerDeg, 1);
@@ -315,6 +324,23 @@ void parseDriveCommand(String cmd) {
   if (dir == 'F' || dir == 'R' || dir == 'S') {
     driveDir = dir;
     driveSpeed = speed;
+    lastValidDriveCommandMs = millis();
+    hasReceivedDriveCommand = true;
+    driveWatchdogStopped = false;
+  }
+}
+
+void updateDriveWatchdog() {
+  if (
+    hasReceivedDriveCommand
+    && !driveWatchdogStopped
+    && (unsigned long)(millis() - lastValidDriveCommandMs)
+      > DRIVE_COMMAND_TIMEOUT_MS
+  ) {
+    driveDir = 'S';
+    driveSpeed = 0;
+    rearStop();
+    driveWatchdogStopped = true;
   }
 }
 
