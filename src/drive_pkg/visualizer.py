@@ -262,6 +262,13 @@ class DrivingVisualizer:
         self.last_reference_path: np.ndarray | None = None
         self.last_reference_path_at: float | None = None
         self.latest_path_has_points = False
+        # If the user closes the window from the window manager (or the
+        # X/Qt backend otherwise drops it), OpenCV's Python-side handle is
+        # left dangling and the next resizeWindow/imshow/destroyWindow call
+        # on it raises cv2.error ("NULL guiReceiver"). That must never take
+        # down this whole process -- it also publishes /cmd_vel. Once the
+        # window is gone, stop touching it instead of crashing.
+        self._window_broken = False
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
         cv2.moveWindow(self.window_name, self.window_x, self.window_y)
@@ -537,6 +544,8 @@ class DrivingVisualizer:
         )
 
     def show_combined(self) -> None:
+        if self._window_broken:
+            return
         if (
             self.latest_segmentation is None
             or self.latest_bev is None
@@ -573,13 +582,23 @@ class DrivingVisualizer:
             fy=self.display_scale,
             interpolation=cv2.INTER_NEAREST,
         )
-        cv2.resizeWindow(
-            self.window_name,
-            preview.shape[1],
-            preview.shape[0],
-        )
-        cv2.imshow(self.window_name, preview)
-        if cv2.waitKey(1) & 0xFF in (27, ord("q")):
+        try:
+            cv2.resizeWindow(
+                self.window_name,
+                preview.shape[1],
+                preview.shape[0],
+            )
+            cv2.imshow(self.window_name, preview)
+            key = cv2.waitKey(1) & 0xFF
+        except cv2.error as error:
+            self._window_broken = True
+            if self.logger is not None:
+                self.logger.warning(
+                    "Visualization window is gone (closed by the user or "
+                    f"the window manager); disabling display: {error}"
+                )
+            return
+        if key in (27, ord("q")):
             rclpy.shutdown()
 
     def clear_lookahead_target(self) -> None:
@@ -920,4 +939,9 @@ class DrivingVisualizer:
         return detail
 
     def destroy(self) -> None:
-        cv2.destroyWindow(self.window_name)
+        if self._window_broken:
+            return
+        try:
+            cv2.destroyWindow(self.window_name)
+        except cv2.error:
+            pass
