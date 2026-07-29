@@ -207,6 +207,7 @@ class LaneDetectorCore:
                     "y_min": int(np.min(y_values)),
                     "x_max": int(np.max(x_values)),
                     "y_max": int(np.max(y_values)),
+                    "pixel_count": int(len(x_values)),
                 }
             )
         return combined, instances

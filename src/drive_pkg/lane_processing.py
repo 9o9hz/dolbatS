@@ -1,46 +1,24 @@
 #!/usr/bin/env python3
-"""Legacy lane-processing implementation and reusable path planner core.
-
-Input:
-    /image_raw/compressed (sensor_msgs/CompressedImage)
-
-Outputs:
-    /lane/path                         (nav_msgs/Path)
-    /lane/yolo_drive/segmentation/compressed
-    /lane/yolo_drive/path/compressed   (sensor_msgs/CompressedImage)
-    /lane/yolo_drive/status            (std_msgs/String)
-    /which/lane                        (std_msgs/String)
-    /cmd_vel                           (geometry_msgs/Twist)
+"""BEV lane-mask path planner core, shared by path_plan.py and drive_main.py.
 
 The best1.pt model was trained on 640x640 BEV images with one ``lane`` class.
 Incoming 640x480 usb_cam frames are therefore warped to that training view
-before inference. Segmentation components are grouped into left/right lane
-boundaries, and their midpoint (or a lane-width offset from one boundary) is
-converted into a metric path in ``base_link`` coordinates.
-
-Non-zero velocity is disabled unless ``--enable-drive`` is explicitly given.
+before inference. Per-detection segmentation components are extracted,
+tracked frame to frame as left/right boundaries, and fused into a smoothed
+metric path in ``base_link`` coordinates.
 """
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
-import json
 import math
 from pathlib import Path
-import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
-from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Path as PathMessage
 import numpy as np
-import rclpy
-from rclpy.executors import ExternalShutdownException
-from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from scipy.interpolate import splev, splprep
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
 
 
 def _default_bev_params_path() -> Path:
@@ -64,13 +42,6 @@ def _default_bev_params_path() -> Path:
 
 DEFAULT_MODEL = Path("/home/tak/lane_yolo_project/weight/best1.pt")
 DEFAULT_BEV_PARAMS = _default_bev_params_path()
-DEFAULT_IMAGE_TOPIC = "/image_raw/compressed"
-DEFAULT_PATH_TOPIC = "/lane/path"
-DEFAULT_SEGMENTATION_TOPIC = "/lane/yolo_drive/segmentation/compressed"
-DEFAULT_DEBUG_TOPIC = "/lane/yolo_drive/path/compressed"
-DEFAULT_STATUS_TOPIC = "/lane/yolo_drive/status"
-DEFAULT_WHICH_LANE_TOPIC = "/which/lane"
-DEFAULT_CMD_VEL_TOPIC = "/cmd_vel"
 
 PointArray = Optional[np.ndarray]
 LaneGroup = Dict[str, Any]
@@ -127,6 +98,13 @@ class LaneConfig:
     path_transition_blend_frames: int = 6
     max_path_lateral_step_m: float = 0.04
     max_missing_frames: int = 8
+    # Morphological close kernel size used when isolating one detection's
+    # largest mask component within its own bounding box.
+    bbox_close_ksize: int = 5
+    # B-spline smoothing factor and output point count for spatial smoothing
+    # (see scipy.interpolate.splprep's ``s`` parameter).
+    path_spline_smooth_factor: float = 10.0
+    path_spline_points: int = 100
     # Forward distance from the rear-axle center to the BEV bottom reference.
     bev_reference_forward_offset_m: float = 1.04
     lookahead_min_m: float = 1.1
@@ -137,25 +115,6 @@ class LaneConfig:
     steering_deadband_deg: float = 0.8
     max_steering_change_deg: float = 3.0
     target_speed_mps: float = 0.20
-
-
-@dataclass
-class LaneResult:
-    segmentation_image: np.ndarray
-    debug_image: np.ndarray
-    path_pixels: PointArray
-    path_meters: PointArray
-    steering_rad: float
-    lookahead_m: float
-    lookahead_target_m: float
-    target_speed_mps: float
-    reason: str
-    used_fallback: bool
-    group_count: int
-    dashed_region_count: int
-    selection_mode: str
-    which_lane: Optional[str]
-    inference_ms: float
 
 
 @dataclass
@@ -321,18 +280,14 @@ def decode_compressed_image(message: CompressedImage) -> np.ndarray:
     return frame
 
 
-def make_twist(speed_mps: float, steering_rad: float, wheelbase_m: float) -> Twist:
-    message = Twist()
-    message.linear.x = float(speed_mps)
-    if abs(speed_mps) > 1e-6:
-        message.angular.z = float(
-            speed_mps / wheelbase_m * math.tan(steering_rad)
-        )
-    return message
-
-
 class SegmentationLaneProcessor:
     """Turn YOLO lane masks into a smoothed local metric path."""
+
+    # A bbox-restricted component whose area is implausibly larger than the
+    # owning instance's own mask footprint has likely bled into a
+    # neighboring detection's pixels via the combined mask; see
+    # ``_extract_bbox_pieces``.
+    _BBOX_CONTAMINATION_FACTOR = 3.0
 
     def __init__(
         self,
@@ -460,6 +415,14 @@ class SegmentationLaneProcessor:
             raise ValueError(
                 "max_steering_change_deg must be positive"
             )
+        if cfg.bbox_close_ksize < 1:
+            raise ValueError("bbox_close_ksize must be at least 1")
+        if cfg.path_spline_smooth_factor < 0.0:
+            raise ValueError(
+                "path_spline_smooth_factor cannot be negative"
+            )
+        if cfg.path_spline_points < 4:
+            raise ValueError("path_spline_points must be at least 4")
 
     @staticmethod
     def _resolve_device(requested: str) -> Any:
@@ -592,69 +555,109 @@ class SegmentationLaneProcessor:
         second_x = np.polyval(second["curve"], sample_y)
         return float(np.mean(np.abs(first_x - second_x)))
 
-    def _extract_pieces(
+    @staticmethod
+    def _extract_largest_component_in_bbox(
+        mask: np.ndarray,
+        bbox: Tuple[int, int, int, int],
+        min_area: int,
+        close_ksize: int,
+    ) -> Optional[np.ndarray]:
+        """Isolate the single largest connected component within one
+        detection's bounding box, discarding everything else in the ROI
+        (noise, and any bleed-through from a neighboring detection's
+        pixels in the combined mask)."""
+
+        height, width = mask.shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1 = max(0, min(x1, width - 1))
+        y1 = max(0, min(y1, height - 1))
+        x2 = max(0, min(x2, width))
+        y2 = max(0, min(y2, height))
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        roi = mask[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None
+
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (close_ksize, close_ksize)
+        )
+        closed = cv2.morphologyEx(roi, cv2.MORPH_CLOSE, kernel)
+        component_count, labels, stats, _ = (
+            cv2.connectedComponentsWithStats(closed, connectivity=8)
+        )
+        if component_count <= 1:
+            return None
+
+        largest_label = int(np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1)
+        largest_area = int(stats[largest_label, cv2.CC_STAT_AREA])
+        if largest_area < min_area:
+            return None
+
+        component = np.zeros_like(mask, dtype=np.uint8)
+        component[y1:y2, x1:x2][labels == largest_label] = 1
+        return component
+
+    def _extract_bbox_pieces(
         self,
-        inference_result: Any,
-        image_shape: Sequence[int],
+        mask: np.ndarray,
+        instances: Sequence[Dict[str, Any]],
     ) -> Tuple[List[LaneGroup], np.ndarray]:
-        height, width = int(image_shape[0]), int(image_shape[1])
+        """Extract one piece per YOLO detection, restricted to that
+        detection's own bounding box, instead of connected-components over
+        the whole combined mask (see ``_extract_mask_pieces``)."""
+
+        if mask.ndim == 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        if mask.ndim != 2 or mask.size == 0:
+            raise ValueError("Lane mask must be a non-empty mono image")
+
+        total_mask = (mask > 0).astype(np.uint8)
+        reference_y = total_mask.shape[0] * 0.88
         pieces: List[LaneGroup] = []
-        total_mask = np.zeros((height, width), dtype=np.uint8)
-        if inference_result.masks is None or inference_result.boxes is None:
-            return pieces, total_mask
-
-        masks = inference_result.masks.data.detach().cpu().numpy()
-        classes = (
-            inference_result.boxes.cls.detach().cpu().numpy().astype(int)
-        )
-        confidences = (
-            inference_result.boxes.conf.detach().cpu().numpy().astype(float)
-        )
-        reference_y = height * 0.88
-
-        for raw_mask, class_id, confidence in zip(
-            masks, classes, confidences
-        ):
-            if int(class_id) not in self.lane_class_ids:
+        for instance in instances:
+            bbox = (
+                int(instance["x_min"]),
+                int(instance["y_min"]),
+                int(instance["x_max"]),
+                int(instance["y_max"]),
+            )
+            component = self._extract_largest_component_in_bbox(
+                total_mask,
+                bbox,
+                self.config.min_component_area,
+                self.config.bbox_close_ksize,
+            )
+            if component is None:
                 continue
-            mask = cv2.resize(
-                (raw_mask > 0.5).astype(np.uint8),
-                (width, height),
-                interpolation=cv2.INTER_NEAREST,
+            area = int(np.count_nonzero(component))
+            pixel_count = instance.get("pixel_count")
+            if (
+                pixel_count is not None
+                and area > self._BBOX_CONTAMINATION_FACTOR * pixel_count
+            ):
+                continue
+            points = self._component_center_points(
+                component, self.config.center_sample_step
             )
-            total_mask = cv2.bitwise_or(total_mask, mask)
-            component_count, labels, stats, _ = (
-                cv2.connectedComponentsWithStats(mask, connectivity=8)
+            curve = self._fit_curve(points)
+            if points is None or curve is None:
+                continue
+            y_min = float(np.min(points[:, 1]))
+            y_max = float(np.max(points[:, 1]))
+            x_reference_y = float(np.clip(reference_y, y_min, y_max))
+            pieces.append(
+                {
+                    "points": points,
+                    "curve": curve,
+                    "y_min": y_min,
+                    "y_max": y_max,
+                    "area": area,
+                    "confidence": float(instance.get("confidence", 1.0)),
+                    "x_ref": self._curve_x(curve, x_reference_y),
+                }
             )
-            for label in range(1, component_count):
-                area = int(stats[label, cv2.CC_STAT_AREA])
-                if area < self.config.min_component_area:
-                    continue
-                component = (labels == label).astype(np.uint8)
-                points = self._component_center_points(
-                    component, self.config.center_sample_step
-                )
-                curve = self._fit_curve(points)
-                if points is None or curve is None:
-                    continue
-                y_min = float(np.min(points[:, 1]))
-                y_max = float(np.max(points[:, 1]))
-                x_reference_y = float(
-                    np.clip(reference_y, y_min, y_max)
-                )
-                pieces.append(
-                    {
-                        "points": points,
-                        "curve": curve,
-                        "y_min": y_min,
-                        "y_max": y_max,
-                        "area": area,
-                        "confidence": float(confidence),
-                        "x_ref": self._curve_x(
-                            curve, x_reference_y
-                        ),
-                    }
-                )
         return pieces, total_mask
 
     def _extract_mask_pieces(
@@ -910,33 +913,95 @@ class SegmentationLaneProcessor:
             return None
         return best
 
+    def _disambiguate_single_tracked_side(
+        self, groups: List[LaneGroup]
+    ) -> Optional[Dict[str, LaneGroup]]:
+        """Resolve which of exactly two newly-visible candidates is the
+        already-tracked side vs. a new/noise candidate, when only one side
+        currently has a track.
+
+        Ported from yolotl_ros2's tracking: instead of bucketing candidates
+        by static geometric side first (as the normal per-side matching
+        below does), compare both candidates' distance to the one tracked
+        side's last position and let the closer one win that side. This
+        matters specifically where the static left/right split can itself
+        be wrong (e.g. near-horizon convergence on a sharp curve).
+        """
+
+        left_previous = self._tracked_lanes["left"]["group"]
+        right_previous = self._tracked_lanes["right"]["group"]
+        if (left_previous is None) == (right_previous is None):
+            return None
+
+        overlapping = [
+            group for group in groups if self._group_has_path_overlap(group)
+        ]
+        if len(overlapping) != 2:
+            return None
+
+        candidate_a, candidate_b = sorted(
+            overlapping, key=lambda group: float(group["x_ref"])
+        )
+
+        if right_previous is not None:
+            distance_a = self._group_match_distance(
+                right_previous, candidate_a
+            )
+            distance_b = self._group_match_distance(
+                right_previous, candidate_b
+            )
+            if distance_a < distance_b:
+                # candidate_b is to the right of the tracked right boundary
+                # and thus more likely noise than a newly-appeared lane.
+                return {"right": candidate_a}
+            return {"left": candidate_a, "right": candidate_b}
+
+        distance_a = self._group_match_distance(left_previous, candidate_a)
+        distance_b = self._group_match_distance(left_previous, candidate_b)
+        if distance_b < distance_a:
+            return {"left": candidate_b}
+        return {"left": candidate_a, "right": candidate_b}
+
     def _update_lane_tracks(
         self, groups: List[LaneGroup]
     ) -> Tuple[Optional[LaneGroup], Optional[LaneGroup]]:
-        match_options: List[Tuple[float, str, LaneGroup]] = []
-        for side in ("left", "right"):
-            previous = self._tracked_lanes[side]["group"]
-            if previous is None:
-                continue
-            for group in groups:
-                if (
-                    self._group_side(group) != side
-                    or not self._group_has_path_overlap(group)
-                ):
+        disambiguated = self._disambiguate_single_tracked_side(groups)
+        if disambiguated is not None:
+            assignments: Dict[str, LaneGroup] = dict(disambiguated)
+            used_group_ids = {
+                id(group) for group in disambiguated.values()
+            }
+            overlapping_ids = {
+                id(group)
+                for group in groups
+                if self._group_has_path_overlap(group)
+            }
+            used_group_ids |= overlapping_ids
+        else:
+            match_options: List[Tuple[float, str, LaneGroup]] = []
+            for side in ("left", "right"):
+                previous = self._tracked_lanes[side]["group"]
+                if previous is None:
                     continue
-                score = self._group_match_distance(previous, group)
-                if score <= self.config.lane_track_match_threshold_px:
-                    match_options.append((score, side, group))
+                for group in groups:
+                    if (
+                        self._group_side(group) != side
+                        or not self._group_has_path_overlap(group)
+                    ):
+                        continue
+                    score = self._group_match_distance(previous, group)
+                    if score <= self.config.lane_track_match_threshold_px:
+                        match_options.append((score, side, group))
 
-        assignments: Dict[str, LaneGroup] = {}
-        used_group_ids = set()
-        for _, side, group in sorted(
-            match_options, key=lambda item: item[0]
-        ):
-            if side in assignments or id(group) in used_group_ids:
-                continue
-            assignments[side] = group
-            used_group_ids.add(id(group))
+            assignments = {}
+            used_group_ids = set()
+            for _, side, group in sorted(
+                match_options, key=lambda item: item[0]
+            ):
+                if side in assignments or id(group) in used_group_ids:
+                    continue
+                assignments[side] = group
+                used_group_ids.add(id(group))
 
         for side in ("left", "right"):
             track = self._tracked_lanes[side]
@@ -1148,106 +1213,214 @@ class SegmentationLaneProcessor:
             dtype=np.float32,
         )
 
-    def _raw_path_y_values(self) -> np.ndarray:
-        return np.arange(
-            self.config.warp_height
-            - self.config.path_bottom_margin,
-            self.config.path_top_y - 1,
-            -self.config.path_step_px,
-            dtype=np.float32,
+    @staticmethod
+    def _resample_polyline_by_y(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        y_min: int,
+        y_max: int,
+        y_step: int = 1,
+    ) -> Tuple[PointArray, PointArray]:
+        """Interpolate a (possibly sparse) polyline onto a uniform y-step
+        grid, ported from yolotl_ros2's ``resample_polyline_by_y``."""
+
+        if xs is None or ys is None or len(xs) < 2:
+            return None, None
+
+        ys = np.asarray(ys, dtype=np.float32)
+        xs = np.asarray(xs, dtype=np.float32)
+        order = np.argsort(ys)
+        ys = ys[order]
+        xs = xs[order]
+
+        y_query = np.arange(y_min, y_max + 1, y_step, dtype=np.float32)
+        valid = (y_query >= ys[0]) & (y_query <= ys[-1])
+        y_query = y_query[valid]
+        if len(y_query) < 2:
+            return None, None
+
+        x_query = np.interp(y_query, ys, xs).astype(np.float32)
+        return x_query, y_query
+
+    def _densify_group_points(
+        self, group: Optional[LaneGroup]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if group is None:
+            return None
+        points = group["points"]
+        y_min = int(np.floor(np.min(points[:, 1])))
+        y_max = int(np.ceil(np.max(points[:, 1])))
+        dense_xs, dense_ys = self._resample_polyline_by_y(
+            points[:, 0], points[:, 1], y_min, y_max, y_step=1
         )
+        if dense_xs is None or len(dense_xs) < 2:
+            return None
+        return dense_xs, dense_ys
 
     @staticmethod
-    def _sample_group_on_y(
-        group: Optional[LaneGroup],
-        y_values: np.ndarray,
-    ) -> np.ndarray:
-        sampled = np.full(y_values.shape, np.nan, dtype=np.float32)
-        if group is None:
-            return sampled
-        valid = (
-            (y_values >= float(group["y_min"]))
-            & (y_values <= float(group["y_max"]))
-        )
-        if np.any(valid):
-            sampled[valid] = np.polyval(
-                group["curve"], y_values[valid]
-            ).astype(np.float32)
-        return sampled
-
-    def _normal_offset_on_y(
-        self,
-        group: Optional[LaneGroup],
-        y_values: np.ndarray,
+    def _offset_polyline_points(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        offset_px: float,
         direction: float,
-    ) -> np.ndarray:
-        sampled = np.full(y_values.shape, np.nan, dtype=np.float32)
-        if group is None:
-            return sampled
-        y_min = float(group["y_min"])
-        y_max = float(group["y_max"])
-        if y_max - y_min < 2.0:
-            return sampled
+        sample_step: int = 20,
+        window: int = 30,
+    ) -> Tuple[PointArray, PointArray]:
+        """Offset a polyline by its local normal direction, ported from
+        yolotl_ros2's ``offset_polyline_points``. Works off point-window
+        tangents rather than a fitted curve derivative, so it stays robust
+        where a quadratic fit would badly extrapolate."""
 
-        source_y = np.arange(
-            y_min, y_max + 1.0, 1.0, dtype=np.float32
-        )
-        coefficients = np.asarray(group["curve"], dtype=np.float64)
-        source_x = np.polyval(coefficients, source_y)
-        slope = 2.0 * coefficients[0] * source_y + coefficients[1]
-        normal_scale = np.sqrt(1.0 + np.square(slope))
-        offset_px = (
-            0.5
-            * self.config.lane_width_m
-            * self.config.pixels_per_meter
-        )
-        offset_x = (
-            source_x + direction * offset_px / normal_scale
-        )
-        offset_y = (
-            source_y - direction * offset_px * slope / normal_scale
-        )
-        finite = np.isfinite(offset_x) & np.isfinite(offset_y)
-        if np.count_nonzero(finite) < 2:
-            return sampled
+        if xs is None or ys is None or len(xs) < 2:
+            return None, None
 
-        order = np.argsort(offset_y[finite])
-        sorted_y = offset_y[finite][order]
-        sorted_x = offset_x[finite][order]
-        unique_y, unique_indices = np.unique(
-            sorted_y, return_index=True
-        )
-        unique_x = sorted_x[unique_indices]
-        if len(unique_y) < 2:
-            return sampled
-        valid = (
-            (y_values >= unique_y[0])
-            & (y_values <= unique_y[-1])
-        )
-        sampled[valid] = np.interp(
-            y_values[valid], unique_y, unique_x
-        ).astype(np.float32)
+        xs = np.asarray(xs, dtype=np.float32)
+        ys = np.asarray(ys, dtype=np.float32)
+        n = len(xs)
+        if n <= sample_step:
+            sample_step = max(1, n // 2)
 
-        # A steep curve can move the true offset polyline outside the
-        # observed y interval near an endpoint. Fill only those endpoint
-        # gaps with the x component of the local normal so the fixed y-grid
-        # remains available without reverting to a horizontal offset.
-        endpoint_gap = (
-            ~np.isfinite(sampled)
-            & (y_values >= y_min)
-            & (y_values <= y_max)
+        indices = np.arange(0, n, sample_step)
+        if indices[-1] != n - 1:
+            indices = np.append(indices, n - 1)
+
+        sparse_xo: List[float] = []
+        sparse_yo: List[float] = []
+        for i in indices:
+            idx_prev = max(0, i - window)
+            idx_next = min(n - 1, i + window)
+            if idx_prev == idx_next:
+                dx, dy = 0.0, 1.0
+            else:
+                dx = float(xs[idx_next] - xs[idx_prev])
+                dy = float(ys[idx_next] - ys[idx_prev])
+            norm = math.sqrt(dx * dx + dy * dy) + 1e-6
+            nx = dy / norm
+            ny = -dx / norm
+            sparse_xo.append(float(xs[i]) + direction * offset_px * nx)
+            sparse_yo.append(float(ys[i]) + direction * offset_px * ny)
+
+        all_indices = np.arange(n)
+        out_xs = np.interp(all_indices, indices, sparse_xo).astype(
+            np.float32
         )
-        if np.any(endpoint_gap):
-            gap_y = y_values[endpoint_gap]
-            gap_x = np.polyval(coefficients, gap_y)
-            gap_slope = (
-                2.0 * coefficients[0] * gap_y + coefficients[1]
+        out_ys = np.interp(all_indices, indices, sparse_yo).astype(
+            np.float32
+        )
+
+        if len(out_xs) >= 3:
+            k_size = 5
+            padded = np.pad(
+                out_xs, (k_size // 2, k_size // 2), mode="edge"
             )
-            gap_scale = np.sqrt(1.0 + np.square(gap_slope))
-            sampled[endpoint_gap] = (
-                gap_x + direction * offset_px / gap_scale
+            out_xs = np.convolve(
+                padded, np.ones(k_size) / k_size, mode="valid"
             ).astype(np.float32)
-        return sampled
+        return out_xs, out_ys
+
+    def _compute_fusion_centerline(
+        self,
+        left_xs: np.ndarray,
+        left_ys: np.ndarray,
+        right_xs: np.ndarray,
+        right_ys: np.ndarray,
+        offset_px: float,
+        y_step: int = 1,
+    ) -> Tuple[PointArray, PointArray]:
+        """Fuse two boundary polylines into a centerline, ported from
+        yolotl_ros2's ``compute_fusion_centerline``: y-wise average where
+        both boundaries are present, normal offset where only one is, and a
+        moving-average smoothing pass over the seam between the two."""
+
+        if left_xs is None or right_xs is None:
+            return None, None
+
+        y_min_l, y_max_l = int(np.min(left_ys)), int(np.max(left_ys))
+        lx_dense, ly_dense = self._resample_polyline_by_y(
+            left_xs, left_ys, y_min_l, y_max_l, y_step
+        )
+        y_min_r, y_max_r = int(np.min(right_ys)), int(np.max(right_ys))
+        rx_dense, ry_dense = self._resample_polyline_by_y(
+            right_xs, right_ys, y_min_r, y_max_r, y_step
+        )
+
+        lx_off, ly_off = self._offset_polyline_points(
+            left_xs, left_ys, offset_px, direction=1.0
+        )
+        lx_off_dense, ly_off_dense = None, None
+        if lx_off is not None and len(lx_off) > 1:
+            lx_off_dense, ly_off_dense = self._resample_polyline_by_y(
+                lx_off,
+                ly_off,
+                int(np.min(ly_off)),
+                int(np.max(ly_off)),
+                y_step,
+            )
+
+        rx_off, ry_off = self._offset_polyline_points(
+            right_xs, right_ys, offset_px, direction=-1.0
+        )
+        rx_off_dense, ry_off_dense = None, None
+        if rx_off is not None and len(rx_off) > 1:
+            rx_off_dense, ry_off_dense = self._resample_polyline_by_y(
+                rx_off,
+                ry_off,
+                int(np.min(ry_off)),
+                int(np.max(ry_off)),
+                y_step,
+            )
+
+        dict_lx = dict(zip(ly_dense, lx_dense)) if ly_dense is not None else {}
+        dict_rx = dict(zip(ry_dense, rx_dense)) if ry_dense is not None else {}
+        dict_lx_off = (
+            dict(zip(ly_off_dense, lx_off_dense))
+            if ly_off_dense is not None
+            else {}
+        )
+        dict_rx_off = (
+            dict(zip(ry_off_dense, rx_off_dense))
+            if ry_off_dense is not None
+            else {}
+        )
+
+        all_y = set(dict_lx.keys()) | set(dict_rx.keys())
+        if not all_y:
+            return None, None
+        min_y, max_y = int(min(all_y)), int(max(all_y))
+
+        merged_xs: List[float] = []
+        merged_ys: List[float] = []
+        for y_val in range(min_y, max_y + 1, y_step):
+            y_f = float(y_val)
+            has_left = y_f in dict_lx
+            has_right = y_f in dict_rx
+            center_x: Optional[float] = None
+            if has_left and has_right:
+                center_x = (dict_lx[y_f] + dict_rx[y_f]) / 2.0
+            elif has_left and y_f in dict_lx_off:
+                center_x = dict_lx_off[y_f]
+            elif has_right and y_f in dict_rx_off:
+                center_x = dict_rx_off[y_f]
+            if center_x is not None:
+                merged_xs.append(center_x)
+                merged_ys.append(y_f)
+
+        if len(merged_xs) < 2:
+            return None, None
+
+        center_xs = np.array(merged_xs, dtype=np.float32)
+        center_ys = np.array(merged_ys, dtype=np.float32)
+
+        k_size = 15
+        if len(center_xs) >= k_size:
+            padded = np.pad(
+                center_xs, (k_size // 2, k_size // 2), mode="edge"
+            )
+            center_xs = np.convolve(
+                padded, np.ones(k_size) / k_size, mode="valid"
+            ).astype(np.float32)
+
+        return center_xs, center_ys
 
     def _build_path(
         self,
@@ -1257,38 +1430,39 @@ class SegmentationLaneProcessor:
         if left is None and right is None:
             return None, "no_boundary"
 
-        y_values = self._raw_path_y_values()
-        left_x = self._sample_group_on_y(left, y_values)
-        right_x = self._sample_group_on_y(right, y_values)
-        left_offset = self._normal_offset_on_y(
-            left, y_values, direction=1.0
+        offset_px = (
+            0.5 * self.config.lane_width_m * self.config.pixels_per_meter
         )
-        right_offset = self._normal_offset_on_y(
-            right, y_values, direction=-1.0
-        )
+        left_dense = self._densify_group_points(left)
+        right_dense = self._densify_group_points(right)
 
-        path_x = np.full(y_values.shape, np.nan, dtype=np.float32)
-        both = (
-            np.isfinite(left_x)
-            & np.isfinite(right_x)
-            & (right_x > left_x)
-        )
-        path_x[both] = 0.5 * (left_x[both] + right_x[both])
-
-        left_only = (
-            ~np.isfinite(path_x) & np.isfinite(left_offset)
-        )
-        path_x[left_only] = left_offset[left_only]
-        right_only = (
-            ~np.isfinite(path_x) & np.isfinite(right_offset)
-        )
-        path_x[right_only] = right_offset[right_only]
-
-        valid = np.isfinite(path_x)
-        if np.count_nonzero(valid) < 3:
+        if left_dense is not None and right_dense is not None:
+            center_xs, center_ys = self._compute_fusion_centerline(
+                left_dense[0],
+                left_dense[1],
+                right_dense[0],
+                right_dense[1],
+                offset_px,
+            )
+            reason = "fused_boundaries"
+        elif left_dense is not None:
+            center_xs, center_ys = self._offset_polyline_points(
+                left_dense[0], left_dense[1], offset_px, direction=1.0
+            )
+            reason = "left_boundary_normal_offset"
+        elif right_dense is not None:
+            center_xs, center_ys = self._offset_polyline_points(
+                right_dense[0], right_dense[1], offset_px, direction=-1.0
+            )
+            reason = "right_boundary_normal_offset"
+        else:
             return None, "insufficient_path"
+
+        if center_xs is None or len(center_xs) < 3:
+            return None, "insufficient_path"
+
         path_array = np.column_stack(
-            (path_x[valid], y_values[valid])
+            (center_xs, center_ys)
         ).astype(np.float32)
         margin = self.config.warp_width * 0.15
         in_range = (
@@ -1301,23 +1475,76 @@ class SegmentationLaneProcessor:
         path_array = path_array[in_range]
         if len(path_array) < 3:
             return None, "path_out_of_range"
-        if left is not None and right is not None:
-            reason = "fused_boundaries"
-        elif left is not None:
-            reason = "left_boundary_normal_offset"
-        else:
-            reason = "right_boundary_normal_offset"
         return path_array, reason
+
+    def _smooth_and_interpolate_path(
+        self, xs: np.ndarray, ys: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """B-spline spatial smoothing, ported from yolotl_ros2's
+        ``smooth_and_interpolate_path``. A single quadratic can't follow an
+        S-curve/chicane; the spline follows the actual point-window shape
+        instead. Falls back to the raw input when there are too few
+        distinct points for a cubic fit."""
+
+        if len(xs) < 4:
+            return xs, ys
+
+        points = np.column_stack((xs, ys))
+        _, unique_indices = np.unique(points, axis=0, return_index=True)
+        unique_indices = np.sort(unique_indices)
+        xs_u, ys_u = xs[unique_indices], ys[unique_indices]
+        if len(xs_u) < 4:
+            return xs, ys
+
+        try:
+            tck, _ = splprep(
+                [xs_u, ys_u],
+                s=self.config.path_spline_smooth_factor,
+                k=3,
+            )
+            u_new = np.linspace(0.0, 1.0, self.config.path_spline_points)
+            x_new, y_new = splev(u_new, tck)
+            return (
+                np.asarray(x_new, dtype=np.float32),
+                np.asarray(y_new, dtype=np.float32),
+            )
+        except Exception:
+            return xs, ys
 
     def _smooth_spatial(self, path: PointArray) -> PointArray:
         if path is None or len(path) < 3:
             return None
-        try:
-            coefficients = np.polyfit(path[:, 1], path[:, 0], 2)
-        except (TypeError, ValueError, np.linalg.LinAlgError):
-            return path
+
+        spline_xs, spline_ys = self._smooth_and_interpolate_path(
+            path[:, 0].astype(np.float32), path[:, 1].astype(np.float32)
+        )
+
+        # The spline is arc-length parametrized, not evenly spaced in y,
+        # and can be locally non-monotonic in y on a sharp curve -- sort
+        # and dedupe before treating it as a y -> x function.
+        order = np.argsort(spline_ys)
+        sorted_ys = spline_ys[order]
+        sorted_xs = spline_xs[order]
+        unique_ys, unique_indices = np.unique(
+            sorted_ys, return_index=True
+        )
+        if len(unique_ys) < 2:
+            return None
+        unique_xs = sorted_xs[unique_indices]
+
+        # Resample onto the same fixed y-grid every frame so
+        # `_smooth_temporal`'s frame-to-frame EMA keeps comparing points at
+        # matching y positions. Grid points outside the spline's observed
+        # range are dropped rather than extrapolated.
         y_values = self._path_y_values()
-        x_values = np.polyval(coefficients, y_values)
+        valid = (
+            (y_values >= unique_ys[0]) & (y_values <= unique_ys[-1])
+        )
+        if np.count_nonzero(valid) < 3:
+            return None
+        x_values = np.interp(
+            y_values[valid], unique_ys, unique_xs
+        ).astype(np.float32)
         if not np.all(np.isfinite(x_values)):
             return None
         margin = self.config.warp_width * 0.15
@@ -1327,7 +1554,7 @@ class SegmentationLaneProcessor:
             self.config.warp_width + margin,
         )
         return np.column_stack(
-            (x_values, y_values)
+            (x_values, y_values[valid])
         ).astype(np.float32)
 
     def _smooth_temporal(
@@ -1622,10 +1849,24 @@ class SegmentationLaneProcessor:
             )
         return debug
 
-    def plan_mask(self, mask: np.ndarray) -> PathPlanResult:
-        """Plan only; detection and vehicle control belong to other nodes."""
+    def plan_mask(
+        self,
+        mask: np.ndarray,
+        instances: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> PathPlanResult:
+        """Plan only; detection and vehicle control belong to other nodes.
 
-        pieces, _ = self._extract_mask_pieces(mask)
+        ``instances`` is the per-detection bbox list from
+        ``DetectionOutput.instances`` (lane_detect.py). When given, pieces
+        are extracted per detection bbox (``_extract_bbox_pieces``); when
+        omitted, this falls back to connected-components over the whole
+        combined mask (``_extract_mask_pieces``).
+        """
+
+        if instances:
+            pieces, _ = self._extract_bbox_pieces(mask, instances)
+        else:
+            pieces, _ = self._extract_mask_pieces(mask)
         groups = self._group_pieces(pieces)
         which_lane = self._classify_which_lane(groups)
         (
@@ -1705,745 +1946,3 @@ class SegmentationLaneProcessor:
             ),
         )
 
-    def process(self, frame: np.ndarray) -> LaneResult:
-        if self.model is None:
-            raise RuntimeError(
-                "process(frame) requires a model; use plan_mask(mask) "
-                "in the path-planning node"
-            )
-        bev = self.make_bev(frame)
-        started = time.perf_counter()
-        inference_result = self.model.predict(
-            source=bev,
-            imgsz=self.config.image_size,
-            conf=self.config.confidence,
-            device=self.device,
-            retina_masks=True,
-            verbose=False,
-        )[0]
-        inference_ms = (time.perf_counter() - started) * 1000.0
-        segmentation_image = inference_result.plot(
-            labels=True,
-            boxes=False,
-            masks=True,
-            conf=True,
-        )
-
-        pieces, total_mask = self._extract_pieces(
-            inference_result, bev.shape
-        )
-        groups = self._group_pieces(pieces)
-        which_lane = self._classify_which_lane(groups)
-        (
-            left,
-            right,
-            selection_mode,
-            dashed_region_count,
-        ) = self._choose_boundaries(groups)
-        raw_path, reason = self._build_path(left, right)
-        if selection_mode in (
-            "solid_left_preferred",
-            "solid_right_preferred",
-        ):
-            reason = selection_mode
-        spatial_path = self._smooth_spatial(raw_path)
-        final_path, fallback = self._smooth_temporal(
-            spatial_path,
-            f"{selection_mode}:{reason}",
-        )
-        fallback = fallback or self._using_tracked_boundary
-        path_meters = self.pixels_to_meters(final_path)
-        steering_rad, lookahead_m = self._steering(path_meters)
-        lookahead_target_m = self._nearest_path_distance(
-            path_meters, lookahead_m
-        )
-        target_speed = (
-            self.config.target_speed_mps
-            if final_path is not None
-            else 0.0
-        )
-        debug = self._debug_image(
-            bev,
-            total_mask,
-            groups,
-            left,
-            right,
-            final_path,
-            reason,
-            fallback,
-            steering_rad,
-            lookahead_m,
-            lookahead_target_m,
-            selection_mode,
-        )
-        return LaneResult(
-            segmentation_image=segmentation_image,
-            debug_image=debug,
-            path_pixels=final_path,
-            path_meters=path_meters,
-            steering_rad=steering_rad,
-            lookahead_m=lookahead_m,
-            lookahead_target_m=lookahead_target_m,
-            target_speed_mps=target_speed,
-            reason=reason,
-            used_fallback=fallback,
-            group_count=len(groups),
-            dashed_region_count=dashed_region_count,
-            selection_mode=selection_mode,
-            which_lane=which_lane,
-            inference_ms=inference_ms,
-        )
-
-
-class YoloLaneDriver(Node):
-    def __init__(self, args: argparse.Namespace) -> None:
-        super().__init__("yolo_lane_driver")
-        parameter_defaults = {
-            "model_path": str(args.model),
-            "bev_params": str(args.bev_params),
-            "image_topic": args.image_topic,
-            "path_topic": args.path_topic,
-            "segmentation_topic": args.segmentation_topic,
-            "debug_topic": args.debug_topic,
-            "status_topic": args.status_topic,
-            "which_lane_topic": args.which_lane_topic,
-            "cmd_vel_topic": args.cmd_vel_topic,
-            "path_frame_id": args.path_frame_id,
-            "confidence": args.confidence,
-            "image_size": args.image_size,
-            "device": args.device,
-            "calibration_width": args.calibration_width,
-            "calibration_height": args.calibration_height,
-            "pixels_per_meter": args.pixels_per_meter,
-            "lane_width_m": args.lane_width_m,
-            "min_component_area": args.min_component_area,
-            "center_sample_step": args.center_sample_step,
-            "same_line_threshold_px": args.same_line_threshold_px,
-            "min_group_span_px": args.min_group_span_px,
-            "min_group_area": args.min_group_area,
-            "dashed_piece_threshold": args.dashed_piece_threshold,
-            "prefer_solid_when_dashed": (
-                args.prefer_solid_when_dashed
-            ),
-            "lane_track_max_age_frames": (
-                args.lane_track_max_age_frames
-            ),
-            "lane_track_match_threshold_px": (
-                args.lane_track_match_threshold_px
-            ),
-            "solid_enter_frames": args.solid_enter_frames,
-            "solid_exit_frames": args.solid_exit_frames,
-            "path_top_y": args.path_top_y,
-            "path_bottom_margin": args.path_bottom_margin,
-            "path_step_px": args.path_step_px,
-            "path_resample_step_px": args.path_resample_step_px,
-            "max_missing_frames": args.max_missing_frames,
-            "path_ema_alpha": args.path_ema_alpha,
-            "path_transition_blend_frames": (
-                args.path_transition_blend_frames
-            ),
-            "max_path_lateral_step_m": (
-                args.max_path_lateral_step_m
-            ),
-            "bev_reference_forward_offset_m": (
-                args.bev_reference_forward_offset_m
-            ),
-            "lookahead_min_m": args.lookahead_min_m,
-            "lookahead_max_m": args.lookahead_max_m,
-            "lookahead_m": (
-                -1.0 if args.lookahead_m is None else args.lookahead_m
-            ),
-            "wheelbase_m": args.wheelbase_m,
-            "max_steer_deg": args.max_steer_deg,
-            "steering_ema_alpha": args.steering_ema_alpha,
-            "steering_deadband_deg": args.steering_deadband_deg,
-            "max_steering_change_deg": (
-                args.max_steering_change_deg
-            ),
-            "speed_mps": args.speed_mps,
-            "hold_speed_scale": args.hold_speed_scale,
-            "process_every_nth_frame": args.process_every_nth_frame,
-            "debug_jpeg_quality": args.debug_jpeg_quality,
-            "enable_drive": args.enable_drive,
-            "display": args.display,
-            "display_scale": args.display_scale,
-        }
-        for name, default_value in parameter_defaults.items():
-            self.declare_parameter(name, default_value)
-
-        def parameter(name: str) -> Any:
-            return self.get_parameter(name).value
-
-        model_path = Path(str(parameter("model_path")))
-        image_topic = str(parameter("image_topic"))
-        path_topic = str(parameter("path_topic"))
-        segmentation_topic = str(parameter("segmentation_topic"))
-        debug_topic = str(parameter("debug_topic"))
-        status_topic = str(parameter("status_topic"))
-        which_lane_topic = str(parameter("which_lane_topic"))
-        cmd_vel_topic = str(parameter("cmd_vel_topic"))
-        bev_params_path = Path(str(parameter("bev_params")))
-        bev_parameters = load_bev_parameters(bev_params_path)
-        fixed_lookahead_m = float(parameter("lookahead_m"))
-        if fixed_lookahead_m > 0.0:
-            lookahead_min_m = fixed_lookahead_m
-            lookahead_max_m = fixed_lookahead_m
-        else:
-            lookahead_min_m = float(parameter("lookahead_min_m"))
-            lookahead_max_m = float(parameter("lookahead_max_m"))
-
-        config = LaneConfig(
-            confidence=float(parameter("confidence")),
-            image_size=int(parameter("image_size")),
-            device=str(parameter("device")),
-            calibration_width=int(parameter("calibration_width")),
-            calibration_height=int(parameter("calibration_height")),
-            source_points=tuple(bev_parameters.source_points.reshape(-1)),
-            destination_points=tuple(
-                bev_parameters.destination_points.reshape(-1)
-            ),
-            warp_width=bev_parameters.width,
-            warp_height=bev_parameters.height,
-            pixels_per_meter=float(parameter("pixels_per_meter")),
-            lane_width_m=float(parameter("lane_width_m")),
-            min_component_area=int(parameter("min_component_area")),
-            center_sample_step=int(parameter("center_sample_step")),
-            same_line_threshold_px=float(
-                parameter("same_line_threshold_px")
-            ),
-            min_group_span_px=float(parameter("min_group_span_px")),
-            min_group_area=int(parameter("min_group_area")),
-            dashed_piece_threshold=int(
-                parameter("dashed_piece_threshold")
-            ),
-            prefer_solid_when_dashed=bool(
-                parameter("prefer_solid_when_dashed")
-            ),
-            lane_track_max_age_frames=int(
-                parameter("lane_track_max_age_frames")
-            ),
-            lane_track_match_threshold_px=float(
-                parameter("lane_track_match_threshold_px")
-            ),
-            solid_enter_frames=int(parameter("solid_enter_frames")),
-            solid_exit_frames=int(parameter("solid_exit_frames")),
-            path_top_y=int(parameter("path_top_y")),
-            path_bottom_margin=int(parameter("path_bottom_margin")),
-            path_step_px=int(parameter("path_step_px")),
-            path_resample_step_px=int(
-                parameter("path_resample_step_px")
-            ),
-            max_missing_frames=int(parameter("max_missing_frames")),
-            path_ema_alpha=float(parameter("path_ema_alpha")),
-            path_transition_blend_frames=int(
-                parameter("path_transition_blend_frames")
-            ),
-            max_path_lateral_step_m=float(
-                parameter("max_path_lateral_step_m")
-            ),
-            bev_reference_forward_offset_m=float(
-                parameter("bev_reference_forward_offset_m")
-            ),
-            lookahead_min_m=lookahead_min_m,
-            lookahead_max_m=lookahead_max_m,
-            wheelbase_m=float(parameter("wheelbase_m")),
-            max_steering_deg=float(parameter("max_steer_deg")),
-            steering_ema_alpha=float(
-                parameter("steering_ema_alpha")
-            ),
-            steering_deadband_deg=float(
-                parameter("steering_deadband_deg")
-            ),
-            max_steering_change_deg=float(
-                parameter("max_steering_change_deg")
-            ),
-            target_speed_mps=float(parameter("speed_mps")),
-        )
-        self.processor = SegmentationLaneProcessor(model_path, config)
-        self.enable_drive = bool(parameter("enable_drive"))
-        self.display = bool(parameter("display"))
-        self.display_scale = max(
-            0.1, float(parameter("display_scale"))
-        )
-        self.path_frame_id = str(parameter("path_frame_id"))
-        self.debug_jpeg_quality = int(
-            np.clip(int(parameter("debug_jpeg_quality")), 1, 100)
-        )
-        self.process_every_nth_frame = max(
-            1, int(parameter("process_every_nth_frame"))
-        )
-        self.hold_speed_scale = float(
-            np.clip(
-                float(parameter("hold_speed_scale")), 0.0, 1.0
-            )
-        )
-        self.frame_count = 0
-        self.processed_count = 0
-        self.last_log_time = 0.0
-
-        self.path_publisher = self.create_publisher(
-            PathMessage, path_topic, 10
-        )
-        self.segmentation_publisher = self.create_publisher(
-            CompressedImage,
-            segmentation_topic,
-            qos_profile_sensor_data,
-        )
-        self.debug_publisher = self.create_publisher(
-            CompressedImage,
-            debug_topic,
-            qos_profile_sensor_data,
-        )
-        self.status_publisher = self.create_publisher(
-            String, status_topic, 10
-        )
-        self.which_lane_publisher = self.create_publisher(
-            String, which_lane_topic, 10
-        )
-        self.cmd_publisher = self.create_publisher(
-            Twist, cmd_vel_topic, 10
-        )
-        self.image_subscription = self.create_subscription(
-            CompressedImage,
-            image_topic,
-            self.on_image,
-            qos_profile_sensor_data,
-        )
-
-        self.get_logger().info(
-            f"input={image_topic}, model={model_path}, "
-            f"bev_params={bev_params_path}, "
-            f"task={self.processor.model.task}, "
-            f"classes={self.processor.model.names}, "
-            f"device={self.processor.device}"
-        )
-        self.get_logger().info(
-            f"path={path_topic}, "
-            f"segmentation={segmentation_topic}, "
-            f"path_debug={debug_topic}, "
-            f"which_lane={which_lane_topic}, "
-            f"cmd_vel={cmd_vel_topic}, "
-            f"drive_enabled={self.enable_drive}"
-        )
-        self.get_logger().info(
-            "vehicle geometry: "
-            f"BEV reference is "
-            f"{self.processor.config.bev_reference_forward_offset_m:.2f}m "
-            "ahead of rear axle; dynamic LD="
-            f"{self.processor.config.lookahead_min_m:.2f}.."
-            f"{self.processor.config.lookahead_max_m:.2f}m"
-        )
-        if self.enable_drive:
-            self.get_logger().warning(
-                "Drive is ENABLED: this node may publish non-zero /cmd_vel."
-            )
-        else:
-            self.get_logger().info(
-                "Dry-run mode: path is generated but /cmd_vel remains zero."
-            )
-
-    def on_image(self, message: CompressedImage) -> None:
-        self.frame_count += 1
-        if (self.frame_count - 1) % self.process_every_nth_frame:
-            return
-
-        try:
-            frame = decode_compressed_image(message)
-            output = self.processor.process(frame)
-        except Exception as exc:
-            self.publish_stop()
-            self.get_logger().error(
-                f"Lane processing failed: {exc}",
-                throttle_duration_sec=2.0,
-            )
-            return
-
-        self.processed_count += 1
-        self.path_publisher.publish(
-            self._path_message(output.path_meters, message)
-        )
-        self._publish_compressed_image(
-            output.segmentation_image,
-            message,
-            self.segmentation_publisher,
-            "segmentation",
-        )
-        self._publish_compressed_image(
-            output.debug_image,
-            message,
-            self.debug_publisher,
-            "path",
-        )
-        self._publish_command(output)
-        self._publish_which_lane(output)
-        self._publish_status(output)
-
-        if self.display:
-            segmentation_preview = cv2.resize(
-                output.segmentation_image,
-                None,
-                fx=self.display_scale,
-                fy=self.display_scale,
-                interpolation=cv2.INTER_NEAREST,
-            )
-            path_preview = cv2.resize(
-                output.debug_image,
-                None,
-                fx=self.display_scale,
-                fy=self.display_scale,
-                interpolation=cv2.INTER_NEAREST,
-            )
-            cv2.imshow("BEV segmentation", segmentation_preview)
-            cv2.imshow("BEV generated path", path_preview)
-            if cv2.waitKey(1) & 0xFF in (27, ord("q")):
-                rclpy.shutdown()
-
-        now = time.monotonic()
-        if now - self.last_log_time >= 2.0:
-            path_points = (
-                0
-                if output.path_meters is None
-                else len(output.path_meters)
-            )
-            self.get_logger().info(
-                f"frames={self.processed_count}, "
-                f"path_points={path_points}, "
-                f"groups={output.group_count}, "
-                f"dashed_regions={output.dashed_region_count}, "
-                f"selection={output.selection_mode}, "
-                f"which_lane={output.which_lane or 'unknown'}, "
-                f"reason={output.reason}, "
-                f"fallback={output.used_fallback}, "
-                f"steer={math.degrees(output.steering_rad):+.1f}deg, "
-                f"ld={output.lookahead_m:.2f}m, "
-                f"ld_target={output.lookahead_target_m:.2f}m, "
-                f"inference={output.inference_ms:.1f}ms"
-            )
-            self.last_log_time = now
-
-    def _path_message(
-        self,
-        path_meters: PointArray,
-        source: CompressedImage,
-    ) -> PathMessage:
-        message = PathMessage()
-        message.header.stamp = source.header.stamp
-        message.header.frame_id = self.path_frame_id
-        if path_meters is None:
-            return message
-
-        for index, (forward, left) in enumerate(path_meters):
-            pose = PoseStamped()
-            pose.header = message.header
-            pose.pose.position.x = float(forward)
-            pose.pose.position.y = float(left)
-            if len(path_meters) == 1:
-                yaw = 0.0
-            elif index < len(path_meters) - 1:
-                delta = path_meters[index + 1] - path_meters[index]
-                yaw = math.atan2(float(delta[1]), float(delta[0]))
-            else:
-                delta = path_meters[index] - path_meters[index - 1]
-                yaw = math.atan2(float(delta[1]), float(delta[0]))
-            pose.pose.orientation.z = math.sin(yaw * 0.5)
-            pose.pose.orientation.w = math.cos(yaw * 0.5)
-            message.poses.append(pose)
-        return message
-
-    def _publish_compressed_image(
-        self,
-        image: np.ndarray,
-        source: CompressedImage,
-        publisher: Any,
-        image_name: str,
-    ) -> None:
-        success, encoded = cv2.imencode(
-            ".jpg",
-            image,
-            [cv2.IMWRITE_JPEG_QUALITY, self.debug_jpeg_quality],
-        )
-        if not success:
-            self.get_logger().warning(
-                f"Could not encode {image_name} image"
-            )
-            return
-        message = CompressedImage()
-        message.header = source.header
-        message.format = "jpeg"
-        message.data = encoded.tobytes()
-        publisher.publish(message)
-
-    def _publish_command(self, output: LaneResult) -> None:
-        if not self.enable_drive or output.path_meters is None:
-            self.publish_stop()
-            return
-        speed = output.target_speed_mps
-        if output.used_fallback:
-            speed *= self.hold_speed_scale
-        turn_ratio = min(
-            1.0,
-            abs(math.degrees(output.steering_rad))
-            / self.processor.config.max_steering_deg,
-        )
-        speed *= max(0.25, 1.0 - 0.70 * turn_ratio)
-        self.cmd_publisher.publish(
-            make_twist(
-                speed,
-                output.steering_rad,
-                self.processor.config.wheelbase_m,
-            )
-        )
-
-    def _publish_status(self, output: LaneResult) -> None:
-        message = {
-            "path_valid": output.path_meters is not None,
-            "reason": output.reason,
-            "fallback": output.used_fallback,
-            "lane_groups": output.group_count,
-            "dashed_region_count": output.dashed_region_count,
-            "selection_mode": output.selection_mode,
-            "which_lane": output.which_lane,
-            "steering_deg": round(
-                math.degrees(output.steering_rad), 2
-            ),
-            "lookahead_m": round(output.lookahead_m, 3),
-            "lookahead_target_m": round(
-                output.lookahead_target_m, 3
-            ),
-            "bev_reference_forward_offset_m": round(
-                self.processor.config.bev_reference_forward_offset_m,
-                3,
-            ),
-            "inference_ms": round(output.inference_ms, 1),
-            "drive_enabled": self.enable_drive,
-        }
-        self.status_publisher.publish(
-            String(data=json.dumps(message, ensure_ascii=False))
-        )
-
-    def _publish_which_lane(self, output: LaneResult) -> None:
-        if output.which_lane is None:
-            return
-        self.which_lane_publisher.publish(
-            String(data=output.which_lane)
-        )
-
-    def publish_stop(self) -> None:
-        self.cmd_publisher.publish(Twist())
-
-    def destroy_node(self) -> bool:
-        if rclpy.ok():
-            self.publish_stop()
-        if self.display:
-            cv2.destroyAllWindows()
-        return super().destroy_node()
-
-
-def parse_args(
-    argv: Optional[Sequence[str]] = None,
-) -> Tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Generate a lane path from usb_cam compressed images and "
-            "best1.pt segmentation masks."
-        )
-    )
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument(
-        "--bev-params",
-        type=Path,
-        default=DEFAULT_BEV_PARAMS,
-        help="NPZ containing src_points, dst_points, warp_w, and warp_h",
-    )
-    parser.add_argument("--image-topic", default=DEFAULT_IMAGE_TOPIC)
-    parser.add_argument("--path-topic", default=DEFAULT_PATH_TOPIC)
-    parser.add_argument(
-        "--segmentation-topic", default=DEFAULT_SEGMENTATION_TOPIC
-    )
-    parser.add_argument("--debug-topic", default=DEFAULT_DEBUG_TOPIC)
-    parser.add_argument("--status-topic", default=DEFAULT_STATUS_TOPIC)
-    parser.add_argument(
-        "--which-lane-topic", default=DEFAULT_WHICH_LANE_TOPIC
-    )
-    parser.add_argument("--cmd-vel-topic", default=DEFAULT_CMD_VEL_TOPIC)
-    parser.add_argument("--path-frame-id", default="base_link")
-    parser.add_argument("--confidence", type=float, default=0.25)
-    parser.add_argument("--image-size", type=int, default=640)
-    parser.add_argument(
-        "--device",
-        default="auto",
-        help="auto, cpu, or a CUDA index such as 0",
-    )
-    parser.add_argument("--calibration-width", type=int, default=640)
-    parser.add_argument("--calibration-height", type=int, default=480)
-    parser.add_argument("--pixels-per-meter", type=float, default=600.0)
-    parser.add_argument("--lane-width-m", type=float, default=0.90)
-    parser.add_argument("--min-component-area", type=int, default=250)
-    parser.add_argument("--center-sample-step", type=int, default=5)
-    parser.add_argument(
-        "--same-line-threshold-px", type=float, default=75.0
-    )
-    parser.add_argument("--min-group-span-px", type=float, default=80.0)
-    parser.add_argument("--min-group-area", type=int, default=500)
-    parser.add_argument("--dashed-piece-threshold", type=int, default=2)
-    parser.add_argument(
-        "--prefer-solid-when-dashed",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    parser.add_argument("--lane-track-max-age-frames", type=int, default=7)
-    parser.add_argument(
-        "--lane-track-match-threshold-px",
-        type=float,
-        default=90.0,
-    )
-    parser.add_argument("--solid-enter-frames", type=int, default=4)
-    parser.add_argument("--solid-exit-frames", type=int, default=6)
-    parser.add_argument("--path-top-y", type=int, default=180)
-    parser.add_argument("--path-bottom-margin", type=int, default=30)
-    parser.add_argument("--path-step-px", type=int, default=10)
-    parser.add_argument("--path-resample-step-px", type=int, default=5)
-    parser.add_argument("--max-missing-frames", type=int, default=8)
-    parser.add_argument("--path-ema-alpha", type=float, default=0.35)
-    parser.add_argument(
-        "--path-transition-blend-frames",
-        type=int,
-        default=6,
-    )
-    parser.add_argument(
-        "--max-path-lateral-step-m",
-        type=float,
-        default=0.04,
-    )
-    parser.add_argument(
-        "--bev-reference-forward-offset-m",
-        type=float,
-        default=1.04,
-        help=(
-            "Forward distance in meters from rear-axle center to the "
-            "BEV bottom reference point."
-        ),
-    )
-    parser.add_argument(
-        "--lookahead-min-m",
-        type=float,
-        default=1.1,
-        help="Dynamic LD used at maximum steering.",
-    )
-    parser.add_argument(
-        "--lookahead-max-m",
-        type=float,
-        default=2.5,
-        help="Dynamic LD used near straight driving.",
-    )
-    parser.add_argument(
-        "--lookahead-m",
-        type=float,
-        default=None,
-        help=(
-            "Optional fixed LD for backward compatibility; when given, "
-            "it disables the dynamic LD range."
-        ),
-    )
-    parser.add_argument("--wheelbase-m", type=float, default=0.545)
-    parser.add_argument("--max-steer-deg", type=float, default=20.0)
-    parser.add_argument("--steering-ema-alpha", type=float, default=0.35)
-    parser.add_argument(
-        "--steering-deadband-deg", type=float, default=0.8
-    )
-    parser.add_argument(
-        "--max-steering-change-deg", type=float, default=3.0
-    )
-    parser.add_argument("--speed-mps", type=float, default=0.20)
-    parser.add_argument("--hold-speed-scale", type=float, default=0.35)
-    parser.add_argument("--process-every-nth-frame", type=int, default=1)
-    parser.add_argument("--debug-jpeg-quality", type=int, default=80)
-    parser.add_argument(
-        "--enable-drive",
-        action="store_true",
-        help="Allow non-zero cmd_vel output; default is safe dry-run.",
-    )
-    parser.add_argument("--display", action="store_true")
-    parser.add_argument("--display-scale", type=float, default=1.0)
-    return parser.parse_known_args(argv)
-
-
-def validate_args(args: argparse.Namespace) -> None:
-    if not args.model.is_file():
-        raise FileNotFoundError(f"YOLO model not found: {args.model}")
-    if not args.bev_params.is_file():
-        raise FileNotFoundError(
-            f"BEV parameter file not found: {args.bev_params}"
-        )
-    if not 0.0 <= args.confidence <= 1.0:
-        raise ValueError("--confidence must be between 0 and 1")
-    if args.image_size <= 0:
-        raise ValueError("--image-size must be positive")
-    if args.process_every_nth_frame <= 0:
-        raise ValueError("--process-every-nth-frame must be positive")
-    if (
-        args.path_step_px <= 0
-        or args.path_resample_step_px <= 0
-    ):
-        raise ValueError("Path sampling steps must be positive")
-    if args.lane_track_max_age_frames < 0:
-        raise ValueError(
-            "--lane-track-max-age-frames cannot be negative"
-        )
-    if args.lane_track_match_threshold_px <= 0.0:
-        raise ValueError(
-            "--lane-track-match-threshold-px must be positive"
-        )
-    if args.solid_enter_frames <= 0 or args.solid_exit_frames <= 0:
-        raise ValueError(
-            "Solid preference hysteresis frames must be positive"
-        )
-    if args.path_transition_blend_frames <= 0:
-        raise ValueError(
-            "--path-transition-blend-frames must be positive"
-        )
-    if args.max_path_lateral_step_m <= 0.0:
-        raise ValueError(
-            "--max-path-lateral-step-m must be positive"
-        )
-    if args.speed_mps < 0.0:
-        raise ValueError("--speed-mps cannot be negative")
-    if args.wheelbase_m <= 0.0:
-        raise ValueError("--wheelbase-m must be positive")
-    if not math.isfinite(args.bev_reference_forward_offset_m):
-        raise ValueError(
-            "--bev-reference-forward-offset-m must be finite"
-        )
-    if args.lookahead_m is not None and args.lookahead_m <= 0.0:
-        raise ValueError("--lookahead-m must be positive")
-    if (
-        args.lookahead_min_m <= 0.0
-        or args.lookahead_max_m < args.lookahead_min_m
-    ):
-        raise ValueError(
-            "Lookahead range must satisfy "
-            "0 < --lookahead-min-m <= --lookahead-max-m"
-        )
-    if args.max_steer_deg <= 0.0:
-        raise ValueError("--max-steer-deg must be positive")
-
-
-def main(argv: Optional[Sequence[str]] = None) -> None:
-    cli_args, ros_args = parse_args(argv)
-    validate_args(cli_args)
-    rclpy.init(args=ros_args)
-    node: Optional[YoloLaneDriver] = None
-    try:
-        node = YoloLaneDriver(cli_args)
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        if node is not None:
-            node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()

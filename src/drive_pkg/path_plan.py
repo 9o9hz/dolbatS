@@ -31,6 +31,7 @@ from lane_processing import (
 PARAMETER_DEFAULTS = {
     "bev_params": str(DEFAULT_BEV_PARAMS),
     "mask_topic": "/lane/detection/mask/compressed",
+    "instances_topic": "/lane/detection/instances",
     "path_topic": "/lane/path",
     "debug_topic": "/lane/path/debug/compressed",
     "status_topic": "/lane/path/status",
@@ -58,6 +59,9 @@ PARAMETER_DEFAULTS = {
     "path_transition_blend_frames": 6,
     "max_path_lateral_step_m": 0.04,
     "max_missing_frames": 8,
+    "bbox_close_ksize": 5,
+    "path_spline_smooth_factor": 10.0,
+    "path_spline_points": 100,
     "debug_jpeg_quality": 80,
     "display": False,
     "display_scale": 1.0,
@@ -137,6 +141,11 @@ class PathPlanNode(Node):
             max_missing_frames=int(
                 parameter("max_missing_frames")
             ),
+            bbox_close_ksize=int(parameter("bbox_close_ksize")),
+            path_spline_smooth_factor=float(
+                parameter("path_spline_smooth_factor")
+            ),
+            path_spline_points=int(parameter("path_spline_points")),
         )
         self.processor = SegmentationLaneProcessor(None, config)
         self.path_frame_id = str(parameter("path_frame_id"))
@@ -148,7 +157,18 @@ class PathPlanNode(Node):
             0.1, float(parameter("display_scale"))
         )
 
+        # Per-instance bbox JSON arrives on a separate topic from the
+        # combined mask (different publisher, different QoS -- lane_detect
+        # publishes them back-to-back but delivery order isn't guaranteed).
+        # Cache by exact timestamp_ns and only use an exact match; a
+        # mismatched pairing would silently mislabel bbox regions, which is
+        # worse than falling back to whole-mask extraction for that frame.
+        self._instances_cache: dict[int, list] = {}
+        self._instances_cache_order: list[int] = []
+        self._instances_cache_capacity = 8
+
         mask_topic = str(parameter("mask_topic"))
+        instances_topic = str(parameter("instances_topic"))
         path_topic = str(parameter("path_topic"))
         debug_topic = str(parameter("debug_topic"))
         status_topic = str(parameter("status_topic"))
@@ -179,10 +199,32 @@ class PathPlanNode(Node):
             self.on_mask,
             qos_profile_sensor_data,
         )
+        self.instances_subscription = self.create_subscription(
+            String,
+            instances_topic,
+            self.on_instances,
+            10,
+        )
         self.get_logger().info(
             f"{mask_topic} -> {path_topic}; frame={self.path_frame_id}, "
             f"bev={bev_path}"
         )
+
+    def on_instances(self, message: String) -> None:
+        try:
+            payload = json.loads(message.data)
+            timestamp_ns = int(payload["timestamp_ns"])
+            instances = payload["instances"]
+        except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+            return
+        self._instances_cache[timestamp_ns] = instances
+        self._instances_cache_order.append(timestamp_ns)
+        while (
+            len(self._instances_cache_order)
+            > self._instances_cache_capacity
+        ):
+            stale_key = self._instances_cache_order.pop(0)
+            self._instances_cache.pop(stale_key, None)
 
     def on_mask(self, message: CompressedImage) -> None:
         try:
@@ -190,7 +232,14 @@ class PathPlanNode(Node):
             mask = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
             if mask is None or mask.size == 0:
                 raise ValueError("Could not decode lane mask")
-            output = self.processor.plan_mask(mask)
+            timestamp_ns = (
+                int(message.header.stamp.sec) * 1_000_000_000
+                + int(message.header.stamp.nanosec)
+            )
+            instances = self._instances_cache.pop(timestamp_ns, None)
+            if instances is not None and timestamp_ns in self._instances_cache_order:
+                self._instances_cache_order.remove(timestamp_ns)
+            output = self.processor.plan_mask(mask, instances)
         except Exception as exc:
             self.path_publisher.publish(self._path_message(None, message))
             self.get_logger().error(

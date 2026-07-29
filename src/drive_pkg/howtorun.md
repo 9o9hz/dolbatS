@@ -17,6 +17,14 @@
 조정한다(예전 `lane_detect:`/`path_plan:`/`pure_pursuit:` 세 블록이 이
 블록으로 합쳐졌다. `path_visualizer:` 블록은 그대로다).
 
+경로 생성 내부 알고리즘(`lane_processing.py`)은 YOLO 검출(바운딩박스) 단위로
+가장 큰 성분 하나만 뽑고, 프레임 간 좌/우 트래킹으로 이어붙인 뒤,
+b-spline으로 공간 평활화하고 마지막에 기존 EMA로 시간축 평활화한다
+(자매 프로젝트 `yolotl_ros2`의 `main6.py` 방식을 이식한 것). 실선/점선
+판별과 1차선/2차선(`which_lane`) 판정, 실선 우선 히스테리시스는 이 대회
+규정 특화 로직이라 그대로 유지된다. `scipy`(b-spline)가 런타임 의존성으로
+추가됐다.
+
 ## 전체 실행
 
 ```bash
@@ -105,6 +113,7 @@ YAML을 따로 두거나 필요한 블록만 별도 파일로 분리해서 쓴�
 | 검출 | `/lane/detection/mask/compressed` | `sensor_msgs/CompressedImage` | BEV 이진 차선 마스크(PNG) |
 | 검출 | `/lane/detection/segmentation/compressed` | `sensor_msgs/CompressedImage` | YOLO 시각화 |
 | 검출 | `/lane/detection/status` | `std_msgs/String` | 검출 개수·추론 시간 JSON |
+| 검출 | `/lane/detection/instances` | `std_msgs/String` | 검출별 bbox·confidence JSON (`path_plan`이 마스크와 timestamp로 매칭해 bbox 단위 추출에 사용) |
 | 계획 | `/lane/path` | `nav_msgs/Path` | `base_link` 기준 metric 경로 |
 | 계획 | `/lane/path/debug/compressed` | `sensor_msgs/CompressedImage` | 생성 경로 시각화 |
 | 계획 | `/lane/path/status` | `std_msgs/String` | 경로 유효성·fallback JSON |

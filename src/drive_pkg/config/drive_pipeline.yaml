@@ -31,8 +31,11 @@ drive_main:
     bev_reference_forward_offset_m: 1.04
 
     # 차선 조각 결합 및 좌/우 경계 선택.
+    # bbox_close_ksize: 검출(bbox) 단위로 최대 성분을 뽑기 전 적용하는
+    # morphological close 커널 크기.
     min_component_area: 250
     center_sample_step: 5
+    bbox_close_ksize: 5
     same_line_threshold_px: 75.0
     min_group_span_px: 80.0
     min_group_area: 500
@@ -43,11 +46,15 @@ drive_main:
     solid_enter_frames: 4
     solid_exit_frames: 6
 
-    # 경로 생성 및 시간축 평활화.
+    # 경로 생성 및 공간/시간축 평활화.
+    # path_spline_*: 중심선 B-spline 공간 평활화(scipy splprep) 설정.
+    # 그 결과를 고정 y-grid로 리샘플한 뒤 아래 시간축 EMA로 이어진다.
     path_top_y: 180
     path_bottom_margin: 30
     path_step_px: 10
     path_resample_step_px: 5
+    path_spline_smooth_factor: 10.0
+    path_spline_points: 100
     path_ema_alpha: 0.35
     path_transition_blend_frames: 6
     max_path_lateral_step_m: 0.04
