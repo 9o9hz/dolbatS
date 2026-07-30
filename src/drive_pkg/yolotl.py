@@ -351,9 +351,6 @@ class LaneFollowerNode(Node):
         else:
             self.device = torch.device('cpu')
 
-        self.get_logger().info(f"Loading arrow weights from: {opt.arrow_weights}")
-        self.arrow_model = YOLO(opt.arrow_weights).to(self.device)
-
         self.get_logger().info(f"Loading weights from: {opt.weights}")
         self.model = YOLO(opt.weights).to(self.device)
 
@@ -395,8 +392,8 @@ class LaneFollowerNode(Node):
         self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = 0.0027, 1.23, 0.0030 #299 #193
 
         self.tracked_lanes = {
-            'left': {'xs': None, 'ys': None, 'age': 0},
-            'right': {'xs': None, 'ys': None, 'age': 0}
+            'left': {'xs': None, 'ys': None, 'age': 0, 'class_name': None},
+            'right': {'xs': None, 'ys': None, 'age': 0, 'class_name': None}
         }
         self.tracked_center_path = {'xs': None, 'ys': None}
 
@@ -415,7 +412,15 @@ class LaneFollowerNode(Node):
         self.last_valid_ld = float(self.MAX_LOOKAHEAD_DISTANCE)
 
         # 4. ROS Setup
-        self.pub_steering = self.create_publisher(Float32, 'auto_steer_angle_yolotl', 1)
+        # steer/valid 토픽명은 mission_manager.py의 lane_steer_topic/
+        # lane_valid_topic 기본값과 맞춤 -- pure_pursuit 대신 이 노드를
+        # 쓸 때 mission_manager가 그대로 받아쓸 수 있도록.
+        self.pub_steering = self.create_publisher(
+            Float32, '/control/candidate/lane/steer_angle', 1
+        )
+        self.pub_lane_valid = self.create_publisher(
+            Bool, '/control/candidate/lane/valid', 1
+        )
         self.pub_lane_status = self.create_publisher(Bool, 'lane_detect', 1)
         self.pub_path = self.create_publisher(Path, 'lane_path', 10)
         self.pub_drivable_area = self.create_publisher(
@@ -434,16 +439,18 @@ class LaneFollowerNode(Node):
             self.image_callback,
             qos_profile_sensor_data
         )
+        # drive_main.py의 image_topic 기본값(/camera/lane/raw/compressed)과
+        # 동일한 카메라를 구독. throttle 피드백은 mission_manager.py가
+        # 발행하는 최종 /auto_throttle을 그대로 구독.
         self.sub_throttle = self.create_subscription(
             Float32,
-            'auto_throttle',
+            '/auto_throttle',
             self.throttle_callback,
             1
         )
 
         cv2.namedWindow("Original Camera View", cv2.WINDOW_AUTOSIZE)
         cv2.namedWindow("Final Path & Logs (on BEV)", cv2.WINDOW_AUTOSIZE)
-        cv2.namedWindow("Arrow Masking", cv2.WINDOW_AUTOSIZE)
 
         self.frame_count = 0
 
@@ -497,7 +504,7 @@ class LaneFollowerNode(Node):
         )
         draw_img = image.copy()
 
-        LANE_WIDTH_M = 1.6
+        LANE_WIDTH_M = 0.9
         lane_width_pixels = LANE_WIDTH_M / self.m_per_pixel_x
 
         viz_left_xs, viz_left_ys = left_xs, left_ys
@@ -578,43 +585,6 @@ class LaneFollowerNode(Node):
     def process_image(self, im0s):
         im0s = self.undistort_image(im0s)
 
-        # ==============================================================================
-        # [화살표 인식 및 마스킹 (RAW 원본 이미지)]
-        # ==============================================================================
-        arrow_results = self.arrow_model(
-            im0s,
-            imgsz=self.opt.img_size,
-            conf=self.opt.arrow_conf_thres,
-            device=self.device,
-            verbose=False
-        )
-        arrow_result = arrow_results[0]
-        
-        # 디텍션된 화살표 시각화용 이미지 생성
-        try:
-            arrow_viz = arrow_result.plot()
-        except Exception:
-            arrow_viz = im0s.copy()
-            
-        # arrow.pt가 세그먼테이션(마스크) 정보를 가지고 있는 모델일 경우
-        if arrow_result.masks is not None:
-            for mask_tensor in arrow_result.masks.data:
-                mask_np = (mask_tensor.cpu().numpy() * 255).astype(np.uint8)
-                if mask_np.shape != arrow_result.orig_shape[:2]:
-                    mask_np = cv2.resize(
-                        mask_np,
-                        (arrow_result.orig_shape[1], arrow_result.orig_shape[0])
-                    )
-                # 원본 이미지(im0s)에서 화살표 마스크 영역을 검은색으로 지움
-                im0s[mask_np > 0] = [0, 0, 0]
-        # arrow.pt가 일반 바운딩 박스 모델일 경우
-        elif arrow_result.boxes is not None:
-            for box in arrow_result.boxes.xyxy:
-                x1, y1, x2, y2 = map(int, box.cpu().numpy())
-                # 바운딩 박스 내부 영역을 검은색으로 지움
-                im0s[y1:y2, x1:x2] = [0, 0, 0]
-        # ==============================================================================
-
         steer_deg = None
         goal_point_bev = None
         lane_detected_bool = False
@@ -641,9 +611,19 @@ class LaneFollowerNode(Node):
         result = results[0]
 
         # 3. Mask Processing
+        # combined_mask_bev feeds final_filter/connected-components as
+        # before; class_masks (one per model class, e.g. dashed/solid) is
+        # kept alongside purely so each final component's dominant class
+        # can be looked up afterwards without changing the existing
+        # combine/filter/top-2 selection behavior.
         combined_mask_bev = np.zeros(result.orig_shape[:2], dtype=np.uint8)
+        class_masks = {
+            class_id: np.zeros(result.orig_shape[:2], dtype=np.uint8)
+            for class_id in self.model.names
+        }
         if result.masks is not None:
             confidences = result.boxes.conf
+            classes = result.boxes.cls
             for i, mask_tensor in enumerate(result.masks.data):
                 if confidences[i] >= self.opt.conf_thres:
                     mask_np = (mask_tensor.cpu().numpy() * 255).astype(np.uint8)
@@ -653,6 +633,10 @@ class LaneFollowerNode(Node):
                             (result.orig_shape[1], result.orig_shape[0])
                         )
                     combined_mask_bev = np.maximum(combined_mask_bev, mask_np)
+                    class_id = int(classes[i])
+                    class_masks[class_id] = np.maximum(
+                        class_masks[class_id], mask_np
+                    )
 
         final_mask = final_filter(combined_mask_bev)
         bev_im_for_drawing = bev_image_input.copy()
@@ -680,10 +664,27 @@ class LaneFollowerNode(Node):
 
                     x_bottom = xs_center[-1]
 
+                    # 이 성분과 가장 많이 겹치는 클래스 마스크를 그 성분의
+                    # 클래스로 판정 (dashed/solid 구분, 추적/표시용).
+                    class_id, class_name = None, None
+                    best_overlap = 0
+                    for candidate_id, class_mask in class_masks.items():
+                        overlap = int(
+                            np.count_nonzero(
+                                (component_mask > 0) & (class_mask > 0)
+                            )
+                        )
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            class_id = candidate_id
+                            class_name = self.model.names[candidate_id]
+
                     current_detections.append({
                         'xs': xs_center,
                         'ys': ys_center,
-                        'x_bottom': x_bottom
+                        'x_bottom': x_bottom,
+                        'class_id': class_id,
+                        'class_name': class_name,
                     })
 
         current_detections.sort(key=lambda c: c['x_bottom'])
@@ -719,24 +720,28 @@ class LaneFollowerNode(Node):
             left_fit_ys = current_left['ys']
             left_lane_tracked['xs'] = current_left['xs']
             left_lane_tracked['ys'] = current_left['ys']
+            left_lane_tracked['class_name'] = current_left['class_name']
             left_lane_tracked['age'] = 0
         else:
             left_lane_tracked['age'] += 1
             if left_lane_tracked['age'] > self.MAX_LANE_AGE:
                 left_lane_tracked['xs'] = None
                 left_lane_tracked['ys'] = None
+                left_lane_tracked['class_name'] = None
 
         if current_right is not None:
             right_fit_xs = current_right['xs']
             right_fit_ys = current_right['ys']
             right_lane_tracked['xs'] = current_right['xs']
             right_lane_tracked['ys'] = current_right['ys']
+            right_lane_tracked['class_name'] = current_right['class_name']
             right_lane_tracked['age'] = 0
         else:
             right_lane_tracked['age'] += 1
             if right_lane_tracked['age'] > self.MAX_LANE_AGE:
                 right_lane_tracked['xs'] = None
                 right_lane_tracked['ys'] = None
+                right_lane_tracked['class_name'] = None
 
         final_left_xs, final_left_ys = left_lane_tracked['xs'], left_lane_tracked['ys']
         final_right_xs, final_right_ys = right_lane_tracked['xs'], right_lane_tracked['ys']
@@ -746,7 +751,7 @@ class LaneFollowerNode(Node):
 
         # 6. Steering: 중앙 경로도 점 기반
         if lane_detected_bool:
-            LANE_WIDTH_M = 1.7
+            LANE_WIDTH_M = 0.9
             lane_width_pixels = LANE_WIDTH_M / self.m_per_pixel_x
 
             center_xs, center_ys = None, None
@@ -902,12 +907,17 @@ class LaneFollowerNode(Node):
 
                     self.prev_steer_deg = steer_deg
                     self.pub_steering.publish(Float32(data=steer_deg))
+                    self.pub_lane_valid.publish(Bool(data=True))
+                else:
+                    self.pub_lane_valid.publish(Bool(data=False))
             else:
                 dynamic_lookahead_distance = float(self.last_valid_ld)
                 self.pub_lookahead.publish(Float32(data=float(self.last_valid_ld)))
+                self.pub_lane_valid.publish(Bool(data=False))
         else:
             dynamic_lookahead_distance = float(self.last_valid_ld)
             self.pub_lookahead.publish(Float32(data=float(self.last_valid_ld)))
+            self.pub_lane_valid.publish(Bool(data=False))
 
         # 7. Visualization
         try:
@@ -959,6 +969,14 @@ class LaneFollowerNode(Node):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         cv2.putText(bev_im_for_drawing, f"Lookahead: {dynamic_lookahead_distance:.2f}m", (10, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        left_class = left_lane_tracked['class_name'] or "N/A"
+        right_class = right_lane_tracked['class_name'] or "N/A"
+        cv2.putText(
+            bev_im_for_drawing,
+            f"Left: {left_class}  Right: {right_class}",
+            (10, 120),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2,
+        )
 
         original_with_drivable_area = self.draw_drivable_area_on_original(
             im0s,
@@ -983,7 +1001,6 @@ class LaneFollowerNode(Node):
         #cv2.imshow("Original Camera View", original_with_drivable_area)
         cv2.imshow("Final Path & Logs (on BEV)", bev_im_for_drawing)
         cv2.imshow("Roboflow Detections (on BEV)", annotated_frame)
-        cv2.imshow("Arrow Masking", arrow_viz)
         cv2.waitKey(1)
 
 
@@ -992,20 +1009,22 @@ def main(args=None):
     parser = argparse.ArgumentParser()
 
     default_weights = _default_resource_path('best.pt')
-    default_arrow_weights = _default_resource_path('arrow.pt')
     default_params = _default_resource_path('bev_params_0730.npz')
     default_calib = _default_resource_path('camera_calibration.pkl')
 
     parser.add_argument('--weights', default=default_weights, help='Path to model weights')
-    parser.add_argument('--arrow-weights', default=default_arrow_weights, help='Path to arrow model weights')
     parser.add_argument('--param-file', default=default_params, help='Path to BEV parameters file')
     parser.add_argument('--calib-file', default=default_calib, help='Path to camera calibration pkl file')
     parser.add_argument('--img-size', type=int, default=640)
     parser.add_argument('--conf-thres', type=float, default=0.8)
-    parser.add_argument('--arrow-conf-thres', type=float, default=0.3)
     parser.add_argument('--iou-thres', type=float, default=0.5)
     parser.add_argument('--device', default='0')
-    parser.add_argument('--topic', type=str, default='/image_raw/compressed', help='ROS 2 Image Topic')
+    parser.add_argument(
+        '--topic',
+        type=str,
+        default='/camera/lane/raw/compressed',
+        help='ROS 2 Image Topic',
+    )
 
     opt, _ = parser.parse_known_args()
 

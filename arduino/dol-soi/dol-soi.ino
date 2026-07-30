@@ -53,10 +53,10 @@ float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
 };
 
 // ---------------- Steering Sensor ----------------
-const int STEER_SENSOR_PIN = A0;
+const int STEER_SENSOR_PIN = A4;
 
-// A0 값이 618일 때 조향각 0도
-const int STEER_CENTER_RAW = 480;
+// A4 값이 STEER_CENTER_RAW일 때 조향각 0도
+const int STEER_CENTER_RAW = 452;
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
@@ -64,13 +64,13 @@ const int STEER_CENTER_RAW = 480;
 const float DEG_PER_ADC = 270.0f / 1024.0f;
 
 // 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-)
-// 현재 센서는 오른쪽으로 움직일 때 A0 값이 증가하므로 -1
-const int STEER_SIGN = 1;
+// 현재 센서는 오른쪽으로 움직일 때 A4 값이 증가하므로 -1
+const int STEER_SIGN = -1;
 
 // 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
 // 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
-const int STEER_RAW_MIN = 410;
-const int STEER_RAW_MAX = 550;
+const int STEER_RAW_MIN = 364;
+const int STEER_RAW_MAX = 540;
 const int STEER_RAW_TOLERANCE = 2;
 
 // 조향 모터 PWM
@@ -250,13 +250,15 @@ float steerRawToDeg(int raw) {
 // ---------------- 핸들 제어 ----------------
 
 void handleLeft() {
-  analogWrite(HANDLE_IN1, STEER_PWM);
-  analogWrite(HANDLE_IN2, 0);
+  // A4 raw가 감소하는 방향
+  analogWrite(HANDLE_IN1, 0);
+  analogWrite(HANDLE_IN2, STEER_PWM);
 }
 
 void handleRight() {
-  analogWrite(HANDLE_IN1, 0);
-  analogWrite(HANDLE_IN2, STEER_PWM);
+  // A4 raw가 증가하는 방향
+  analogWrite(HANDLE_IN1, STEER_PWM);
+  analogWrite(HANDLE_IN2, 0);
 }
 
 void handleStop() {
