@@ -246,21 +246,27 @@ class MissionLogic:
         )
 
     def _obstacle_output(self) -> MissionOutput:
-        # Unlike lane tracking, an active avoidance candidate must be valid
-        # now. Holding a stale full-steering obstacle command after a sensor
-        # fault or controller timeout would be unsafe.
-        if (
-            not self.obstacle.current_valid
-            or not self.obstacle.has_last_valid
-        ):
+        # The full-steer trigger (TURN) must be valid right now; holding a
+        # stale command after it ends would be unsafe. We check
+        # current_valid directly (not has_last_valid) so steering falls
+        # back to lane the instant the trigger ends (TURN -> REARM/FAULT).
+        if self.obstacle.current_valid and self.obstacle.steer_received:
+            steer = self.obstacle.latest_steer
+            source = "obstacle"
+        elif self.lane.has_last_valid:
+            # Avoidance is active but not mid-trigger (APPROACH/REARM/
+            # FAULT): follow the lane while armed.
+            steer = self.lane.last_valid_steer
+            source = "lane"
+        else:
+            # Neither an active trigger nor a lane candidate to fall back
+            # on: stop rather than guess.
             return MissionOutput(
-                MISSION_OBSTACLE,
-                self.traffic_substate,
-                "none",
-                0.0,
-                0.0,
+                MISSION_OBSTACLE, self.traffic_substate, "none", 0.0, 0.0
             )
-        steer = self.obstacle.last_valid_steer
+
+        # Regardless of steer source, use the obstacle throttle range for
+        # as long as avoidance mode is active.
         throttle = map_throttle_by_steer(
             steer,
             self.auto_steer_angle_abs_max,
@@ -269,11 +275,7 @@ class MissionLogic:
             self.throttle_curve_k,
         )
         return MissionOutput(
-            MISSION_OBSTACLE,
-            self.traffic_substate,
-            "obstacle",
-            steer,
-            throttle,
+            MISSION_OBSTACLE, self.traffic_substate, source, steer, throttle
         )
 
     def _traffic_output(self, now_sec: float) -> MissionOutput:

@@ -25,6 +25,11 @@ class YoloObstacleTurn(Node):
     A YOLO detection plus a close rear sensor starts avoidance. Once the
     latched rear sensor clears, steer fully toward that side. End avoidance
     after the opposite-side front sensor decreases and then increases.
+
+    candidate_valid is only True in TURN, when a full-steer avoidance
+    command is actually being published. During APPROACH and REARM,
+    avoidance is merely armed/watching, so candidate_valid stays False and
+    mission_manager falls back to lane steering.
     """
 
     def __init__(self) -> None:
@@ -458,10 +463,10 @@ class YoloObstacleTurn(Node):
             AvoidanceState.TURN,
             AvoidanceState.FAULT,
         )
-        valid = self.state in (
-            AvoidanceState.APPROACH,
-            AvoidanceState.TURN,
-        )
+        # Only TURN actually publishes a full-steer command; APPROACH and
+        # REARM leave candidate_valid False so mission_manager falls back
+        # to lane steering while avoidance is merely armed/watching.
+        valid = self.state == AvoidanceState.TURN
         steer = 0.0
         if self.state == AvoidanceState.TURN:
             steer = (
@@ -502,10 +507,7 @@ class YoloObstacleTurn(Node):
                             AvoidanceState.FAULT,
                         ),
                         "candidate_valid": self.state
-                        in (
-                            AvoidanceState.APPROACH,
-                            AvoidanceState.TURN,
-                        ),
+                        == AvoidanceState.TURN,
                     },
                     ensure_ascii=False,
                 )

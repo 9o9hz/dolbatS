@@ -49,15 +49,15 @@ class CandidateAndModeTest(unittest.TestCase):
         output = logic.step(10000.0)
         self.assertEqual(output.steer_deg, 10.0)
 
-    def test_obstacle_requires_its_own_candidate(self):
+    def test_obstacle_trigger_valid_now_wins_over_lane(self):
         logic = MissionLogic()
-        logic.lane.update_steer(5.0)
-        logic.lane.update_valid(True)
         logic.obstacle_active = True
+        logic.lane.update_steer(7.0)
+        logic.lane.update_valid(True)
         output = logic.step(0.0)
         self.assertEqual(output.mission_state, MISSION_OBSTACLE)
-        self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.0))
 
+        # TURN trigger currently valid: obstacle steering wins over lane.
         logic.obstacle.update_steer(-12.0)
         logic.obstacle.update_valid(True)
         output = logic.step(1.0)
@@ -66,12 +66,38 @@ class CandidateAndModeTest(unittest.TestCase):
         self.assertGreater(output.throttle, 0.4)
         self.assertLess(output.throttle, 0.8)
 
+        # Trigger ends (TURN -> APPROACH/REARM): fall back to lane
+        # immediately rather than holding the stale obstacle steer, but
+        # keep using the obstacle throttle range while still active.
         logic.obstacle.update_valid(False)
         output = logic.step(1.5)
-        self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.0))
+        self.assertEqual(output.selected_steer_source, "lane")
+        self.assertEqual(output.steer_deg, 7.0)
+        self.assertGreater(output.throttle, 0.4)
+        self.assertLess(output.throttle, 0.8)
 
         logic.obstacle_active = False
         self.assertEqual(logic.step(2.0).mission_state, MISSION_LANE)
+
+    def test_obstacle_active_without_trigger_follows_lane(self):
+        logic = MissionLogic()
+        logic.obstacle_active = True
+        logic.lane.update_steer(9.0)
+        logic.lane.update_valid(True)
+        # Obstacle candidate never valid, e.g. APPROACH just watching.
+        output = logic.step(0.0)
+        self.assertEqual(output.mission_state, MISSION_OBSTACLE)
+        self.assertEqual(output.selected_steer_source, "lane")
+        self.assertEqual(output.steer_deg, 9.0)
+        self.assertGreaterEqual(output.throttle, 0.4)
+        self.assertLessEqual(output.throttle, 0.8)
+
+    def test_obstacle_active_with_no_candidates_is_safe(self):
+        logic = MissionLogic()
+        logic.obstacle_active = True
+        output = logic.step(0.0)
+        self.assertEqual(output.selected_steer_source, "none")
+        self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.0))
 
 
 class TrafficStateTest(unittest.TestCase):
