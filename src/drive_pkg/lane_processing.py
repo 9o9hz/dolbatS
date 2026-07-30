@@ -2333,9 +2333,7 @@ class SegmentationLaneProcessor:
             "solid_right_preferred",
         ):
             reason = selection_mode
-        spatial_path = self._anchor_path_to_vehicle_center(
-            self._smooth_spatial(raw_path)
-        )
+        spatial_path = self._smooth_spatial(raw_path)
         final_path, fallback = self._smooth_temporal(
             spatial_path,
             f"{selection_mode}:{reason}",
