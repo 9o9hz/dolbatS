@@ -85,7 +85,7 @@ class CandidateAndModeTest(unittest.TestCase):
         self.assertGreater(output.throttle, 0.4)
         self.assertLess(output.throttle, 0.8)
 
-        # Trigger ends (TURN -> APPROACH/REARM): fall back to lane
+        # Trigger ends (TURN -> REARM): fall back to lane
         # immediately rather than holding the stale obstacle steer, but
         # keep using the obstacle throttle range while still active.
         logic.obstacle.update_valid(False)
@@ -103,7 +103,7 @@ class CandidateAndModeTest(unittest.TestCase):
         logic.obstacle_active = True
         logic.lane.update_steer(9.0)
         logic.lane.update_valid(True)
-        # Obstacle candidate never valid, e.g. APPROACH just watching.
+        # Obstacle candidate never becomes valid.
         output = logic.step(0.0)
         self.assertEqual(output.mission_state, MISSION_OBSTACLE)
         self.assertEqual(output.selected_steer_source, "lane")
