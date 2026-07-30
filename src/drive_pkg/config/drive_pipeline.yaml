@@ -58,11 +58,11 @@ path_plan:
     path_bottom_margin: 30
     path_step_px: 10
     path_resample_step_px: 5
-    path_spline_smooth_factor: 10.0
+    path_spline_smooth_factor: 4.0
     path_spline_points: 100
-    path_ema_alpha: 0.35
-    path_transition_blend_frames: 6
-    max_path_lateral_step_m: 0.04
+    path_ema_alpha: 0.5
+    path_transition_blend_frames: 3
+    max_path_lateral_step_m: 0.07
     max_missing_frames: 8
 
     path_topic: "/lane/path"

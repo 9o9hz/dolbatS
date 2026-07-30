@@ -1187,7 +1187,7 @@ class SegmentationLaneProcessor:
         )
 
         if len(out_xs) >= 3:
-            k_size = 5
+            k_size = 3
             padded = np.pad(
                 out_xs, (k_size // 2, k_size // 2), mode="edge"
             )
@@ -1289,7 +1289,7 @@ class SegmentationLaneProcessor:
         center_xs = np.array(merged_xs, dtype=np.float32)
         center_ys = np.array(merged_ys, dtype=np.float32)
 
-        k_size = 15
+        k_size = 9
         if len(center_xs) >= k_size:
             padded = np.pad(
                 center_xs, (k_size // 2, k_size // 2), mode="edge"
