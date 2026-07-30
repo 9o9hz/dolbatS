@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
 """
-차선 노드 켜지 않고 mission_manager에 차선같은 입력값을 줄 수 있음
+차선 노드 켜지 않고 mission_manager에 차선같은 입력값을 줄 수 
+
+# 터미널 1
+ros2 run control_pkg serial_bridge
+
+# 터미널 2 — 처음엔 lane_throttle을 낮게 override해서 여유를 두는 걸 추천
+ros2 run mission_manager_pkg mission_manager --ros-args \
+  -p lane_throttle_min:=0.2 -p lane_throttle_max:=0.25
+
+# 터미널 3
+ros2 run detect_pkg yolo_obstacle_turn
+# (+ 초음파/YOLO detected를 실제로 발행하는 노드들도 같이)
+
+# 터미널 4 — 이 테스트 스크립트
+python3 manual_lane_candidate_test.py
+
+
+
 """
 
 import curses
