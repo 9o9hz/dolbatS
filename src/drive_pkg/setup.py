@@ -14,6 +14,7 @@ setup(
         "lane_processing",
         "pure_pursuit",
         "visualizer",
+        "yolotl",
     ],
     data_files=[
         (
@@ -23,7 +24,11 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (
             f"share/{package_name}/resource",
-            ["resource/bev(0729).npz", "resource/best.pt"],
+            [
+                "resource/bev(0729).npz",
+                "resource/best.pt",
+                "resource/bev_params_0730.npz",
+            ],
         ),
         (
             f"share/{package_name}/config",
@@ -44,6 +49,7 @@ setup(
         "console_scripts": [
             "drive_main = drive_main:main",
             "pure_pursuit = pure_pursuit:main",
+            "yolotl = yolotl:main",
         ],
     },
 )

@@ -98,7 +98,12 @@ class LaneConfig:
     )
     warp_width: int = 640
     warp_height: int = 640
-    pixels_per_meter: float = 600.0
+    # BEV pixel -> meter scale, per axis (BEV rows/cols cover a different
+    # physical extent side to side than they do front to back, so a single
+    # shared scale is wrong). Computed by the caller as
+    # warp_width/height divided by the measured real-world BEV extent.
+    pixels_per_meter_x: float = 265.9
+    pixels_per_meter_y: float = 275.1
     lane_width_m: float = 0.90
     min_component_area: int = 250
     center_sample_step: int = 5
@@ -364,7 +369,11 @@ class SegmentationLaneProcessor:
             raise ValueError("Calibration dimensions must be positive")
         if cfg.warp_width <= 0 or cfg.warp_height <= 0:
             raise ValueError("BEV dimensions must be positive")
-        if cfg.pixels_per_meter <= 0.0 or cfg.lane_width_m <= 0.0:
+        if (
+            cfg.pixels_per_meter_x <= 0.0
+            or cfg.pixels_per_meter_y <= 0.0
+            or cfg.lane_width_m <= 0.0
+        ):
             raise ValueError("Metric conversion values must be positive")
         if not math.isfinite(cfg.bev_reference_forward_offset_m):
             raise ValueError(
@@ -709,10 +718,38 @@ class SegmentationLaneProcessor:
                 continue
             group["span"] = span
             group["area"] = area
+            self._extend_group_to_frame_bottom(group)
             reliable_groups.append(group)
 
         reliable_groups.sort(key=lambda item: item["x_ref"])
         return reliable_groups
+
+    def _extend_group_to_frame_bottom(self, group: LaneGroup) -> None:
+        """Linearly extend a detected line down to the frame's bottom row,
+        holding the slope the fitted curve has at its lowest observed
+        point, so the boundary stays continuous down to the vehicle even
+        where segmentation stops short of the bottom of the frame."""
+
+        bottom_y = float(self.config.warp_height - 1)
+        y_max = float(np.max(group["points"][:, 1]))
+        if y_max >= bottom_y:
+            return
+
+        a, b, _c = group["curve"]
+        slope_at_bottom = 2.0 * a * y_max + b
+        x_at_y_max = self._curve_x(group["curve"], y_max)
+        extension_ys = np.arange(
+            y_max + 1.0, bottom_y + 1.0, 1.0, dtype=np.float32
+        )
+        if len(extension_ys) == 0:
+            return
+        extension_xs = (
+            x_at_y_max + slope_at_bottom * (extension_ys - y_max)
+        ).astype(np.float32)
+        group["points"] = np.vstack(
+            (group["points"], np.column_stack((extension_xs, extension_ys)))
+        ).astype(np.float32)
+        group["y_max"] = bottom_y
 
     def _group_side(self, group: LaneGroup) -> str:
         center_x = self.config.warp_width * 0.5
@@ -1309,7 +1346,7 @@ class SegmentationLaneProcessor:
             return None, "no_boundary"
 
         offset_px = (
-            0.5 * self.config.lane_width_m * self.config.pixels_per_meter
+            0.5 * self.config.lane_width_m * self.config.pixels_per_meter_x
         )
         left_dense = self._densify_group_points(left)
         right_dense = self._densify_group_points(right)
@@ -1478,7 +1515,7 @@ class SegmentationLaneProcessor:
 
         max_step_px = (
             self.config.max_path_lateral_step_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         raw_delta = path[:, 0] - previous[:, 0]
         source_changed = (
@@ -1515,10 +1552,10 @@ class SegmentationLaneProcessor:
         vehicle_x = self.config.warp_width * 0.5
         vehicle_y = self.config.warp_height - 1.0
         forward = (
-            (vehicle_y - path[:, 1]) / self.config.pixels_per_meter
+            (vehicle_y - path[:, 1]) / self.config.pixels_per_meter_y
             + self.config.bev_reference_forward_offset_m
         )
-        left = (vehicle_x - path[:, 0]) / self.config.pixels_per_meter
+        left = (vehicle_x - path[:, 0]) / self.config.pixels_per_meter_x
         return np.column_stack((forward, left)).astype(np.float32)
 
     def _debug_image(

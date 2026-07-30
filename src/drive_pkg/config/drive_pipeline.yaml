@@ -16,6 +16,12 @@ drive_main:
     device: "auto"
     process_every_nth_frame: 1
 
+    # BEV 이미지에 실제로 보이는 영역의 실측 크기(m). BEV 좌우/전후
+    # 픽셀 스케일이 다를 수 있어 이 값으로 축별 m/pixel을 따로 계산한다.
+    # BEV 캘리브레이션 바뀔 때마다 다시 실측해서 갱신.
+    bev_real_width_m: 1.62
+    bev_real_height_m: 1.73
+
     image_topic: "/camera/lane/raw/compressed"
     mask_topic: "/lane/detection/mask/compressed"
     segmentation_topic: "/lane/detection/segmentation/compressed"
@@ -28,8 +34,9 @@ drive_main:
 
 path_plan:
   ros__parameters:
-    # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
-    pixels_per_meter: 600.0
+    # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값. m/pixel
+    # 자체는 이제 drive_main의 bev_real_width_m/bev_real_height_m으로
+    # 계산되므로 여기엔 없음.
     lane_width_m: 0.90
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
     # BEV 설정시마다 변경
@@ -96,8 +103,8 @@ pure_pursuit:
     lookahead_m: -1.0
     ld_throttle_min: 0.4
     ld_throttle_max: 0.8
-    lookahead_min_m: 1.30
-    lookahead_max_m: 1.30
+    lookahead_min_m: 1.00
+    lookahead_max_m: 1.01
     # lookahead 목표점 탐색 방식: "simple"(전방점 중 |거리-LD| 최소, 기본값) /
     # "arc_length"(가장 가까운 점부터 누적 호길이로 LD 지점 탐색).
     lookahead_search_mode: "simple"

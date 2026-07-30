@@ -129,7 +129,12 @@ class LaneDriveNode(Node):
             "calibration_width": 640,
             "calibration_height": 480,
             "process_every_nth_frame": 1,
-            "pixels_per_meter": 600.0,
+            # Real-world size of the area visible in the BEV image, measured
+            # by hand for the current BEV calibration; used to derive
+            # meters-per-pixel independently for left/right (x) and
+            # forward/back (y), since the BEV warp isn't square.
+            "bev_real_width_m": 1.62,
+            "bev_real_height_m": 1.73,
             "lane_width_m": 0.90,
             "bev_reference_forward_offset_m": 1.04,
             "min_component_area": 250,
@@ -172,6 +177,12 @@ class LaneDriveNode(Node):
         bev_value = str(parameter("bev_params")).strip()
         bev_path = Path(bev_value) if bev_value else DEFAULT_BEV_PARAMS
         bev = load_bev_parameters(bev_path)
+        bev_real_width_m = max(1e-6, float(parameter("bev_real_width_m")))
+        bev_real_height_m = max(
+            1e-6, float(parameter("bev_real_height_m"))
+        )
+        pixels_per_meter_x = bev.width / bev_real_width_m
+        pixels_per_meter_y = bev.height / bev_real_height_m
 
         self.detector = LaneDetectorCore(
             model_path=model_path,
@@ -188,7 +199,8 @@ class LaneDriveNode(Node):
             destination_points=tuple(bev.destination_points.reshape(-1)),
             warp_width=bev.width,
             warp_height=bev.height,
-            pixels_per_meter=float(parameter("pixels_per_meter")),
+            pixels_per_meter_x=pixels_per_meter_x,
+            pixels_per_meter_y=pixels_per_meter_y,
             lane_width_m=float(parameter("lane_width_m")),
             bev_reference_forward_offset_m=float(
                 parameter("bev_reference_forward_offset_m")
@@ -423,7 +435,14 @@ class LaneDriveNode(Node):
                 data=json.dumps(
                     {
                         "timestamp_ns": timestamp_ns,
-                        "instances": detection.instances,
+                        "instances": [
+                            {
+                                key: value
+                                for key, value in instance.items()
+                                if key != "mask"
+                            }
+                            for instance in detection.instances
+                        ],
                     },
                     ensure_ascii=False,
                 )

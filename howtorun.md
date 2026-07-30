@@ -1,39 +1,26 @@
-# dolbatS 실행 요약
 
-상세 차선 파이프라인 파라미터와 토픽은
-`src/drive_pkg/howtorun.md`를 기준으로 한다.
 
-## 공통 준비
 
-```bash
-cd ~/dolbatS
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-source install/setup.bash
-```
+ros2 run usb_cam usb_cam_node_exe --ros-args \
+  -p video_device:=/dev/video2 \
+  -p pixel_format:=mjpeg2rgb \
+  -p image_width:=640 \
+  -p image_height:=480 \
+  -p framerate:=30.0 \
+  -r image_raw:=/camera/lane/raw \
+  -r image_raw/compressed:=/camera/lane/raw/compressed \
+  -r camera_info:=/camera/lane/camera_info
 
-## 통합 준비 구성
-
-```bash
 ros2 launch drive_pkg drive_pipeline.launch.py
-```
 
-이 launch는 `drive_main`과 `pure_pursuit`를 실행한다. Pure Pursuit 출력은
-다음 lane candidate 토픽이다.
+ros2 launch mission_manager_pkg mission_manager.launch.py
 
-```text
-/control/candidate/lane/steer_angle  std_msgs/Float32 (deg)
-/control/candidate/lane/valid        std_msgs/Bool
-```
 
-`mission_manager`가 후보와 인식 결과를 판단해 최종
-`/auto_steer_angle`, `/auto_throttle`을 발행한다.
+ros2 launch control_pkg serial_bridge.launch.py
 
-후보 확인:
+ros2 launch detect_pkg obstacle_detection.launch.py
 
-```bash
-ros2 topic echo /control/candidate/lane/steer_angle
-ros2 topic echo /control/candidate/lane/valid
+
 ```
 
 ## Mission manager
