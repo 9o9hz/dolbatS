@@ -1,14 +1,14 @@
 drive_main:
   ros__parameters:
-    # 모델/BEV 파일. bev_params가 빈 문자열이면 패키지 resource 기본값 사용.
-    model_path: ""
-    bev_params: ""
+    # 현재 차량에서 실측한 YOLO 모델과 0729 BEV 보정값.
+    model_path: "src/drive_pkg/resource/best.pt"
+    bev_params: "src/drive_pkg/resource/bev(0729).npz"
     calibration_width: 640
     calibration_height: 480
 
     # 카메라 undistort. calib_file이 빈 문자열이거나 로드에 실패하면
     # 경고만 남기고 undistort 없이 진행한다.
-    calib_file: ""
+    calib_file: "camera_calibration.npz"
     use_undistort: true
 
     confidence: 0.25
@@ -16,28 +16,25 @@ drive_main:
     device: "auto"
     process_every_nth_frame: 1
 
-    # BEV 이미지에 실제로 보이는 영역의 실측 크기(m). BEV 좌우/전후
-    # 픽셀 스케일이 다를 수 있어 이 값으로 축별 m/pixel을 따로 계산한다.
-    # BEV 캘리브레이션 바뀔 때마다 다시 실측해서 갱신.
-    bev_real_width_m: 1.62
-    bev_real_height_m: 1.73
-
     image_topic: "/camera/lane/raw/compressed"
+    bev_topic: "/lane/detection/bev/compressed"
     mask_topic: "/lane/detection/mask/compressed"
     segmentation_topic: "/lane/detection/segmentation/compressed"
-    status_topic: "/lane/detection/status"
+    detection_status_topic: "/lane/detection/status"
+    instances_topic: "/lane/detection/instances"
 
-    debug_jpeg_quality: 80
-    display: True
-    display_scale: 1.0
-
-
-path_plan:
-  ros__parameters:
-    # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값. m/pixel
-    # 자체는 이제 drive_main의 bev_real_width_m/bev_real_height_m으로
-    # 계산되므로 여기엔 없음.
-    lane_width_m: 0.90
+    # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
+    pixels_per_meter: 254.0
+    line_width_target_m: 0.050
+    line_width_tolerance_m: 0.010
+    line_width_recovery_tolerance_m: 0.015
+    line_width_recovery_aspect_ratio: 1.20
+    line_width_measurement_scale: 0.80
+    lane_width_m: 0.85
+    # 둘 이상의 경계를 함께 사용할 때 허용하는 최소 중심 간격.
+    min_boundary_spacing_m: 0.80
+    # 850mm 기준 ±50mm 범위 밖이면 confidence 높은 한 선만 사용.
+    max_boundary_spacing_m: 0.90
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
     # BEV 설정시마다 변경
     bev_reference_forward_offset_m: 1.04
@@ -53,24 +50,23 @@ path_plan:
     min_group_area: 500
     dashed_piece_threshold: 2
     prefer_solid_when_dashed: true
-    lane_track_max_age_frames: 7
-    lane_track_match_threshold_px: 90.0
+    initial_lane: "lane_2"
+    lane_state_confirm_frames: 3
+    lane_track_max_age_frames: 5
+    lane_track_match_threshold_px: 50.0
     solid_enter_frames: 4
     solid_exit_frames: 6
 
-    # 경로 생성 및 공간/시간축 평활화.
-    # path_spline_*: 중심선 B-spline 공간 평활화(scipy splprep) 설정.
-    # 그 결과를 고정 y-grid로 리샘플한 뒤 아래 시간축 EMA로 이어진다.
+    # 기존 로컬의 다항식 경로 생성 및 시간축 평활화.
     path_top_y: 180
     path_bottom_margin: 30
     path_step_px: 10
     path_resample_step_px: 5
-    path_spline_smooth_factor: 4.0
-    path_spline_points: 100
-    path_ema_alpha: 0.5
-    path_transition_blend_frames: 3
-    max_path_lateral_step_m: 0.07
-    max_missing_frames: 8
+    path_polynomial_degree: 3
+    path_ema_alpha: 0.30
+    path_transition_blend_frames: 7
+    max_path_lateral_step_m: 0.04
+    max_missing_frames: 12
 
     path_topic: "/lane/path"
     debug_topic: "/lane/path/debug/compressed"
@@ -99,18 +95,22 @@ pure_pursuit:
 
     wheelbase_m: 0.545
     max_steer_deg: 18.0
-    # -1.0이면 아래 min/max로 동적 look-ahead 사용.
-    lookahead_m: -1.0
+    steering_gain: 5.00
+    # true: 조향각에 따라 min~max 사이에서 목표점 이동.
+    # false: lookahead_m 거리의 고정 목표점 사용.
+    dynamic_lookahead_enabled: true
+    lookahead_m: 1.35
     ld_throttle_min: 0.4
     ld_throttle_max: 0.8
-    lookahead_min_m: 1.00
-    lookahead_max_m: 1.01
-    # lookahead 목표점 탐색 방식: "simple"(전방점 중 |거리-LD| 최소, 기본값) /
+    lookahead_min_m: 1.20
+    lookahead_max_m: 1.55
+    # lookahead 목표점 탐색 방식: "simple"(|거리-LD| 최소, 로컬 기본값) /
     # "arc_length"(가장 가까운 점부터 누적 호길이로 LD 지점 탐색).
     lookahead_search_mode: "simple"
 
-    steering_ema_alpha: 1.0
-    max_steering_change_deg: 3.0
+    steering_ema_alpha: 0.65
+    steering_deadband_deg: 0.3
+    max_steering_change_deg: 12.0
 
     # main5.py 스타일 통합 cv2 창(segmentation | BEV 제어 | 검출선+경로).
     # path_visualizer 별도 노드를 없애고 이 프로세스에 흡수한 것 — 헤드리스

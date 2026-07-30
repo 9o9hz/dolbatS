@@ -29,12 +29,15 @@ PARAMETER_DEFAULTS = {
     "wheelbase_m": 0.545,
     "ld_throttle_min": 0.4,
     "ld_throttle_max": 0.8,
-    "lookahead_min_m": 2.30,
-    "lookahead_max_m": 2.80,
-    "lookahead_m": -1.0,
+    "dynamic_lookahead_enabled": True,
+    "lookahead_min_m": 1.10,
+    "lookahead_max_m": 2.00,
+    "lookahead_m": 1.50,
     "max_steer_deg": 18.0,
-    "steering_ema_alpha": 0.35,
-    "max_steering_change_deg": 3.0,
+    "steering_gain": 1.80,
+    "steering_ema_alpha": 0.30,
+    "steering_deadband_deg": 0.8,
+    "max_steering_change_deg": 5.0,
     # "simple": forward-points-only closest-to-Ld search (yolotl_ros2
     # main5.py's actual default). "arc_length": accumulate arc length from
     # the nearest point until Ld is reached (main5's alternate, disabled by
@@ -94,8 +97,11 @@ class PurePursuitController:
         lookahead_min_m: float,
         lookahead_max_m: float,
         fixed_lookahead_m: float,
+        dynamic_lookahead_enabled: bool,
         max_steer_deg: float,
+        steering_gain: float,
         steering_ema_alpha: float,
+        steering_deadband_deg: float,
         max_steering_change_deg: float,
         lookahead_search_mode: str = "simple",
     ) -> None:
@@ -110,11 +116,21 @@ class PurePursuitController:
         self.current_throttle = self.ld_throttle_min
         self.lookahead_min_m = float(lookahead_min_m)
         self.lookahead_max_m = float(lookahead_max_m)
-        if float(fixed_lookahead_m) > 0.0:
+        self.dynamic_lookahead_enabled = bool(
+            dynamic_lookahead_enabled
+        )
+        if not self.dynamic_lookahead_enabled:
+            if float(fixed_lookahead_m) <= 0.0:
+                raise ValueError(
+                    "lookahead_m must be positive when dynamic "
+                    "lookahead is disabled"
+                )
             self.lookahead_min_m = float(fixed_lookahead_m)
             self.lookahead_max_m = float(fixed_lookahead_m)
         self.max_steer_deg = float(max_steer_deg)
+        self.steering_gain = float(steering_gain)
         self.steering_ema_alpha = float(steering_ema_alpha)
+        self.steering_deadband_deg = float(steering_deadband_deg)
         self.max_steering_change_deg = float(max_steering_change_deg)
         self.lookahead_search_mode = str(lookahead_search_mode)
         self._validate_parameters()
@@ -138,10 +154,14 @@ class PurePursuitController:
             )
         if self.max_steer_deg <= 0.0:
             raise ValueError("max_steer_deg must be positive")
+        if self.steering_gain <= 0.0:
+            raise ValueError("steering_gain must be positive")
         if not 0.0 <= self.steering_ema_alpha <= 1.0:
             raise ValueError(
                 "steering_ema_alpha must be between 0 and 1"
             )
+        if self.steering_deadband_deg < 0.0:
+            raise ValueError("steering_deadband_deg cannot be negative")
         if self.lookahead_search_mode not in ("simple", "arc_length"):
             raise ValueError(
                 'lookahead_search_mode must be "simple" or "arc_length"'
@@ -193,11 +213,13 @@ class PurePursuitController:
         )
         raw_steering_deg = float(
             np.clip(
-                raw_steering_deg,
+                raw_steering_deg * self.steering_gain,
                 -self.max_steer_deg,
                 self.max_steer_deg,
             )
         )
+        if abs(raw_steering_deg) < self.steering_deadband_deg:
+            raw_steering_deg = 0.0
 
         filtered = (
             self.steering_ema_alpha * raw_steering_deg
@@ -262,21 +284,10 @@ class PurePursuitController:
         distances: np.ndarray,
         lookahead_m: float,
     ) -> int:
-        """Closest-to-Ld search among forward points only, ported from
-        yolotl_ros2 main5.py's default (non-arc-length) lookahead search.
-        Falls back to the closest point overall if none are forward (e.g.
-        the whole path happens to be behind the vehicle)."""
+        """Original local closest-to-Ld point search."""
 
-        forward_mask = points[:, 0] >= 0.0
-        if not np.any(forward_mask):
-            return int(np.argmin(np.abs(distances - lookahead_m)))
-        forward_indices = np.flatnonzero(forward_mask)
-        best = forward_indices[
-            np.argmin(
-                np.abs(distances[forward_indices] - lookahead_m)
-            )
-        ]
-        return int(best)
+        del points
+        return int(np.argmin(np.abs(distances - lookahead_m)))
 
     @staticmethod
     def _arc_length_lookahead_index(
@@ -319,23 +330,16 @@ class PurePursuitController:
     def _dynamic_lookahead(self) -> float:
         if self.lookahead_min_m == self.lookahead_max_m:
             return self.lookahead_min_m
-        throttle_ratio = float(
+        steering_ratio = float(
             np.clip(
-                (
-                    self.current_throttle - self.ld_throttle_min
-                )
-                / (
-                    self.ld_throttle_max
-                    - self.ld_throttle_min
-                    + 1e-6
-                ),
+                abs(self.last_steering_deg) / self.max_steer_deg,
                 0.0,
                 1.0,
             )
         )
-        lookahead = self.lookahead_min_m + (
+        lookahead = self.lookahead_max_m - (
             self.lookahead_max_m - self.lookahead_min_m
-        ) * throttle_ratio
+        ) * steering_ratio
         return float(
             np.clip(
                 lookahead,
@@ -361,9 +365,16 @@ class PurePursuitNode(Node):
             lookahead_min_m=float(parameter("lookahead_min_m")),
             lookahead_max_m=float(parameter("lookahead_max_m")),
             fixed_lookahead_m=float(parameter("lookahead_m")),
+            dynamic_lookahead_enabled=bool(
+                parameter("dynamic_lookahead_enabled")
+            ),
             max_steer_deg=float(parameter("max_steer_deg")),
+            steering_gain=float(parameter("steering_gain")),
             steering_ema_alpha=float(
                 parameter("steering_ema_alpha")
+            ),
+            steering_deadband_deg=float(
+                parameter("steering_deadband_deg")
             ),
             max_steering_change_deg=float(
                 parameter("max_steering_change_deg")
@@ -505,6 +516,9 @@ class PurePursuitNode(Node):
             "reason": command.reason,
             "fallback": self.controller.path_fallback,
             "steering_deg": round(command.steering_deg, 2),
+            "dynamic_lookahead_enabled": (
+                self.controller.dynamic_lookahead_enabled
+            ),
             "lookahead_m": round(command.lookahead_m, 3),
             "lookahead_target_m": round(
                 command.target_distance_m, 3
