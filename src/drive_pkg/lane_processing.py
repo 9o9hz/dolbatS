@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """BEV lane-mask path planner core, shared by path_plan.py and drive_main.py.
 
-The best1.pt model was trained on 640x640 BEV images with one ``lane`` class.
-Incoming 640x480 usb_cam frames are therefore warped to that training view
-before inference. Per-detection segmentation components are extracted,
-tracked frame to frame as left/right boundaries, and fused into a smoothed
-metric path in ``base_link`` coordinates.
+The best.pt model was trained on 640x640 BEV images with ``dashed``/``solid``
+lane classes. Incoming 640x480 usb_cam frames are therefore warped to that
+training view before inference. Per-detection segmentation components are
+extracted, tracked frame to frame as left/right boundaries, and fused into a
+smoothed metric path in ``base_link`` coordinates.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from sensor_msgs.msg import CompressedImage
 
 def _default_bev_params_path() -> Path:
     source_path = (
-        Path(__file__).resolve().parent / "resource" / "bev_params_0729.npz"
+        Path(__file__).resolve().parent / "resource" / "bev(0729).npz"
     )
     if source_path.is_file():
         return source_path
@@ -34,15 +34,18 @@ def _default_bev_params_path() -> Path:
         return (
             Path(get_package_share_directory("drive_pkg"))
             / "resource"
-            / "bev_params_0729.npz"
+            / "bev(0729).npz"
         )
     except (ImportError, LookupError):
         return source_path
 
 
 def _default_model_path() -> Path:
-    """Find the shared best1 checkpoint in source or installed layouts."""
-    source_path = Path(__file__).resolve().parents[2] / "best1.pt"
+    """Find the shared lane-segmentation checkpoint in source or installed
+    layouts."""
+    source_path = (
+        Path(__file__).resolve().parent / "resource" / "best.pt"
+    )
     if source_path.is_file():
         return source_path
 
@@ -51,8 +54,8 @@ def _default_model_path() -> Path:
 
         return (
             Path(get_package_share_directory("drive_pkg"))
-            / "models"
-            / "best1.pt"
+            / "resource"
+            / "best.pt"
         )
     except (ImportError, LookupError):
         return source_path

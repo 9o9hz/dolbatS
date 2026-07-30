@@ -29,27 +29,30 @@ def resolve_device(requested: str) -> Any:
     return 0 if torch.cuda.is_available() else "cpu"
 
 
-class LaneDetectNode(Node):
-    """Runs only perspective conversion and YOLO mask inference."""
+@dataclass
+class DetectionOutput:
+    """Result of running BEV warp + YOLO segmentation on one frame."""
 
-    def __init__(self) -> None:
-        super().__init__("lane_detect")
-        for name, default in PARAMETER_DEFAULTS.items():
-            self.declare_parameter(name, default)
+    bev: np.ndarray
+    mask: np.ndarray
+    segmentation: np.ndarray
+    instances: list[dict]
+    inference_ms: float
 
-        parameter = lambda name: self.get_parameter(name).value
-        model_path_value = str(parameter("model_path")).strip()
-        model_path = (
-            Path(model_path_value)
-            if model_path_value
-            else DEFAULT_MODEL
-        )
-        bev_path_value = str(parameter("bev_params")).strip()
-        bev_path = (
-            Path(bev_path_value)
-            if bev_path_value
-            else DEFAULT_BEV_PARAMS
-        )
+
+class LaneDetectorCore:
+    """Pure BEV warp + YOLO segmentation logic, independent of ROS."""
+
+    def __init__(
+        self,
+        model_path: Path,
+        bev_path: Path,
+        calibration_width: int,
+        calibration_height: int,
+        confidence: float,
+        image_size: int,
+        device_request: str,
+    ) -> None:
         if not model_path.is_file():
             raise FileNotFoundError(
                 f"YOLO model not found: {model_path}"
@@ -63,10 +66,11 @@ class LaneDetectNode(Node):
                 "Lane detector requires a segmentation model, "
                 f"got {self.model.task!r}"
             )
+        lane_keywords = ("lane", "dashed", "solid")
         self.lane_class_ids = {
             int(class_id)
             for class_id, name in self.model.names.items()
-            if "lane" in str(name).lower()
+            if any(keyword in str(name).lower() for keyword in lane_keywords)
         }
         if not self.lane_class_ids:
             raise ValueError(

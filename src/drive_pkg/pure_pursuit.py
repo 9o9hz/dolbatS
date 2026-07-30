@@ -1,5 +1,5 @@
-햣#!/usr/bin/env python3
-"""ROS 2 node: nav_msgs/Path -> Ackermann-compatible cmd_vel."""
+#!/usr/bin/env python3
+"""ROS 2 node: nav_msgs/Path -> lane control candidate topics."""
 
 from __future__ import annotations
 
@@ -13,7 +13,10 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool, Float32, String
+
+from visualizer import LOW_LATENCY_QOS, DrivingVisualizer
 
 
 PARAMETER_DEFAULTS = {
@@ -23,12 +26,6 @@ PARAMETER_DEFAULTS = {
     "candidate_valid_topic": "/control/candidate/lane/valid",
     "throttle_feedback_topic": "/auto_throttle",
     "status_topic": "/lane/control/status",
-    "enable_drive": False,
-    "keyboard_enable_topic": "/drive/keyboard_enabled",
-    "speed_mps": 0.18,
-    "hold_speed_scale": 0.75,
-    "turn_speed_min_scale": 0.25,
-    "turn_speed_reduction": 0.70,
     "wheelbase_m": 0.545,
     "ld_throttle_min": 0.4,
     "ld_throttle_max": 0.8,
@@ -38,114 +35,92 @@ PARAMETER_DEFAULTS = {
     "max_steer_deg": 18.0,
     "steering_ema_alpha": 0.35,
     "max_steering_change_deg": 3.0,
-    "path_timeout_sec": 0.5,
+    # "simple": forward-points-only closest-to-Ld search (yolotl_ros2
+    # main5.py's actual default). "arc_length": accumulate arc length from
+    # the nearest point until Ld is reached (main5's alternate, disabled by
+    # default there too).
+    "lookahead_search_mode": "simple",
+    # main5.py-style local cv2 window (segmentation + BEV control + lines/
+    # path), merged in-process from what used to be the separate
+    # path_visualizer node. Set to false for headless runs.
+    "local_display": True,
+    "segmentation_topic": "/lane/detection/segmentation/compressed",
+    "bev_topic": "/lane/detection/bev/compressed",
+    "debug_topic": "/lane/path/debug/compressed",
+    "instances_topic": "/lane/detection/instances",
+    "window_name": (
+        "drive visualizer: segmentation | BEV control | lines + path"
+    ),
+    "window_x": 20,
+    "window_y": 60,
+    "display_scale": 0.90,
+    "box_ema_alpha": 0.15,
+    "type_switch_frames": 5,
+    "track_max_missed_frames": 12,
+    "track_match_distance_px": 140.0,
+    "confidence_full_hits": 5,
+    "yolo_confidence_aggregation": "mean",
+    "lookahead_target_hold_sec": 0.45,
+    "reference_path_hold_sec": 0.45,
 }
 
 
-class PurePursuitNode(Node):
-    """Pure Pursuit controller isolated behind path and cmd_vel topics."""
+@dataclass
+class SteeringCommand:
+    """Result of one Pure Pursuit control step."""
 
-    def __init__(self) -> None:
-        super().__init__("pure_pursuit")
-        for name, default in PARAMETER_DEFAULTS.items():
-            self.declare_parameter(name, default)
-        parameter = lambda name: self.get_parameter(name).value
+    path_valid: bool
+    reason: str
+    steering_deg: float
+    lookahead_m: float
+    target_distance_m: float
+    target_index: int
 
-        self.enable_drive = bool(parameter("enable_drive"))
-        self.keyboard_drive_enabled = False
-        self.speed_mps = max(0.0, float(parameter("speed_mps")))
-        self.hold_speed_scale = float(
-            np.clip(float(parameter("hold_speed_scale")), 0.0, 1.0)
-        )
-        self.turn_speed_min_scale = float(
-            np.clip(
-                float(parameter("turn_speed_min_scale")),
-                0.0,
-                1.0,
+
+class PurePursuitController:
+    """Pure Pursuit steering math, independent of ROS.
+
+    Extracted out of ``PurePursuitNode`` so the same steering logic can be
+    called directly (no topic round trip) from an integrated node such as
+    ``drive_main.LaneDriveNode``, while ``PurePursuitNode`` keeps working
+    unchanged as a thin ROS wrapper around it.
+    """
+
+    def __init__(
+        self,
+        wheelbase_m: float,
+        ld_throttle_min: float,
+        ld_throttle_max: float,
+        lookahead_min_m: float,
+        lookahead_max_m: float,
+        fixed_lookahead_m: float,
+        max_steer_deg: float,
+        steering_ema_alpha: float,
+        max_steering_change_deg: float,
+        lookahead_search_mode: str = "simple",
+    ) -> None:
+        self.wheelbase_m = float(wheelbase_m)
+        self.ld_throttle_min = float(ld_throttle_min)
+        self.ld_throttle_max = float(ld_throttle_max)
+        if self.ld_throttle_max < self.ld_throttle_min:
+            self.ld_throttle_min, self.ld_throttle_max = (
+                self.ld_throttle_max,
+                self.ld_throttle_min,
             )
-        )
-        self.turn_speed_reduction = float(
-            np.clip(
-                float(parameter("turn_speed_reduction")),
-                0.0,
-                1.0,
-            )
-        )
-        self.wheelbase_m = float(parameter("wheelbase_m"))
-        self.lookahead_min_m = float(parameter("lookahead_min_m"))
-        self.lookahead_max_m = float(parameter("lookahead_max_m"))
-        fixed_lookahead = float(parameter("lookahead_m"))
-        if fixed_lookahead > 0.0:
-            self.lookahead_min_m = fixed_lookahead
-            self.lookahead_max_m = fixed_lookahead
-        self.max_steer_deg = float(parameter("max_steer_deg"))
-        self.steering_ema_alpha = float(
-            parameter("steering_ema_alpha")
-        )
-        self.steering_deadband_deg = float(
-            parameter("steering_deadband_deg")
-        )
-        self.max_steering_change_deg = float(
-            parameter("max_steering_change_deg")
-        )
-        self.path_timeout_sec = max(
-            0.0, float(parameter("path_timeout_sec"))
-        )
+        self.current_throttle = self.ld_throttle_min
+        self.lookahead_min_m = float(lookahead_min_m)
+        self.lookahead_max_m = float(lookahead_max_m)
+        if float(fixed_lookahead_m) > 0.0:
+            self.lookahead_min_m = float(fixed_lookahead_m)
+            self.lookahead_max_m = float(fixed_lookahead_m)
+        self.max_steer_deg = float(max_steer_deg)
+        self.steering_ema_alpha = float(steering_ema_alpha)
+        self.max_steering_change_deg = float(max_steering_change_deg)
+        self.lookahead_search_mode = str(lookahead_search_mode)
         self._validate_parameters()
 
         self.last_steering_deg = 0.0
         self.path_fallback = False
-        self.last_path_time = None
-        self.timed_out = False
-
-        path_topic = str(parameter("path_topic"))
-        path_status_topic = str(parameter("path_status_topic"))
-        cmd_vel_topic = str(parameter("cmd_vel_topic"))
-        status_topic = str(parameter("status_topic"))
-        self.cmd_publisher = self.create_publisher(
-            Twist,
-            cmd_vel_topic,
-            10,
-        )
-        self.status_publisher = self.create_publisher(
-            String,
-            status_topic,
-            10,
-        )
-        self.path_subscription = self.create_subscription(
-            Path,
-            path_topic,
-            self.on_path,
-            10,
-        )
-        self.path_status_subscription = self.create_subscription(
-            String,
-            path_status_topic,
-            self.on_path_status,
-            10,
-        )
-        self.keyboard_subscription = self.create_subscription(
-            Bool,
-            str(parameter("keyboard_enable_topic")),
-            self.on_keyboard_enable,
-            10,
-        )
-        self.watchdog = self.create_timer(0.1, self.check_path_timeout)
-        self.get_logger().info(
-            f"{path_topic} -> {cmd_vel_topic}; "
-            f"drive_enabled={self.enable_drive}"
-        )
-        if not self.enable_drive:
-            self.get_logger().info(
-                "Dry-run mode: controller status is calculated, "
-                "but cmd_vel remains zero."
-            )
-
-    def on_keyboard_enable(self, message: Bool) -> None:
-        previous = self.keyboard_drive_enabled
-        self.keyboard_drive_enabled = bool(message.data)
-        if previous and not self.keyboard_drive_enabled:
-            self._publish_stop("keyboard_stop")
 
     def _validate_parameters(self) -> None:
         if self.wheelbase_m <= 0.0:
@@ -242,23 +217,15 @@ class PurePursuitNode(Node):
                 self.max_steer_deg,
             )
         )
-        lookahead_m = self._dynamic_lookahead(
-            self.last_steering_deg
+        lookahead_m = self._dynamic_lookahead()
+        visual_target_index = self._find_lookahead_index(
+            points, distances, lookahead_m
         )
-        speed = self._target_speed(self.last_steering_deg)
-        if self.path_fallback:
-            speed *= self.hold_speed_scale
-
-        command = (
-            self._make_twist(
-                speed,
-                math.radians(self.last_steering_deg),
-            )
-            if self.enable_drive and self.keyboard_drive_enabled
-            else Twist()
+        visual_target_distance = max(
+            float(distances[visual_target_index]),
+            1e-3,
         )
-        self.cmd_publisher.publish(command)
-        self._publish_status(
+        return SteeringCommand(
             path_valid=True,
             reason="ok",
             steering_deg=self.last_steering_deg,
@@ -368,113 +335,192 @@ class PurePursuitNode(Node):
         )
         lookahead = self.lookahead_min_m + (
             self.lookahead_max_m - self.lookahead_min_m
-        ) * ratio
-
-    def _target_speed(self, steering_deg: float) -> float:
-        turn_ratio = min(
-            1.0,
-            abs(steering_deg) / self.max_steer_deg,
-        )
-        scale = max(
-            self.turn_speed_min_scale,
-            1.0 - self.turn_speed_reduction * turn_ratio,
-        )
-        return self.speed_mps * scale
-
-    def _make_twist(
-        self,
-        speed_mps: float,
-        steering_rad: float,
-    ) -> Twist:
-        message = Twist()
-        message.linear.x = float(speed_mps)
-        if abs(speed_mps) > 1e-6:
-            message.angular.z = float(
-                speed_mps
-                / self.wheelbase_m
-                * math.tan(steering_rad)
+        ) * throttle_ratio
+        return float(
+            np.clip(
+                lookahead,
+                self.lookahead_min_m,
+                self.lookahead_max_m,
             )
-        return message
-
-    def check_path_timeout(self) -> None:
-        if (
-            self.last_path_time is None
-            or self.timed_out
-            or self.path_timeout_sec <= 0.0
-        ):
-            return
-        elapsed = (
-            self.get_clock().now() - self.last_path_time
-        ).nanoseconds / 1e9
-        if elapsed < self.path_timeout_sec:
-            return
-        self.timed_out = True
-        self._publish_stop("path_timeout")
-        self.get_logger().warning(
-            f"No path for {elapsed:.2f}s: vehicle stopped"
         )
 
-    def _publish_stop(self, reason: str) -> None:
-        command = Twist()
-        self.cmd_publisher.publish(command)
-        self._publish_status(
-            path_valid=False,
-            reason=reason,
-            desired_speed=0.0,
-            command=command,
-            lookahead_m=self._dynamic_lookahead(
-                self.last_steering_deg
+
+class PurePursuitNode(Node):
+    """Publish lane steering candidates from a metric path."""
+
+    def __init__(self) -> None:
+        super().__init__("pure_pursuit")
+        for name, default in PARAMETER_DEFAULTS.items():
+            self.declare_parameter(name, default)
+        parameter = lambda name: self.get_parameter(name).value
+
+        self.controller = PurePursuitController(
+            wheelbase_m=float(parameter("wheelbase_m")),
+            ld_throttle_min=float(parameter("ld_throttle_min")),
+            ld_throttle_max=float(parameter("ld_throttle_max")),
+            lookahead_min_m=float(parameter("lookahead_min_m")),
+            lookahead_max_m=float(parameter("lookahead_max_m")),
+            fixed_lookahead_m=float(parameter("lookahead_m")),
+            max_steer_deg=float(parameter("max_steer_deg")),
+            steering_ema_alpha=float(
+                parameter("steering_ema_alpha")
             ),
-            target_distance=0.0,
+            max_steering_change_deg=float(
+                parameter("max_steering_change_deg")
+            ),
+            lookahead_search_mode=str(
+                parameter("lookahead_search_mode")
+            ),
         )
 
-    def _publish_status(
-        self,
-        *,
-        path_valid: bool,
-        reason: str,
-        desired_speed: float,
-        command: Twist,
-        lookahead_m: float,
-        target_distance: float,
-    ) -> None:
-        self.status_publisher.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "path_valid": path_valid,
-                        "reason": reason,
-                        "fallback": self.path_fallback,
-                        "drive_enabled": (
-                            self.enable_drive
-                            and self.keyboard_drive_enabled
-                        ),
-                        "steering_deg": round(
-                            self.last_steering_deg,
-                            2,
-                        ),
-                        "lookahead_m": round(lookahead_m, 3),
-                        "lookahead_target_m": round(
-                            target_distance,
-                            3,
-                        ),
-                        "desired_speed_mps": round(
-                            desired_speed,
-                            3,
-                        ),
-                        "published_linear_x": round(
-                            command.linear.x,
-                            3,
-                        ),
-                        "published_angular_z": round(
-                            command.angular.z,
-                            3,
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+        path_topic = str(parameter("path_topic"))
+        path_status_topic = str(parameter("path_status_topic"))
+        steer_angle_topic = str(parameter("steer_angle_topic"))
+        throttle_feedback_topic = str(
+            parameter("throttle_feedback_topic")
         )
+        candidate_valid_topic = str(parameter("candidate_valid_topic"))
+        status_topic = str(parameter("status_topic"))
+        self.steer_publisher = self.create_publisher(
+            Float32, steer_angle_topic, 10
+        )
+        self.candidate_valid_publisher = self.create_publisher(
+            Bool, candidate_valid_topic, 10
+        )
+        self.status_publisher = self.create_publisher(
+            String,
+            status_topic,
+            10,
+        )
+        self.path_subscription = self.create_subscription(
+            Path,
+            path_topic,
+            self.on_path,
+            10,
+        )
+        self.path_status_subscription = self.create_subscription(
+            String,
+            path_status_topic,
+            self.on_path_status,
+            10,
+        )
+        self.throttle_feedback_subscription = self.create_subscription(
+            Float32,
+            throttle_feedback_topic,
+            self.on_throttle_feedback,
+            10,
+        )
+
+        self.visualizer: Optional[DrivingVisualizer] = None
+        if bool(parameter("local_display")):
+            self.visualizer = DrivingVisualizer(
+                window_name=str(parameter("window_name")),
+                window_x=int(parameter("window_x")),
+                window_y=int(parameter("window_y")),
+                display_scale=float(parameter("display_scale")),
+                box_ema_alpha=float(parameter("box_ema_alpha")),
+                type_switch_frames=int(
+                    parameter("type_switch_frames")
+                ),
+                track_max_missed_frames=int(
+                    parameter("track_max_missed_frames")
+                ),
+                track_match_distance_px=float(
+                    parameter("track_match_distance_px")
+                ),
+                confidence_full_hits=int(
+                    parameter("confidence_full_hits")
+                ),
+                yolo_confidence_aggregation=str(
+                    parameter("yolo_confidence_aggregation")
+                ),
+                lookahead_target_hold_sec=float(
+                    parameter("lookahead_target_hold_sec")
+                ),
+                reference_path_hold_sec=float(
+                    parameter("reference_path_hold_sec")
+                ),
+                logger=self.get_logger(),
+            )
+            self.segmentation_subscription = self.create_subscription(
+                CompressedImage,
+                str(parameter("segmentation_topic")),
+                self.visualizer.on_segmentation_image,
+                LOW_LATENCY_QOS,
+            )
+            self.bev_subscription = self.create_subscription(
+                CompressedImage,
+                str(parameter("bev_topic")),
+                self.visualizer.on_bev_image,
+                LOW_LATENCY_QOS,
+            )
+            self.debug_subscription = self.create_subscription(
+                CompressedImage,
+                str(parameter("debug_topic")),
+                self.visualizer.on_debug_image,
+                LOW_LATENCY_QOS,
+            )
+            self.instances_subscription = self.create_subscription(
+                String,
+                str(parameter("instances_topic")),
+                self.visualizer.on_yolo_instances,
+                10,
+            )
+
+        self.get_logger().info(
+            f"{path_topic} -> lane candidates: {steer_angle_topic}, "
+            f"{candidate_valid_topic}; throttle feedback: "
+            f"{throttle_feedback_topic}"
+        )
+
+    def on_throttle_feedback(self, message: Float32) -> None:
+        self.controller.set_current_throttle(float(message.data))
+
+    def on_path_status(self, message: String) -> None:
+        if self.visualizer is not None:
+            self.visualizer.on_path_status(message)
+        try:
+            status = json.loads(message.data)
+        except (json.JSONDecodeError, TypeError):
+            return
+        self.controller.set_path_fallback(status.get("fallback", False))
+
+    def on_path(self, message: Path) -> None:
+        points = np.asarray(
+            [
+                (pose.pose.position.x, pose.pose.position.y)
+                for pose in message.poses
+            ],
+            dtype=np.float64,
+        )
+        command = self.controller.compute(points)
+        self._publish_command(command)
+
+    def _publish_command(self, command: SteeringCommand) -> None:
+        steering_deg = command.steering_deg  # path_valid=False여도 last_steering_deg 유지
+        self.steer_publisher.publish(Float32(data=float(steering_deg)))
+        self.candidate_valid_publisher.publish(Bool(data=command.path_valid))
+        status = {
+            "path_valid": command.path_valid,
+            "reason": command.reason,
+            "fallback": self.controller.path_fallback,
+            "steering_deg": round(command.steering_deg, 2),
+            "lookahead_m": round(command.lookahead_m, 3),
+            "lookahead_target_m": round(
+                command.target_distance_m, 3
+            ),
+            "lookahead_target_index": int(command.target_index),
+            "current_final_throttle": round(
+                self.controller.current_throttle, 3
+            ),
+            "candidate_steer_deg": round(steering_deg, 2),
+            "candidate_valid": command.path_valid,
+        }
+        self.status_publisher.publish(
+            String(data=json.dumps(status, ensure_ascii=False))
+        )
+        if self.visualizer is not None:
+            self.visualizer.on_control_status(status)
 
     def destroy_node(self) -> bool:
         if rclpy.ok():

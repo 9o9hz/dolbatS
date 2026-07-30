@@ -96,13 +96,13 @@ pure_pursuit:
     lookahead_m: -1.0
     ld_throttle_min: 0.4
     ld_throttle_max: 0.8
-    lookahead_min_m: 2.30
-    lookahead_max_m: 2.80
+    lookahead_min_m: 1.30
+    lookahead_max_m: 1.30
     # lookahead 목표점 탐색 방식: "simple"(전방점 중 |거리-LD| 최소, 기본값) /
     # "arc_length"(가장 가까운 점부터 누적 호길이로 LD 지점 탐색).
     lookahead_search_mode: "simple"
 
-    steering_ema_alpha: 0.35
+    steering_ema_alpha: 1.0
     max_steering_change_deg: 3.0
 
     # main5.py 스타일 통합 cv2 창(segmentation | BEV 제어 | 검출선+경로).

@@ -53,7 +53,7 @@ class ManualLaneCandidateTest(Node):
         self.steer_publisher = self.create_publisher(Float32, lane_steer_topic, 10)
         self.valid_publisher = self.create_publisher(Bool, lane_valid_topic, 10)
         self.status_subscription = self.create_subscription(
-            String, status_topic, self.on_status, 10
+            String, status_topic, self.on_status, 10. 
         )
 
         self.steering_deg = 0.0

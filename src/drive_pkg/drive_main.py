@@ -167,7 +167,8 @@ class LaneDriveNode(Node):
             self.declare_parameter(name, default)
         parameter = lambda name: self.get_parameter(name).value
 
-        model_path = Path(str(parameter("model_path")))
+        model_value = str(parameter("model_path")).strip()
+        model_path = Path(model_value) if model_value else DEFAULT_MODEL
         bev_value = str(parameter("bev_params")).strip()
         bev_path = Path(bev_value) if bev_value else DEFAULT_BEV_PARAMS
         bev = load_bev_parameters(bev_path)
