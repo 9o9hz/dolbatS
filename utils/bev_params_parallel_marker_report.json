@@ -1,0 +1,48 @@
+{
+  "input_image": "/home/hanjingyu/dolbatS/rosbag2_2026_07_23-14_55_06_captured_frames/frame_000639_t000038969ms_ts1784786145048977827.jpg",
+  "calibration": "/home/hanjingyu/dolbatS/camera_calibration.npz",
+  "src_points_order": [
+    "LB",
+    "RB",
+    "LT",
+    "RT"
+  ],
+  "src_points": [
+    [
+      21.0,
+      462.0
+    ],
+    [
+      649.0,
+      487.0
+    ],
+    [
+      212.0,
+      219.0
+    ],
+    [
+      480.6141357421875,
+      229.6932373046875
+    ]
+  ],
+  "source_extension_px": 10,
+  "output_size": [
+    210,
+    311
+  ],
+  "marker_expected_inner_mm": [
+    560.0,
+    490.0
+  ],
+  "marker_raw_measured_ratio": 3.4381847969494417,
+  "marker_raw_ratio_error_percent": 200.84116973307619,
+  "applied_x_scale": 0.3321143761630274,
+  "marker_measured_ratio": 1.1428571428571426,
+  "marker_ratio_error_percent": -2.220446049250313e-14,
+  "top_bottom_width_error_percent": 0.9579426505209299,
+  "left_right_height_error_percent": 1.94442455244094,
+  "top_bottom_parallel_error_deg": 0.9803016593840352,
+  "left_right_parallel_error_deg": 0.6383286402851774,
+  "max_corner_angle_error_deg": 1.377497469796694,
+  "marker_inside_roi": true
+}

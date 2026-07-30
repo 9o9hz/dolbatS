@@ -41,7 +41,8 @@ def _default_bev_params_path() -> Path:
 
 
 def _default_model_path() -> Path:
-    source_path = Path(__file__).resolve().parent / "resource" / "best1.pt"
+    """Find the shared best1 checkpoint in source or installed layouts."""
+    source_path = Path(__file__).resolve().parents[2] / "best1.pt"
     if source_path.is_file():
         return source_path
 
@@ -50,7 +51,7 @@ def _default_model_path() -> Path:
 
         return (
             Path(get_package_share_directory("drive_pkg"))
-            / "resource"
+            / "models"
             / "best1.pt"
         )
     except (ImportError, LookupError):

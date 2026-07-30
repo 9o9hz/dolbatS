@@ -1,4 +1,12 @@
-# drive_pkg 2노드 파이프라인
+# drive_pkg 모듈형 파이프라인 (구현 B)
+
+이 저장소에는 자율주행 구현이 두 개 있으며 둘 다 유지한다.
+
+- 구현 A: `lane_vision_pkg` 단일 노드형
+- 구현 B: 이 문서의 `drive_pkg` 3노드 모듈형
+
+두 구현은 기본적으로 같은 `/lane/path`와 `/cmd_vel`을 사용하므로 동시에
+실행하지 않는다. 한 구현을 종료한 뒤 다른 구현을 실행한다.
 
 `drive_pkg`는 두 개의 필수 노드로 나뉜다: `drive_main`(인식 + 경로 생성,
 `/lane/path` 발행)과 `pure_pursuit`(그 경로를 구독해 차선 후보 조향각과
@@ -9,8 +17,10 @@
 `local_display` 파라미터로 켜고 끈다.
 
 ```text
-/image_raw/compressed
-  -> drive_main (undistort -> BEV/YOLO 검출 -> 경로 생성)
+/camera/lane/raw/compressed
+  -> lane_detect
+  -> /lane/detection/mask/compressed
+  -> path_plan
   -> /lane/path
   -> pure_pursuit (Pure Pursuit 제어)
   -> /control/candidate/lane/{steer_angle,valid}
@@ -30,6 +40,28 @@ lookahead 탐색)를 기반으로 한다. 실선/점선 판별과 1차선/2차�
 
 ## 전체 실행
 
+카메라와 세 노드를 함께 안전 모드로 실행:
+
+```bash
+ros2 launch drive_pkg drive_pipeline_full.launch.py \
+  enable_drive:=false \
+  launch_serial_bridge:=false
+```
+
+실차 저속 실행:
+
+```bash
+ros2 launch drive_pkg drive_pipeline_full.launch.py \
+  enable_drive:=true \
+  launch_serial_bridge:=true \
+  serial_port:=/dev/ttyUSB0
+```
+
+실행 직후에는 정지 상태다. 같은 터미널에서 스페이스바를 누르면 출발하고
+다시 누르면 즉시 정지한다. `Ctrl+C`는 전체 노드를 종료한다.
+
+카메라를 이미 별도로 실행 중이면 세 노드만 실행:
+
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -45,30 +77,34 @@ ros2 launch drive_pkg drive_pipeline.launch.py
 
 ```bash
 ros2 launch drive_pkg drive_pipeline.launch.py \
-  params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  params_file:=/home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
-가중치/BEV 파라미터/캘리브레이션 파일을 커맨드라인에서 바로 바꾸고 싶으면
-`drive_main`을 직접 실행하며 `--weights`/`--bev-params`/`--calib-file`을
-쓴다(이 값들은 YAML의 `model_path`/`bev_params`/`calib_file`보다 낮은
-우선순위의 기본값으로 들어가므로, `--ros-args --params-file`을 같이 주면
-YAML 값이 최종 적용된다):
-
-기본 차선 모델은 패키지의 `resource/best1.pt`이며 설치 후에도
-`share/drive_pkg/resource/best1.pt`에서 자동으로 찾는다.
+기존 명령과의 호환을 위해 아래 명령도 세 노드를 한 프로세스에서
+실행한다. 노드별 장애 격리와 재시작이 필요하면 launch 실행을 권장한다.
 
 ```bash
-ros2 run drive_pkg drive_main --weights /path/to/best.pt \
-  --bev-params /path/to/bev_params.npz \
-  --ros-args --params-file config/drive_pipeline.yaml
+ros2 run drive_pkg yolo_lane_driver --ros-args \
+  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
-`pure_pursuit`를 직접 실행하면 YAML에 정의된 lane candidate 토픽이
-발행된다:
+## 노드별 실행
+
+세 터미널에서 공통 YAML을 넘겨 개별 실행할 수 있다.
+
+```bash
+ros2 run drive_pkg lane_detect --ros-args \
+  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+```bash
+ros2 run drive_pkg path_plan --ros-args \
+  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
 
 ```bash
 ros2 run drive_pkg pure_pursuit --ros-args \
-  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
 `pure_pursuit`는 `local_display: true`(기본값)일 때 segmentation | BEV
@@ -101,7 +137,7 @@ invalid이면 과거 풀조향값을 사용하지 않고 정지한다.
 
 | 단계 | 토픽 | 타입 | 내용 |
 | --- | --- | --- | --- |
-| 입력 | `/image_raw/compressed` | `sensor_msgs/CompressedImage` | 카메라 영상 |
+| 입력 | `/camera/lane/raw/compressed` | `sensor_msgs/CompressedImage` | 카메라 영상 |
 | 검출 | `/lane/detection/mask/compressed` | `sensor_msgs/CompressedImage` | BEV 이진 차선 마스크(PNG) |
 | 검출 | `/lane/detection/segmentation/compressed` | `sensor_msgs/CompressedImage` | YOLO 시각화 |
 | 검출 | `/lane/detection/status` | `std_msgs/String` | 검출 개수·추론 시간 JSON |

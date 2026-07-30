@@ -1,7 +1,7 @@
 drive_main:
   ros__parameters:
     # 모델/BEV 파일. bev_params가 빈 문자열이면 패키지 resource 기본값 사용.
-    # 생략 시 drive_pkg가 설치한 resource/best1.pt 사용.
+    model_path: ""
     bev_params: ""
     calibration_width: 640
     calibration_height: 480
@@ -16,13 +16,18 @@ drive_main:
     device: "auto"
     process_every_nth_frame: 1
 
-    image_topic: "/image_raw/compressed"
-    bev_topic: "/lane/detection/bev/compressed"
+    image_topic: "/camera/lane/raw/compressed"
     mask_topic: "/lane/detection/mask/compressed"
     segmentation_topic: "/lane/detection/segmentation/compressed"
-    detection_status_topic: "/lane/detection/status"
-    instances_topic: "/lane/detection/instances"
+    status_topic: "/lane/detection/status"
 
+    debug_jpeg_quality: 80
+    display: True
+    display_scale: 1.0
+
+
+path_plan:
+  ros__parameters:
     # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
     pixels_per_meter: 600.0
     lane_width_m: 0.90

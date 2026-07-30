@@ -13,7 +13,9 @@ setup(
         "lane_detect",
         "lane_processing",
         "pure_pursuit",
-        "visualizer",
+        "test_yolo_usb_cam",
+        "validate_lane_video",
+        "yolo_lane_driver",
     ],
     data_files=[
         (
@@ -23,10 +25,11 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (
             f"share/{package_name}/resource",
-            [
-                "resource/bev_params_0729.npz",
-                "resource/best1.pt",
-            ],
+            ["resource/bev_params_7.npz"],
+        ),
+        (
+            f"share/{package_name}/models",
+            ["../../best1.pt"],
         ),
         (
             f"share/{package_name}/config",
