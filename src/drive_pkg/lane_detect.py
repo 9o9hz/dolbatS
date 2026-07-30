@@ -177,6 +177,108 @@ class LaneDetectorCore:
             <= self.line_width_target_m + self.line_width_tolerance_m
         )
 
+    @staticmethod
+    def _mask_overlap_over_smaller(
+        first_mask: np.ndarray,
+        second_mask: np.ndarray,
+    ) -> float:
+        first = np.asarray(first_mask, dtype=bool)
+        second = np.asarray(second_mask, dtype=bool)
+        if first.shape != second.shape:
+            return 0.0
+        first_area = int(np.count_nonzero(first))
+        second_area = int(np.count_nonzero(second))
+        smaller_area = min(first_area, second_area)
+        if smaller_area <= 0:
+            return 0.0
+        intersection = int(np.count_nonzero(first & second))
+        return float(intersection / smaller_area)
+
+    @staticmethod
+    def _bbox_overlap_over_smaller(
+        first: dict,
+        second: dict,
+    ) -> float:
+        x1 = max(int(first["x_min"]), int(second["x_min"]))
+        y1 = max(int(first["y_min"]), int(second["y_min"]))
+        x2 = min(int(first["x_max"]), int(second["x_max"]))
+        y2 = min(int(first["y_max"]), int(second["y_max"]))
+        intersection = max(0, x2 - x1 + 1) * max(0, y2 - y1 + 1)
+        first_area = (
+            max(0, int(first["x_max"]) - int(first["x_min"]) + 1)
+            * max(0, int(first["y_max"]) - int(first["y_min"]) + 1)
+        )
+        second_area = (
+            max(0, int(second["x_max"]) - int(second["x_min"]) + 1)
+            * max(0, int(second["y_max"]) - int(second["y_min"]) + 1)
+        )
+        smaller_area = min(first_area, second_area)
+        if smaller_area <= 0:
+            return 0.0
+        return float(intersection / smaller_area)
+
+    def _instances_are_duplicates(
+        self,
+        first: dict,
+        second: dict,
+    ) -> bool:
+        mask_overlap = self._mask_overlap_over_smaller(
+            first["mask"], second["mask"]
+        )
+        if mask_overlap >= 0.35:
+            return True
+
+        # A solid/dashed class conflict can cover slightly different
+        # portions of the same physical paint, producing little direct
+        # mask intersection. Large bbox overlap plus nearly identical
+        # lateral position still identifies it as one line.
+        bbox_overlap = self._bbox_overlap_over_smaller(first, second)
+        first_center = 0.5 * (
+            float(first["x_min"]) + float(first["x_max"])
+        )
+        second_center = 0.5 * (
+            float(second["x_min"]) + float(second["x_max"])
+        )
+        same_line_distance_px = max(
+            12.0,
+            (
+                self.line_width_target_m
+                + self.line_width_recovery_tolerance_m
+            )
+            * self.pixels_per_meter
+            / self.line_width_measurement_scale,
+        )
+        return (
+            bbox_overlap >= 0.60
+            and abs(first_center - second_center)
+            <= same_line_distance_px
+        )
+
+    def _deduplicate_instances(
+        self,
+        instances: list[dict],
+    ) -> list[dict]:
+        """Keep the highest-confidence detection for each physical line.
+
+        Suppression is class-agnostic on purpose: when YOLO labels the same
+        paint as both SOLID and DASHED, the stronger original confidence
+        decides before lane-topology selection.
+        """
+
+        kept: list[dict] = []
+        for candidate in sorted(
+            instances,
+            key=lambda item: float(item.get("confidence", 0.0)),
+            reverse=True,
+        ):
+            if any(
+                self._instances_are_duplicates(candidate, existing)
+                for existing in kept
+            ):
+                continue
+            kept.append(candidate)
+        return kept
+
     def _combined_mask(
         self,
         result: Any,
@@ -235,7 +337,6 @@ class LaneDetectorCore:
                     accepted_widths.append(width_m)
             if not accepted_widths:
                 continue
-            combined[filtered > 0] = 255
             y_values, x_values = np.nonzero(filtered)
             if len(x_values) == 0:
                 continue
@@ -252,7 +353,10 @@ class LaneDetectorCore:
                     "x_max": int(np.max(x_values)),
                     "y_max": int(np.max(y_values)),
                     "pixel_count": int(len(x_values)),
-                    "mask": resized,
+                    "mask": filtered,
                 }
             )
+        instances = self._deduplicate_instances(instances)
+        for instance in instances:
+            combined[np.asarray(instance["mask"], dtype=bool)] = 255
         return combined, instances

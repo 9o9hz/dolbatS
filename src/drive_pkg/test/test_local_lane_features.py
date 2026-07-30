@@ -257,5 +257,50 @@ class LineWidthFilterTest(unittest.TestCase):
         self.assertFalse(self.detector._width_is_lane(width))
 
 
+class DuplicateInstanceTest(unittest.TestCase):
+    def setUp(self):
+        self.detector = LaneDetectorCore.__new__(LaneDetectorCore)
+        self.detector.pixels_per_meter = 254.0
+        self.detector.line_width_target_m = 0.050
+        self.detector.line_width_recovery_tolerance_m = 0.015
+        self.detector.line_width_measurement_scale = 0.80
+
+    @staticmethod
+    def instance(
+        x_start: int,
+        confidence: float,
+        class_name: str,
+    ) -> dict:
+        mask = np.zeros((120, 160), dtype=np.uint8)
+        mask[10:110, x_start : x_start + 14] = 1
+        return {
+            "class_name": class_name,
+            "confidence": confidence,
+            "x_min": x_start,
+            "y_min": 10,
+            "x_max": x_start + 13,
+            "y_max": 109,
+            "mask": mask,
+        }
+
+    def test_same_line_class_conflict_keeps_higher_confidence(self):
+        solid = self.instance(60, 0.91, "SOLID")
+        dashed = self.instance(62, 0.73, "DASHED")
+
+        kept = self.detector._deduplicate_instances([dashed, solid])
+
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["class_name"], "SOLID")
+        self.assertEqual(kept[0]["confidence"], 0.91)
+
+    def test_parallel_lines_are_not_suppressed(self):
+        left = self.instance(25, 0.90, "SOLID")
+        right = self.instance(115, 0.88, "DASHED")
+
+        kept = self.detector._deduplicate_instances([left, right])
+
+        self.assertEqual(len(kept), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
