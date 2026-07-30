@@ -17,6 +17,8 @@ from std_msgs.msg import Bool, Float32, String
 DEFAULTS = {
     "publish_rate_hz": 30.0,
     "log_rate_hz": 1.0,
+    "drive_enable_topic": "/drive/enabled",
+    "drive_enabled_default": False,
     "lane_steer_topic": "/control/candidate/lane/steer_angle",
     "lane_valid_topic": "/control/candidate/lane/valid",
     "obstacle_steer_topic": "/control/candidate/obstacle/steer_angle",
@@ -81,6 +83,19 @@ def map_throttle_by_steer(
     else:
         shaped = math.expm1(-k * ratio) / math.expm1(-k)
     return throttle_max - shaped * (throttle_max - throttle_min)
+
+
+def apply_drive_enable_gate(
+    output: "MissionOutput",
+    enabled: bool,
+) -> tuple[float, float, str]:
+    if enabled:
+        return (
+            float(output.steer_deg),
+            float(output.throttle),
+            str(output.selected_steer_source),
+        )
+    return 0.0, 0.0, "drive_disabled"
 
 
 @dataclass
@@ -363,6 +378,7 @@ class MissionManagerNode(Node):
             )
             self.log_rate_hz = 1.0
         self.next_log_time = 0.0
+        self.drive_enabled = bool(parameter("drive_enabled_default"))
 
         steer_abs_max = float(parameter("auto_steer_angle_abs_max"))
         if steer_abs_max <= 0.0:
@@ -447,6 +463,12 @@ class MissionManagerNode(Node):
         return lower, upper
 
     def _create_subscriptions(self, parameter) -> None:
+        self.drive_enable_sub = self.create_subscription(
+            Bool,
+            str(parameter("drive_enable_topic")),
+            self.on_drive_enabled,
+            10,
+        )
         self.lane_steer_sub = self.create_subscription(
             Float32,
             str(parameter("lane_steer_topic")),
@@ -496,6 +518,17 @@ class MissionManagerNode(Node):
             10,
         )
 
+    def on_drive_enabled(self, message: Bool) -> None:
+        requested = bool(message.data)
+        if requested == self.drive_enabled:
+            return
+        self.drive_enabled = requested
+        state = "ENABLED" if requested else "DISABLED"
+        self.get_logger().warning(f"DRIVE {state}")
+        if not requested:
+            self.final_steer_pub.publish(Float32(data=0.0))
+            self.final_throttle_pub.publish(Float32(data=0.0))
+
     def on_obstacle_active(self, message: Bool) -> None:
         self.logic.obstacle_active = bool(message.data)
 
@@ -520,8 +553,12 @@ class MissionManagerNode(Node):
     def on_timer(self) -> None:
         now_sec = self._now_sec()
         output = self.logic.step(now_sec)
-        self.final_steer_pub.publish(Float32(data=output.steer_deg))
-        self.final_throttle_pub.publish(Float32(data=output.throttle))
+        steer_deg, throttle, selected_source = apply_drive_enable_gate(
+            output,
+            self.drive_enabled,
+        )
+        self.final_steer_pub.publish(Float32(data=steer_deg))
+        self.final_throttle_pub.publish(Float32(data=throttle))
         self.mission_state_pub.publish(
             String(data=output.mission_state)
         )
@@ -534,9 +571,10 @@ class MissionManagerNode(Node):
                 self.logic.traffic_confidence, 3
             ),
             "obstacle_active": self.logic.obstacle_active,
-            "selected_steer_source": output.selected_steer_source,
-            "selected_steer_deg": round(output.steer_deg, 3),
-            "output_throttle": round(output.throttle, 3),
+            "drive_enabled": self.drive_enabled,
+            "selected_steer_source": selected_source,
+            "selected_steer_deg": round(steer_deg, 3),
+            "output_throttle": round(throttle, 3),
             "lane_candidate_received": self.logic.lane.steer_received,
             "lane_candidate_valid": self.logic.lane.current_valid,
             "obstacle_candidate_received": (

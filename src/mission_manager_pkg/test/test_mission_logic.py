@@ -11,6 +11,8 @@ from mission_manager import (
     TRAFFIC_YELLOW_DECELERATING,
     TRAFFIC_YELLOW_HOLD,
     MissionLogic,
+    MissionOutput,
+    apply_drive_enable_gate,
     map_throttle_by_steer,
 )
 
@@ -29,6 +31,23 @@ class ThrottleMappingTest(unittest.TestCase):
                     steer, 23.0, 0.4, 0.8, 0.0
                 )
                 self.assertAlmostEqual(actual, expected)
+
+    def test_drive_enable_gate_defaults_to_zero_output(self):
+        output = MissionOutput(
+            MISSION_LANE,
+            "idle",
+            "lane",
+            12.0,
+            0.5,
+        )
+        self.assertEqual(
+            apply_drive_enable_gate(output, False),
+            (0.0, 0.0, "drive_disabled"),
+        )
+        self.assertEqual(
+            apply_drive_enable_gate(output, True),
+            (12.0, 0.5, "lane"),
+        )
 
 
 class CandidateAndModeTest(unittest.TestCase):

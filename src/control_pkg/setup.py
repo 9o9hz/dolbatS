@@ -11,6 +11,7 @@ setup(
     py_modules=[
         "serial_bridge",
         "manual_cmd_vel",
+        "keyboard_drive_toggle",
     ],
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
@@ -31,6 +32,7 @@ setup(
         "console_scripts": [
             "serial_bridge = serial_bridge:main",
             "manual_cmd_vel = manual_cmd_vel:main",
+            "keyboard_drive_toggle = keyboard_drive_toggle:main",
         ],
     },
 )
