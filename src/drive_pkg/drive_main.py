@@ -360,9 +360,7 @@ class LaneDriveNode(Node):
         self._publish_detection(detection, message)
 
         try:
-            plan = self.processor.plan_mask(
-                detection.mask, detection.instances
-            )
+            plan = self.processor.plan_mask(detection.instances)
         except Exception as exc:
             self.get_logger().error(
                 f"Path planning failed: {exc}",

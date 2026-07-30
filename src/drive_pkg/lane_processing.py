@@ -295,12 +295,6 @@ def decode_compressed_image(message: CompressedImage) -> np.ndarray:
 class SegmentationLaneProcessor:
     """Turn YOLO lane masks into a smoothed local metric path."""
 
-    # A bbox-restricted component whose area is implausibly larger than the
-    # owning instance's own mask footprint has likely bled into a
-    # neighboring detection's pixels via the combined mask; see
-    # ``_extract_bbox_pieces``.
-    _BBOX_CONTAMINATION_FACTOR = 3.0
-
     def __init__(
         self,
         model_path: Optional[Path],
@@ -557,8 +551,7 @@ class SegmentationLaneProcessor:
     ) -> Optional[np.ndarray]:
         """Isolate the single largest connected component within one
         detection's bounding box, discarding everything else in the ROI
-        (noise, and any bleed-through from a neighboring detection's
-        pixels in the combined mask)."""
+        (noise)."""
 
         height, width = mask.shape[:2]
         x1, y1, x2, y2 = bbox
@@ -594,22 +587,16 @@ class SegmentationLaneProcessor:
 
     def _extract_bbox_pieces(
         self,
-        mask: np.ndarray,
         instances: Sequence[Dict[str, Any]],
-    ) -> Tuple[List[LaneGroup], np.ndarray]:
-        """Extract one piece per YOLO detection, restricted to that
-        detection's own bounding box, instead of connected-components over
-        the whole combined mask (see ``_extract_mask_pieces``)."""
+    ) -> List[LaneGroup]:
+        """Extract one piece per YOLO detection, using that detection's own
+        mask (already isolated per detection, not shared with any other
+        detection)."""
 
-        if mask.ndim == 3:
-            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-        if mask.ndim != 2 or mask.size == 0:
-            raise ValueError("Lane mask must be a non-empty mono image")
-
-        total_mask = (mask > 0).astype(np.uint8)
-        reference_y = total_mask.shape[0] * 0.88
         pieces: List[LaneGroup] = []
         for instance in instances:
+            detection_mask = instance["mask"]
+            reference_y = detection_mask.shape[0] * 0.88
             bbox = (
                 int(instance["x_min"]),
                 int(instance["y_min"]),
@@ -617,7 +604,7 @@ class SegmentationLaneProcessor:
                 int(instance["y_max"]),
             )
             component = self._extract_largest_component_in_bbox(
-                total_mask,
+                detection_mask,
                 bbox,
                 self.config.min_component_area,
                 self.config.bbox_close_ksize,
@@ -625,12 +612,6 @@ class SegmentationLaneProcessor:
             if component is None:
                 continue
             area = int(np.count_nonzero(component))
-            pixel_count = instance.get("pixel_count")
-            if (
-                pixel_count is not None
-                and area > self._BBOX_CONTAMINATION_FACTOR * pixel_count
-            ):
-                continue
             points = self._component_center_points(
                 component, self.config.center_sample_step
             )
@@ -651,60 +632,7 @@ class SegmentationLaneProcessor:
                     "x_ref": self._curve_x(curve, x_reference_y),
                 }
             )
-        return pieces, total_mask
-
-    def _extract_mask_pieces(
-        self,
-        mask: np.ndarray,
-    ) -> Tuple[List[LaneGroup], np.ndarray]:
-        """Extract lane components from a mask received through a ROS topic."""
-
-        if mask.ndim == 3:
-            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-        if mask.ndim != 2 or mask.size == 0:
-            raise ValueError("Lane mask must be a non-empty mono image")
-
-        total_mask = (mask > 0).astype(np.uint8)
-        component_count, labels, stats, _ = (
-            cv2.connectedComponentsWithStats(
-                total_mask,
-                connectivity=8,
-            )
-        )
-        reference_y = total_mask.shape[0] * 0.88
-        pieces: List[LaneGroup] = []
-        for label in range(1, component_count):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            if area < self.config.min_component_area:
-                continue
-            component = (labels == label).astype(np.uint8)
-            points = self._component_center_points(
-                component,
-                self.config.center_sample_step,
-            )
-            curve = self._fit_curve(points)
-            if points is None or curve is None:
-                continue
-            y_min = float(np.min(points[:, 1]))
-            y_max = float(np.max(points[:, 1]))
-            x_reference_y = float(
-                np.clip(reference_y, y_min, y_max)
-            )
-            pieces.append(
-                {
-                    "points": points,
-                    "curve": curve,
-                    "y_min": y_min,
-                    "y_max": y_max,
-                    "area": area,
-                    "confidence": 1.0,
-                    "x_ref": self._curve_x(
-                        curve,
-                        x_reference_y,
-                    ),
-                }
-            )
-        return pieces, total_mask
+        return pieces
 
     def _group_pieces(self, pieces: List[LaneGroup]) -> List[LaneGroup]:
         groups: List[LaneGroup] = []
@@ -1698,22 +1626,17 @@ class SegmentationLaneProcessor:
 
     def plan_mask(
         self,
-        mask: np.ndarray,
-        instances: Optional[Sequence[Dict[str, Any]]] = None,
+        instances: Sequence[Dict[str, Any]],
     ) -> PathPlanResult:
         """Plan only; detection and vehicle control belong to other nodes.
 
-        ``instances`` is the per-detection bbox list from
-        ``DetectionOutput.instances`` (lane_detect.py). When given, pieces
-        are extracted per detection bbox (``_extract_bbox_pieces``); when
-        omitted, this falls back to connected-components over the whole
-        combined mask (``_extract_mask_pieces``).
+        ``instances`` is the per-detection list from
+        ``DetectionOutput.instances`` (lane_detect.py), each carrying its
+        own already-isolated mask. One piece is extracted per detection
+        (``_extract_bbox_pieces``).
         """
 
-        if instances:
-            pieces, _ = self._extract_bbox_pieces(mask, instances)
-        else:
-            pieces, _ = self._extract_mask_pieces(mask)
+        pieces = self._extract_bbox_pieces(instances)
         groups = self._group_pieces(pieces)
         which_lane = self._classify_which_lane(groups)
         (
