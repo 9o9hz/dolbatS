@@ -16,7 +16,7 @@ ultrasonic_obstacle_event:
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
     detect_threshold_cm: 10.0
-    clear_threshold_cm: 50.0
+    clear_threshold_cm: 40.0
     consecutive_frames: 3
     default_avoid_direction: 1
 
