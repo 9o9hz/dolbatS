@@ -1,10 +1,10 @@
 void setup() {
-  pinMode(A0, INPUT);
+  pinMode(A4, INPUT);
   Serial.begin(115200);
 
 }
 
 void loop() {
-  Serial.println(analogRead(A0));
+  Serial.println(analogRead(A4));
 
 }

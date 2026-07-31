@@ -269,8 +269,8 @@ class MissionLogic:
             steer = self.obstacle.latest_steer
             source = "obstacle"
         elif self.lane.has_last_valid:
-            # Avoidance is active but not mid-trigger (APPROACH/REARM/
-            # FAULT): follow the lane while armed.
+            # Avoidance is active but its steering candidate is not valid.
+            # Follow the lane instead of injecting a zero-degree command.
             steer = self.lane.last_valid_steer
             source = "lane"
         else:

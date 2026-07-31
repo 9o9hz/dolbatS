@@ -13,23 +13,27 @@ from std_msgs.msg import Bool, Float32, String
 
 class AvoidanceState(Enum):
     LANE_FOLLOW = auto()
-    APPROACH = auto()
     TURN = auto()
     REARM = auto()
     FAULT = auto()
 
 
+class RearObstacleState(Enum):
+    WAIT_DETECTION = auto()
+    DETECTED = auto()
+    CLEARED_AFTER_DETECTION = auto()
+
+
 class YoloObstacleTurn(Node):
     """Generate an obstacle candidate for mission_manager.
 
-    A YOLO detection plus a close rear sensor starts avoidance. Once the
-    latched rear sensor clears, steer fully toward that side. End avoidance
-    after the opposite-side front sensor decreases and then increases.
+    YOLO detection and a rear-ultrasonic detect-then-clear event are latched
+    independently. Once both conditions are ready, steer fully toward the
+    rear sensor side. End avoidance after the opposite-side front sensor
+    decreases and then increases.
 
-    candidate_valid is only True in TURN, when a full-steer avoidance
-    command is actually being published. During APPROACH and REARM,
-    avoidance is merely armed/watching, so candidate_valid stays False and
-    mission_manager falls back to lane steering.
+    candidate_valid and avoidance_active are only True in TURN. While either
+    condition is still pending, mission_manager continues lane driving.
     """
 
     def __init__(self) -> None:
@@ -63,13 +67,11 @@ class YoloObstacleTurn(Node):
             "clear_threshold_cm": 45.0,
             "consecutive_frames": 3,
             "rear_no_echo_is_clear": True,
-            "yolo_timeout_sec": 0.5,
             "full_steer_angle_deg": 20.0,
             "trend_epsilon_cm": 0.5,
             "minimum_drop_cm": 2.0,
             "rise_from_minimum_cm": 3.0,
             "trend_consecutive_frames": 3,
-            "approach_timeout_sec": 8.0,
             "turn_timeout_sec": 8.0,
             "publish_rate_hz": 30.0,
         }
@@ -85,9 +87,6 @@ class YoloObstacleTurn(Node):
         self.rear_no_echo_is_clear = bool(
             parameter("rear_no_echo_is_clear")
         )
-        self.yolo_timeout_sec = max(
-            0.0, float(parameter("yolo_timeout_sec"))
-        )
         self.full_steer_angle_deg = abs(
             float(parameter("full_steer_angle_deg"))
         )
@@ -102,9 +101,6 @@ class YoloObstacleTurn(Node):
         )
         self.trend_consecutive_frames = max(
             1, int(parameter("trend_consecutive_frames"))
-        )
-        self.approach_timeout_sec = max(
-            0.0, float(parameter("approach_timeout_sec"))
         )
         self.turn_timeout_sec = max(
             0.0, float(parameter("turn_timeout_sec"))
@@ -124,8 +120,9 @@ class YoloObstacleTurn(Node):
 
         self.state = AvoidanceState.LANE_FOLLOW
         self.state_started = self.get_clock().now()
+        self.rear_obstacle_state = RearObstacleState.WAIT_DETECTION
         self.yolo_detected = False
-        self.last_yolo_time = None
+        self.yolo_latched = False
         self.yolo_clear_frames = 0
 
         self.left_front_distance: Optional[float] = None
@@ -195,7 +192,8 @@ class YoloObstacleTurn(Node):
         self.publish_candidate()
         self.publish_status("ready")
         self.get_logger().info(
-            "Obstacle candidate ready: YOLO + rear ultrasonic trigger; "
+            "Obstacle candidate ready: latched YOLO + rear ultrasonic "
+            "detect-then-clear trigger; "
             f"detect <= {self.detect_threshold_cm:.1f} cm, "
             f"clear > {self.clear_threshold_cm:.1f} cm"
         )
@@ -217,14 +215,26 @@ class YoloObstacleTurn(Node):
 
     def on_yolo_detected(self, msg: Bool) -> None:
         self.yolo_detected = bool(msg.data)
-        self.last_yolo_time = self.get_clock().now()
-        if self.state != AvoidanceState.REARM:
+
+        if self.state == AvoidanceState.REARM:
+            self.yolo_clear_frames = (
+                0 if self.yolo_detected else self.yolo_clear_frames + 1
+            )
+            if self.yolo_clear_frames >= self.consecutive_frames:
+                self.reset_for_next_obstacle()
             return
-        self.yolo_clear_frames = (
-            0 if self.yolo_detected else self.yolo_clear_frames + 1
-        )
-        if self.yolo_clear_frames >= self.consecutive_frames:
-            self.reset_for_next_obstacle()
+
+        if (
+            self.state == AvoidanceState.LANE_FOLLOW
+            and self.yolo_detected
+            and not self.yolo_latched
+        ):
+            self.yolo_latched = True
+            self.publish_status("yolo_detection_latched")
+            self.get_logger().warning(
+                "YOLO obstacle detection state latched"
+            )
+            self.try_start_turn()
 
     def on_left_front_distance(self, msg: Float32) -> None:
         self.left_front_distance = float(msg.data)
@@ -246,16 +256,6 @@ class YoloObstacleTurn(Node):
             self.right_rear_distance,
         )
 
-    def yolo_is_active(self) -> bool:
-        if not self.yolo_detected or self.last_yolo_time is None:
-            return False
-        if self.yolo_timeout_sec <= 0.0:
-            return True
-        age = (
-            self.get_clock().now() - self.last_yolo_time
-        ).nanoseconds / 1e9
-        return age <= self.yolo_timeout_sec
-
     def process_sensor_frame(
         self,
         left_front: Optional[float],
@@ -264,27 +264,10 @@ class YoloObstacleTurn(Node):
         right_rear: Optional[float],
     ) -> None:
         if self.state == AvoidanceState.LANE_FOLLOW:
-            self.detect_obstacle_side(left_rear, right_rear)
+            self.update_rear_obstacle_state(left_rear, right_rear)
             return
 
         if self.latched_side is None:
-            return
-
-        if self.state == AvoidanceState.APPROACH:
-            watched_rear = (
-                left_rear
-                if self.latched_side == "left"
-                else right_rear
-            )
-            cleared = self.rear_obstacle_cleared(watched_rear)
-            self.clear_frames = self.clear_frames + 1 if cleared else 0
-            if self.clear_frames >= self.consecutive_frames:
-                opposite_front = (
-                    right_front
-                    if self.latched_side == "left"
-                    else left_front
-                )
-                self.start_turn(opposite_front)
             return
 
         if self.state == AvoidanceState.TURN:
@@ -296,61 +279,100 @@ class YoloObstacleTurn(Node):
             if self.valid_distance(opposite_front):
                 self.update_turn_trend(float(opposite_front))
 
-    def detect_obstacle_side(
+    def update_rear_obstacle_state(
         self,
         left_rear: Optional[float],
         right_rear: Optional[float],
     ) -> None:
-        if not self.yolo_is_active():
-            self.pending_side = None
-            self.side_frames = 0
+        if (
+            self.rear_obstacle_state
+            == RearObstacleState.CLEARED_AFTER_DETECTION
+        ):
             return
 
-        left_close = (
-            self.valid_distance(left_rear)
-            and left_rear <= self.detect_threshold_cm
-        )
-        right_close = (
-            self.valid_distance(right_rear)
-            and right_rear <= self.detect_threshold_cm
-        )
-        side = None
-        if left_close and right_close:
-            side = (
-                "left"
-                if float(left_rear) <= float(right_rear)
-                else "right"
+        if self.rear_obstacle_state == RearObstacleState.WAIT_DETECTION:
+            left_close = (
+                self.valid_distance(left_rear)
+                and left_rear <= self.detect_threshold_cm
             )
-        elif left_close:
-            side = "left"
-        elif right_close:
-            side = "right"
+            right_close = (
+                self.valid_distance(right_rear)
+                and right_rear <= self.detect_threshold_cm
+            )
+            side = None
+            if left_close and right_close:
+                side = (
+                    "left"
+                    if float(left_rear) <= float(right_rear)
+                    else "right"
+                )
+            elif left_close:
+                side = "left"
+            elif right_close:
+                side = "right"
 
-        if side is None:
-            self.pending_side = None
-            self.side_frames = 0
-            return
-        if side != self.pending_side:
-            self.pending_side = side
-            self.side_frames = 1
-        else:
-            self.side_frames += 1
-        if self.side_frames < self.consecutive_frames:
+            if side is None:
+                self.pending_side = None
+                self.side_frames = 0
+                return
+            if side != self.pending_side:
+                self.pending_side = side
+                self.side_frames = 1
+            else:
+                self.side_frames += 1
+            if self.side_frames < self.consecutive_frames:
+                return
+
+            self.latched_side = side
+            self.trend_sensor_side = (
+                "right_front" if side == "left" else "left_front"
+            )
+            self.rear_obstacle_state = RearObstacleState.DETECTED
+            self.clear_frames = 0
+            self.publish_status("rear_ultrasonic_detection_latched")
+            self.get_logger().warning(
+                f"{side} rear ultrasonic obstacle latched; waiting for "
+                "that sensor to clear"
+            )
             return
 
-        self.latched_side = side
-        self.trend_sensor_side = (
-            "right_front" if side == "left" else "left_front"
+        if self.latched_side is None:
+            return
+
+        watched_rear = (
+            left_rear if self.latched_side == "left" else right_rear
         )
-        self.state = AvoidanceState.APPROACH
-        self.state_started = self.get_clock().now()
-        self.clear_frames = 0
-        self.publish_candidate()
-        self.publish_status("yolo_and_rear_ultrasonic_detected")
+        cleared = self.rear_obstacle_cleared(watched_rear)
+        self.clear_frames = self.clear_frames + 1 if cleared else 0
+        if self.clear_frames < self.consecutive_frames:
+            return
+
+        self.rear_obstacle_state = (
+            RearObstacleState.CLEARED_AFTER_DETECTION
+        )
+        self.publish_status("rear_ultrasonic_cleared_after_detection")
         self.get_logger().warning(
-            f"YOLO + {side} rear ultrasonic obstacle: "
-            "obstacle mode active, straight candidate"
+            f"{self.latched_side} rear ultrasonic cleared after "
+            "detection; state latched"
         )
+        self.try_start_turn()
+
+    def try_start_turn(self) -> None:
+        if (
+            self.state != AvoidanceState.LANE_FOLLOW
+            or not self.yolo_latched
+            or self.rear_obstacle_state
+            != RearObstacleState.CLEARED_AFTER_DETECTION
+            or self.latched_side is None
+        ):
+            return
+
+        opposite_front = (
+            self.right_front_distance
+            if self.latched_side == "left"
+            else self.left_front_distance
+        )
+        self.start_turn(opposite_front)
 
     def start_turn(self, opposite_front: Optional[float]) -> None:
         self.state = AvoidanceState.TURN
@@ -367,9 +389,9 @@ class YoloObstacleTurn(Node):
         self.increase_frames = 0
         self.saw_decrease = False
         self.publish_candidate()
-        self.publish_status("latched_rear_cleared_start_turn")
+        self.publish_status("latched_conditions_ready_start_turn")
         self.get_logger().warning(
-            f"{self.latched_side} rear obstacle cleared: "
+            "YOLO and rear detect-then-clear states ready: "
             f"full-steering {self.latched_side}; "
             f"tracking {self.trend_sensor_side}"
         )
@@ -430,6 +452,8 @@ class YoloObstacleTurn(Node):
     def reset_for_next_obstacle(self) -> None:
         self.state = AvoidanceState.LANE_FOLLOW
         self.state_started = self.get_clock().now()
+        self.rear_obstacle_state = RearObstacleState.WAIT_DETECTION
+        self.yolo_latched = False
         self.latched_side = None
         self.trend_sensor_side = None
         self.pending_side = None
@@ -444,13 +468,6 @@ class YoloObstacleTurn(Node):
             self.get_clock().now() - self.state_started
         ).nanoseconds / 1e9
         if (
-            self.state == AvoidanceState.APPROACH
-            and self.approach_timeout_sec > 0.0
-            and elapsed >= self.approach_timeout_sec
-        ):
-            self.enter_fault("approach_timeout")
-            return
-        if (
             self.state == AvoidanceState.TURN
             and self.turn_timeout_sec > 0.0
             and elapsed >= self.turn_timeout_sec
@@ -459,13 +476,9 @@ class YoloObstacleTurn(Node):
             return
 
         active = self.state in (
-            AvoidanceState.APPROACH,
             AvoidanceState.TURN,
             AvoidanceState.FAULT,
         )
-        # Only TURN actually publishes a full-steer command; APPROACH and
-        # REARM leave candidate_valid False so mission_manager falls back
-        # to lane steering while avoidance is merely armed/watching.
         valid = self.state == AvoidanceState.TURN
         steer = 0.0
         if self.state == AvoidanceState.TURN:
@@ -498,11 +511,14 @@ class YoloObstacleTurn(Node):
                         "state": self.state.name.lower(),
                         "reason": reason,
                         "yolo_detected": self.yolo_detected,
+                        "yolo_latched": self.yolo_latched,
+                        "rear_obstacle_state": (
+                            self.rear_obstacle_state.name.lower()
+                        ),
                         "obstacle_side": self.latched_side,
                         "trend_sensor": self.trend_sensor_side,
                         "avoidance_active": self.state
                         in (
-                            AvoidanceState.APPROACH,
                             AvoidanceState.TURN,
                             AvoidanceState.FAULT,
                         ),
