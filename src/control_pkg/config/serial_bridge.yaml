@@ -3,7 +3,7 @@ serial_bridge:
     steer_command_topic: "/auto_steer_angle"
     throttle_command_topic: "/auto_throttle"
 
-    serial_port: "/dev/ttyACM1"
+    serial_port: "/dev/ttyACM0"
     baud_rate: 115200
     serial_startup_delay: 2.0
     reconnect_interval_sec: 1.0

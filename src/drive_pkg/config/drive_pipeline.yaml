@@ -1,8 +1,8 @@
 drive_main:
   ros__parameters:
-    # 현재 차량에서 실측한 YOLO 모델과 0729 BEV 보정값.
+    # 현재 차량에서 실측한 YOLO 모델과 0731 BEV 보정값.
     model_path: "src/drive_pkg/resource/best.pt"
-    bev_params: "src/drive_pkg/resource/bev(0729).npz"
+    bev_params: "src/drive_pkg/resource/bev_params_0731.npz"
     calibration_width: 640
     calibration_height: 480
 
@@ -24,7 +24,9 @@ drive_main:
     instances_topic: "/lane/detection/instances"
 
     # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
-    pixels_per_meter: 254.0
+    # BEV 640x640px 기준: 가로 1.02m, 세로 1.36m 실측(0731).
+    pixels_per_meter_x: 627.5
+    pixels_per_meter_y: 470.6
     line_width_target_m: 0.050
     line_width_tolerance_m: 0.010
     line_width_recovery_tolerance_m: 0.015

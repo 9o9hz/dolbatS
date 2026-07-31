@@ -52,7 +52,7 @@ class LaneDetectorCore:
         confidence: float,
         image_size: int,
         device_request: str,
-        pixels_per_meter: float,
+        pixels_per_meter_x: float,
         line_width_target_m: float,
         line_width_tolerance_m: float,
         line_width_recovery_tolerance_m: float,
@@ -95,7 +95,7 @@ class LaneDetectorCore:
         self.confidence = float(confidence)
         self.image_size = max(1, int(image_size))
         self.device = resolve_device(str(device_request))
-        self.pixels_per_meter = max(1e-6, float(pixels_per_meter))
+        self.pixels_per_meter_x = max(1e-6, float(pixels_per_meter_x))
         self.line_width_target_m = max(
             0.0, float(line_width_target_m)
         )
@@ -166,7 +166,7 @@ class LaneDetectorCore:
         width_px = 2.0 * float(np.percentile(positive, 95.0))
         return (
             width_px
-            / self.pixels_per_meter
+            / self.pixels_per_meter_x
             * self.line_width_measurement_scale
         )
 
@@ -245,7 +245,7 @@ class LaneDetectorCore:
                 self.line_width_target_m
                 + self.line_width_recovery_tolerance_m
             )
-            * self.pixels_per_meter
+            * self.pixels_per_meter_x
             / self.line_width_measurement_scale,
         )
         return (

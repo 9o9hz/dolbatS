@@ -22,7 +22,7 @@ from sensor_msgs.msg import CompressedImage
 
 def _default_bev_params_path() -> Path:
     source_path = (
-        Path(__file__).resolve().parent / "resource" / "bev_params_0729.npz"
+        Path(__file__).resolve().parent / "resource" / "bev_params_0731.npz"
     )
     if source_path.is_file():
         return source_path
@@ -33,7 +33,7 @@ def _default_bev_params_path() -> Path:
         return (
             Path(get_package_share_directory("drive_pkg"))
             / "resource"
-            / "bev_params_0729.npz"
+            / "bev_params_0731.npz"
         )
     except (ImportError, LookupError):
         return source_path
@@ -110,7 +110,8 @@ class LaneConfig:
     )
     warp_width: int = 640
     warp_height: int = 640
-    pixels_per_meter: float = 254.0
+    pixels_per_meter_x: float = 627.5
+    pixels_per_meter_y: float = 470.6
     lane_width_m: float = 0.85
     min_boundary_spacing_m: float = 0.80
     max_boundary_spacing_m: float = 0.90
@@ -407,7 +408,11 @@ class SegmentationLaneProcessor:
             raise ValueError("Calibration dimensions must be positive")
         if cfg.warp_width <= 0 or cfg.warp_height <= 0:
             raise ValueError("BEV dimensions must be positive")
-        if cfg.pixels_per_meter <= 0.0 or cfg.lane_width_m <= 0.0:
+        if (
+            cfg.pixels_per_meter_x <= 0.0
+            or cfg.pixels_per_meter_y <= 0.0
+            or cfg.lane_width_m <= 0.0
+        ):
             raise ValueError("Metric conversion values must be positive")
         if (
             cfg.min_boundary_spacing_m <= 0.0
@@ -921,11 +926,11 @@ class SegmentationLaneProcessor:
         spacing_px = float(right["x_ref"]) - float(left["x_ref"])
         minimum_px = (
             self.config.min_boundary_spacing_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         maximum_px = (
             self.config.max_boundary_spacing_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         if minimum_px <= spacing_px <= maximum_px:
             return left, right
@@ -977,15 +982,15 @@ class SegmentationLaneProcessor:
 
         expected_spacing = (
             self.config.lane_width_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         minimum_spacing = (
             self.config.min_boundary_spacing_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         maximum_spacing = (
             self.config.max_boundary_spacing_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         candidates = []
         for dashed in dashed_groups:
@@ -1774,7 +1779,7 @@ class SegmentationLaneProcessor:
             return None, "no_boundary"
 
         offset_px = (
-            0.5 * self.config.lane_width_m * self.config.pixels_per_meter
+            0.5 * self.config.lane_width_m * self.config.pixels_per_meter_x
         )
         left_dense = self._densify_group_points(left)
         right_dense = self._densify_group_points(right)
@@ -1953,7 +1958,7 @@ class SegmentationLaneProcessor:
         offset_px = (
             0.5
             * self.config.lane_width_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         offset_x = source_x + direction * offset_px / normal_scale
         offset_y = source_y - direction * offset_px * slope / normal_scale
@@ -2156,7 +2161,7 @@ class SegmentationLaneProcessor:
 
         max_step_px = (
             self.config.max_path_lateral_step_m
-            * self.config.pixels_per_meter
+            * self.config.pixels_per_meter_x
         )
         raw_delta = path[:, 0] - previous[:, 0]
         source_changed = (
@@ -2193,10 +2198,10 @@ class SegmentationLaneProcessor:
         vehicle_x = self.config.warp_width * 0.5
         vehicle_y = self.config.warp_height - 1.0
         forward = (
-            (vehicle_y - path[:, 1]) / self.config.pixels_per_meter
+            (vehicle_y - path[:, 1]) / self.config.pixels_per_meter_y
             + self.config.bev_reference_forward_offset_m
         )
-        left = (vehicle_x - path[:, 0]) / self.config.pixels_per_meter
+        left = (vehicle_x - path[:, 0]) / self.config.pixels_per_meter_x
         return np.column_stack((forward, left)).astype(np.float32)
 
     def _debug_image(

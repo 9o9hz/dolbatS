@@ -398,14 +398,14 @@ class LaneFollowerNode(Node):
         self.tracked_center_path = {'xs': None, 'ys': None}
 
         self.MAX_LANE_AGE = 7
-        self.L = 0.73
+        self.L = 0.54  # wheelbase 54.5cm 실측
 
         self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.4,0.8
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
-        self.MIN_LOOKAHEAD_DISTANCE = 2.3
-        self.MAX_LOOKAHEAD_DISTANCE = 2.8
-        self.MAX_STEER_DEG = 23.0
+        self.MIN_LOOKAHEAD_DISTANCE = 1.3
+        self.MAX_LOOKAHEAD_DISTANCE = 1.8
+        self.MAX_STEER_DEG = 25.0
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0
 
@@ -1009,7 +1009,7 @@ def main(args=None):
     parser = argparse.ArgumentParser()
 
     default_weights = _default_resource_path('best.pt')
-    default_params = _default_resource_path('bev_params_0730.npz')
+    default_params = _default_resource_path('bev_params_0731.npz')
     default_calib = _default_resource_path('camera_calibration.pkl')
 
     parser.add_argument('--weights', default=default_weights, help='Path to model weights')

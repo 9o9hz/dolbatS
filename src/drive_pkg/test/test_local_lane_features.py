@@ -54,7 +54,7 @@ class LaneTopologyTest(unittest.TestCase):
         processor = SegmentationLaneProcessor(
             None,
             LaneConfig(
-                pixels_per_meter=100.0,
+                pixels_per_meter_x=100.0,
                 lane_width_m=0.85,
                 min_boundary_spacing_m=0.80,
             ),
@@ -81,7 +81,7 @@ class LaneTopologyTest(unittest.TestCase):
         processor = SegmentationLaneProcessor(
             None,
             LaneConfig(
-                pixels_per_meter=100.0,
+                pixels_per_meter_x=100.0,
                 lane_width_m=0.85,
                 min_boundary_spacing_m=0.80,
                 max_boundary_spacing_m=0.90,
@@ -110,7 +110,7 @@ class LaneTopologyTest(unittest.TestCase):
             None,
             LaneConfig(
                 warp_width=500,
-                pixels_per_meter=100.0,
+                pixels_per_meter_x=100.0,
                 lane_width_m=0.85,
                 min_boundary_spacing_m=0.80,
                 max_boundary_spacing_m=0.90,
@@ -154,7 +154,7 @@ class LaneTopologyTest(unittest.TestCase):
             LaneConfig(
                 warp_width=500,
                 warp_height=640,
-                pixels_per_meter=200.0,
+                pixels_per_meter_x=200.0,
                 initial_lane="lane_2",
             ),
         )
@@ -237,7 +237,7 @@ class LaneTopologyTest(unittest.TestCase):
 class LineWidthFilterTest(unittest.TestCase):
     def setUp(self):
         self.detector = LaneDetectorCore.__new__(LaneDetectorCore)
-        self.detector.pixels_per_meter = 254.0
+        self.detector.pixels_per_meter_x = 254.0
         self.detector.line_width_target_m = 0.050
         self.detector.line_width_tolerance_m = 0.010
         self.detector.line_width_measurement_scale = 0.80
@@ -260,7 +260,7 @@ class LineWidthFilterTest(unittest.TestCase):
 class DuplicateInstanceTest(unittest.TestCase):
     def setUp(self):
         self.detector = LaneDetectorCore.__new__(LaneDetectorCore)
-        self.detector.pixels_per_meter = 254.0
+        self.detector.pixels_per_meter_x = 254.0
         self.detector.line_width_target_m = 0.050
         self.detector.line_width_recovery_tolerance_m = 0.015
         self.detector.line_width_measurement_scale = 0.80

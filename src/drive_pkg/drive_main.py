@@ -130,7 +130,8 @@ class LaneDriveNode(Node):
             "calibration_width": 640,
             "calibration_height": 480,
             "process_every_nth_frame": 1,
-            "pixels_per_meter": 254.0,
+            "pixels_per_meter_x": 627.5,
+            "pixels_per_meter_y": 470.6,
             "line_width_target_m": 0.050,
             "line_width_tolerance_m": 0.010,
             "line_width_recovery_tolerance_m": 0.015,
@@ -191,7 +192,7 @@ class LaneDriveNode(Node):
             confidence=float(parameter("confidence")),
             image_size=int(parameter("image_size")),
             device_request=str(parameter("device")),
-            pixels_per_meter=float(parameter("pixels_per_meter")),
+            pixels_per_meter_x=float(parameter("pixels_per_meter_x")),
             line_width_target_m=float(parameter("line_width_target_m")),
             line_width_tolerance_m=float(
                 parameter("line_width_tolerance_m")
@@ -212,7 +213,8 @@ class LaneDriveNode(Node):
             destination_points=tuple(bev.destination_points.reshape(-1)),
             warp_width=bev.width,
             warp_height=bev.height,
-            pixels_per_meter=float(parameter("pixels_per_meter")),
+            pixels_per_meter_x=float(parameter("pixels_per_meter_x")),
+            pixels_per_meter_y=float(parameter("pixels_per_meter_y")),
             lane_width_m=float(parameter("lane_width_m")),
             min_boundary_spacing_m=float(
                 parameter("min_boundary_spacing_m")

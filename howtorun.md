@@ -18,10 +18,22 @@ ros2 launch mission_manager_pkg mission_manager.launch.py
 
 ros2 launch control_pkg serial_bridge.launch.py
 
-ros2 launch detect_pkg obstacle_detection.launch.py
+  ros2 launch detect_pkg obstacle_detection.launch.py
+ros2 run camera_pkg traffic_light_camera_publisher --camera-index 4
+
+ros2 run detect_pkg traffic_light_detection
 
 
 ```
+ros2 run usb_cam usb_cam_node_exe --ros-args \
+  -p video_device:=/dev/video2 \
+  -p pixel_format:=mjpeg2rgb \
+  -p image_width:=640 \
+  -p image_height:=480 \
+  -p framerate:=30.0
+
+
+
 
 ## Mission manager
 
