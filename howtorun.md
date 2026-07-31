@@ -131,6 +131,27 @@ ros2 topic echo /detect/avoidance/status
 뒤 센서의 `-1.0`은 에코 없음이므로 `rear_no_echo_is_clear: true`일 때
 연속 프레임 조건을 만족하면 장애물 해제로 처리한다.
 
+### bbox 화면 경계 기반 회피 종료 버전
+
+기존 앞 초음파 거리 감소→증가 대신, 장애물 bbox 중심이 raw 화면의
+1/4 또는 3/4 경계선을 통과할 때 회피를 종료하려면 기존
+`obstacle_detection.launch.py` 대신 다음 launch를 실행한다.
+
+```bash
+ros2 launch detect_pkg obstacle_detection_bbox.launch.py
+```
+
+두 launch는 동일한 출력 토픽을 사용하므로 동시에 실행하지 않는다.
+왼쪽 회전은 bbox 중심이 화면 오른쪽 경계선을, 오른쪽 회전은 화면 왼쪽
+경계선을 연속 3프레임 통과하면 차선 주행으로 복귀한다. 경계 위치는
+`src/detect_pkg/config/obstacle_bbox_detector.yaml`에서 수정한다.
+
+```yaml
+bbox_left_boundary_ratio: 0.25
+bbox_right_boundary_ratio: 0.75
+bbox_exit_consecutive_frames: 3
+```
+
 ## Arduino serial bridge
 
 권장 실차 실행은 설치된

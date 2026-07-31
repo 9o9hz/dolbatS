@@ -1,7 +1,6 @@
 obstacle_detector_publisher:
   ros__parameters:
     confidence_threshold: 0.5
-    # YOLO 감지 상태를 언제든 래치할 수 있도록 상시 추론한다.
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
     compressed_image_topic: /camera/lane/raw/compressed
@@ -15,31 +14,40 @@ ultrasonic_obstacle_event:
     left_distance_topic: /ultrasonic/left/rear
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
-    detect_threshold_cm: 15.0
+    detect_threshold_cm: 10.0
     clear_threshold_cm: 50.0
     consecutive_frames: 3
     default_avoid_direction: 1
 
-yolo_obstacle_turn:
+yolo_obstacle_bbox_turn:
   ros__parameters:
     yolo_detected_topic: /detect/obstacle/detected
+    bbox_topic: /detect/obstacle/bbox
+    raw_image_topic: /camera/lane/raw
     left_front_distance_topic: /ultrasonic/left/front
     left_rear_distance_topic: /ultrasonic/left/rear
     right_front_distance_topic: /ultrasonic/right/front
     right_rear_distance_topic: /ultrasonic/right/rear
+
     avoidance_active_topic: /detect/obstacle/avoidance_active
     candidate_steer_topic: /control/candidate/obstacle/steer_angle
     candidate_valid_topic: /control/candidate/obstacle/valid
     status_topic: /detect/avoidance/status
+
     detect_threshold_cm: 40.0
     clear_threshold_cm: 45.0
-    consecutive_frames: 1
-    # 펌웨어의 -1.0(에코 없음)을 연속 프레임일 때 뒤 장애물 해제로 취급한다.
+    consecutive_frames: 3
     rear_no_echo_is_clear: true
     full_steer_angle_deg: 25.0
-    trend_epsilon_cm: 0.5
-    minimum_drop_cm: 2.0
-    rise_from_minimum_cm: 3.0
-    trend_consecutive_frames: 1
     turn_timeout_sec: 8.0
     publish_rate_hz: 30.0
+
+    # raw 화면의 세로 경계선 비율. 0.25=1/4, 0.75=3/4 지점이다.
+    bbox_left_boundary_ratio: 0.25
+    bbox_right_boundary_ratio: 0.75
+    # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
+    # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
+    bbox_exit_consecutive_frames: 3
+    # raw Image가 아직 수신되지 않았을 때만 사용하는 임시 화면 너비다.
+    fallback_image_width_px: 640
+
