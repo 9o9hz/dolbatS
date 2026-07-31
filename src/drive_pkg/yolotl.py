@@ -29,6 +29,7 @@ from ultralytics import YOLO
 
 def _default_resource_path(filename: str) -> str:
     """Resolve a drive_pkg resource file from the source tree when run
+    
     un-installed, else from the installed share directory."""
     source_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "resource", filename
@@ -389,7 +390,8 @@ class LaneFollowerNode(Node):
             self.use_undistort = False
 
         # 3. 주행 파라미터
-        self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = 0.0027, 1.23, 0.0030 #299 #193
+        # BEV 640x640px 기준: 세로 1.36m, 가로 1.20m 실측(0731).
+        self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = 0.002125, 1.23, 0.001875
 
         self.tracked_lanes = {
             'left': {'xs': None, 'ys': None, 'age': 0, 'class_name': None},
@@ -403,13 +405,22 @@ class LaneFollowerNode(Node):
         self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.4,0.8
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
-        self.MIN_LOOKAHEAD_DISTANCE = 1.3
+        self.MIN_LOOKAHEAD_DISTANCE = 1.4
         self.MAX_LOOKAHEAD_DISTANCE = 1.8
         self.MAX_STEER_DEG = 25.0
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0
+        # pure_pursuit.py(drive_pipeline.yaml steering_gain=5.00)와 동일한
+        # 캘리브레이션. 순수 기하학적 pure-pursuit 각도는 작아서 이 게인
+        # 없이는 아두이노 폐루프가 정지마찰을 못 넘기고 거의 안 움직인다.
+        self.STEERING_GAIN = 5.0
 
         self.last_valid_ld = float(self.MAX_LOOKAHEAD_DISTANCE)
+
+        self.LANE_WIDTH_M = 0.9
+        # 좌/우 두 선이 이보다 가까우면 같은 물리적 선의 중복 검출로
+        # 보고 페어링하지 않는다 (차선폭의 70%).
+        self.MIN_LANE_SPACING_M = self.LANE_WIDTH_M * 0.7
 
         # 4. ROS Setup
         # steer/valid 토픽명은 mission_manager.py의 lane_steer_topic/
@@ -504,8 +515,7 @@ class LaneFollowerNode(Node):
         )
         draw_img = image.copy()
 
-        LANE_WIDTH_M = 0.9
-        lane_width_pixels = LANE_WIDTH_M / self.m_per_pixel_x
+        lane_width_pixels = self.LANE_WIDTH_M / self.m_per_pixel_x
 
         viz_left_xs, viz_left_ys = left_xs, left_ys
         viz_right_xs, viz_right_ys = right_xs, right_ys
@@ -550,6 +560,24 @@ class LaneFollowerNode(Node):
         x_vehicle = (self.bev_h - v) * self.m_per_pixel_y + self.y_offset_m
         y_vehicle = (self.bev_w / 2 - u) * self.m_per_pixel_x
         return x_vehicle, y_vehicle
+
+    def _lane_pair_is_plausible(self, xs_l, ys_l, xs_r, ys_r):
+        """Two lines can only be trusted as a left/right pair where their
+        y-ranges actually overlap -- comparing x at each side's own
+        (possibly very different) y otherwise mistakes two pieces of the
+        same physical line for separate boundaries."""
+        y_min_l, y_max_l = float(ys_l[0]), float(ys_l[-1])
+        y_min_r, y_max_r = float(ys_r[0]), float(ys_r[-1])
+        overlap_min = max(y_min_l, y_min_r)
+        overlap_max = min(y_max_l, y_max_r)
+        if overlap_max <= overlap_min:
+            return False
+        y_ref = overlap_max
+        x_l = float(np.interp(y_ref, ys_l, xs_l))
+        x_r = float(np.interp(y_ref, ys_r, xs_r))
+        spacing_px = x_r - x_l
+        min_spacing_px = self.MIN_LANE_SPACING_M / self.m_per_pixel_x
+        return spacing_px >= min_spacing_px
 
     def image_callback(self, msg):
         self.frame_count += 1
@@ -638,7 +666,30 @@ class LaneFollowerNode(Node):
                         class_masks[class_id], mask_np
                     )
 
-        final_mask = final_filter(combined_mask_bev)
+        # solid는 기존 파이프라인(면적 10000px 이상 요구) 그대로 둔다 --
+        # 잘 되고 있으니 안 건드림. dashed는 조각 하나가 그 기준보다
+        # 훨씬 작아서 전부 걸러졌었다 -- dashed 클래스만 큰 면적 게이트를
+        # 건너뛰고 작은 노이즈 제거(min_size=100)만 적용해 경로 생성에
+        # 쓸 수 있게 한다.
+        dashed_class_ids = {
+            class_id for class_id, name in self.model.names.items()
+            if 'dashed' in str(name).strip().lower()
+        }
+        dashed_mask = np.zeros_like(combined_mask_bev)
+        solid_like_mask = np.zeros_like(combined_mask_bev)
+        for class_id, mask in class_masks.items():
+            if class_id in dashed_class_ids:
+                dashed_mask = np.maximum(dashed_mask, mask)
+            else:
+                solid_like_mask = np.maximum(solid_like_mask, mask)
+
+        solid_filtered = final_filter(solid_like_mask)
+        dashed_filtered = morph_close(dashed_mask, ksize=5)
+        dashed_filtered = remove_small_components(dashed_filtered, min_size=100)
+
+        final_mask = keep_top2_components(
+            np.maximum(solid_filtered, dashed_filtered), min_area=300
+        )
         bev_im_for_drawing = bev_image_input.copy()
 
         # 4. Lane Extraction: component -> y별 중심점 추출
@@ -695,7 +746,31 @@ class LaneFollowerNode(Node):
         current_left, current_right = None, None
 
         if len(current_detections) == 2:
-            current_left, current_right = current_detections[0], current_detections[1]
+            left_candidate, right_candidate = current_detections[0], current_detections[1]
+
+            if self._lane_pair_is_plausible(
+                left_candidate['xs'], left_candidate['ys'],
+                right_candidate['xs'], right_candidate['ys'],
+            ):
+                current_left, current_right = left_candidate, right_candidate
+            else:
+                # y구간이 안 겹치거나(같은 선의 다른 조각일 가능성) 간격이
+                # 너무 좁다 -- 둘 다 신뢰하지 않고, 차량에 더 가까운(더
+                # 아래까지 내려온) 조각 하나만 채택한다.
+                nearer = (
+                    left_candidate
+                    if float(left_candidate['ys'][-1]) >= float(right_candidate['ys'][-1])
+                    else right_candidate
+                )
+                if nearer['x_bottom'] < self.bev_w / 2:
+                    current_left = nearer
+                else:
+                    current_right = nearer
+
+        elif len(current_detections) > 2:
+            # 횡단보도 등으로 같은 프레임에 선이 3개 이상 잡히면
+            # 좌우 페어링 대신 가장 오른쪽 선 하나만 신뢰하고 나머지는 버린다.
+            current_right = current_detections[-1]
 
         elif len(current_detections) == 1:
             detected_lane = current_detections[0]
@@ -746,13 +821,26 @@ class LaneFollowerNode(Node):
         final_left_xs, final_left_ys = left_lane_tracked['xs'], left_lane_tracked['ys']
         final_right_xs, final_right_ys = right_lane_tracked['xs'], right_lane_tracked['ys']
 
+        if (
+            final_left_xs is not None and final_right_xs is not None
+            and not self._lane_pair_is_plausible(
+                final_left_xs, final_left_ys, final_right_xs, final_right_ys
+            )
+        ):
+            # 이번 프레임엔 한쪽만 새로 검출되고 반대쪽은 age 유지 로직으로
+            # 남아있는 예전 값일 수 있다 -- 그 둘이 좌우로 말이 안 되면
+            # (같은 선 조각이거나 y가 안 겹침) 더 최근에 갱신된 쪽만 쓴다.
+            if left_lane_tracked['age'] <= right_lane_tracked['age']:
+                final_right_xs, final_right_ys = None, None
+            else:
+                final_left_xs, final_left_ys = None, None
+
         lane_detected_bool = (final_left_xs is not None) or (final_right_xs is not None)
         self.pub_lane_status.publish(Bool(data=lane_detected_bool))
 
         # 6. Steering: 중앙 경로도 점 기반
         if lane_detected_bool:
-            LANE_WIDTH_M = 0.9
-            lane_width_pixels = LANE_WIDTH_M / self.m_per_pixel_x
+            lane_width_pixels = self.LANE_WIDTH_M / self.m_per_pixel_x
 
             center_xs, center_ys = None, None
 
@@ -892,8 +980,10 @@ class LaneFollowerNode(Node):
                         x_veh ** 2 + y_veh_right ** 2
                     )
 
+                    # pure_pursuit.py와 동일 부호(목표가 왼쪽이면 양수) +
+                    # 동일 게인 적용 후 클램프.
                     raw_steer_deg = float(np.clip(
-                        -degrees(steer_rad),
+                        degrees(steer_rad) * self.STEERING_GAIN,
                         -self.MAX_STEER_DEG,
                         self.MAX_STEER_DEG
                     ))

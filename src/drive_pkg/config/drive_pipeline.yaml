@@ -32,6 +32,10 @@ drive_main:
     line_width_recovery_tolerance_m: 0.015
     line_width_recovery_aspect_ratio: 1.20
     line_width_measurement_scale: 0.80
+    # 횡단보도 흰 줄 오탐 방지: BEV상 가로(진행방향에 수직)가 세로보다
+    # 이 배율 이상 넓으면 차선 후보에서 제외한다. 모델에 crosswalk
+    # 클래스가 없어 흰 페인트를 dashed/solid로 오분류하는 걸 기하학적으로 거른다.
+    crosswalk_max_aspect_ratio: 1.50
     lane_width_m: 0.85
     # 둘 이상의 경계를 함께 사용할 때 허용하는 최소 중심 간격.
     min_boundary_spacing_m: 0.80
