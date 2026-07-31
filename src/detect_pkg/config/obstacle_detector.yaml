@@ -4,19 +4,19 @@ obstacle_detector_publisher:
     # YOLO 감지 상태를 언제든 래치할 수 있도록 상시 추론한다.
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
-    compressed_image_topic: /camera/lane/image_raw/compressed
+    compressed_image_topic: /camera/lane/raw/compressed
     detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
     detection_image_topic: /camera/lane/detection_view
-    show_window: false
+    show_window: true
 
 ultrasonic_obstacle_event:
   ros__parameters:
     left_distance_topic: /ultrasonic/left/rear
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
-    detect_threshold_cm: 40.0
-    clear_threshold_cm: 45.0
+    detect_threshold_cm: 10.0
+    clear_threshold_cm: 50.0
     consecutive_frames: 3
     default_avoid_direction: 1
 

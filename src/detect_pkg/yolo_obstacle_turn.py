@@ -216,7 +216,7 @@ class YoloObstacleTurn(Node):
     def on_yolo_detected(self, msg: Bool) -> None:
         self.yolo_detected = bool(msg.data)
 
-        if self.state == AvoidanceState.REARM:
+        if self.state in (AvoidanceState.REARM, AvoidanceState.FAULT):
             self.yolo_clear_frames = (
                 0 if self.yolo_detected else self.yolo_clear_frames + 1
             )
