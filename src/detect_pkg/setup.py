@@ -13,6 +13,7 @@ setup(
         "obstacle_detector_publisher",
         "traffic_light_detection",
         "ultrasonic_obstacle_event",
+        "yolo_obstacle_bbox_turn",
         "yolo_obstacle_turn",
     ],
     data_files=[
@@ -32,6 +33,7 @@ setup(
             "obstacle_detector_publisher = obstacle_detector_publisher:main",
             "traffic_light_detection = traffic_light_detection:main",
             "ultrasonic_obstacle_event = ultrasonic_obstacle_event:main",
+            "yolo_obstacle_bbox_turn = yolo_obstacle_bbox_turn:main",
             "yolo_obstacle_turn = yolo_obstacle_turn:main",
         ],
     },
