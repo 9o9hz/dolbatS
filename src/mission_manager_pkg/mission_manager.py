@@ -31,7 +31,7 @@ DEFAULTS = {
     "final_throttle_topic": "/auto_throttle",
     "mission_state_topic": "/mission_state",
     "status_topic": "/mission_manager/status",
-    "auto_steer_angle_abs_max": 23.0,
+    "auto_steer_angle_abs_max": 25.0,
     "auto_throttle_max": 1.0,
     "throttle_curve_k": 0.0,
     "lane_throttle_min": 0.3,
@@ -269,8 +269,8 @@ class MissionLogic:
             steer = self.obstacle.latest_steer
             source = "obstacle"
         elif self.lane.has_last_valid:
-            # Avoidance is active but not mid-trigger (APPROACH/REARM/
-            # FAULT): follow the lane while armed.
+            # Avoidance is active but its steering candidate is not valid.
+            # Follow the lane instead of injecting a zero-degree command.
             steer = self.lane.last_valid_steer
             source = "lane"
         else:

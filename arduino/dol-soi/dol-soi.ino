@@ -56,7 +56,7 @@ float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
 const int STEER_SENSOR_PIN = A4;
 
 // A4 값이 STEER_CENTER_RAW일 때 조향각 0도
-const int STEER_CENTER_RAW = 452;
+const int STEER_CENTER_RAW = 446;
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
@@ -66,11 +66,14 @@ const float DEG_PER_ADC = 270.0f / 1024.0f;
 // 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-)
 // 현재 센서는 오른쪽으로 움직일 때 A4 값이 증가하므로 -1
 const int STEER_SIGN = -1;
+const float MAX_STEER_DEG = 25.0f;
 
 // 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
 // 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
-const int STEER_RAW_MIN = 364;
-const int STEER_RAW_MAX = 540;
+const int STEER_RAW_LIMIT_OFFSET =
+  (int)(MAX_STEER_DEG / DEG_PER_ADC + 0.5f);
+const int STEER_RAW_MIN = STEER_CENTER_RAW - STEER_RAW_LIMIT_OFFSET;
+const int STEER_RAW_MAX = STEER_CENTER_RAW + STEER_RAW_LIMIT_OFFSET;
 const int STEER_RAW_TOLERANCE = 2;
 
 // 조향 모터 PWM
@@ -371,6 +374,7 @@ void parseSteerCommand(String cmd) {
 
   // 소수점 첫째 자리로 반올림
   angle = round(angle * 10.0f) / 10.0f;
+  angle = constrain(angle, -MAX_STEER_DEG, MAX_STEER_DEG);
 
   // 각도 명령을 센서 raw 목표값으로 변환한 뒤 안전 범위로 제한
   int requestedRaw = round(

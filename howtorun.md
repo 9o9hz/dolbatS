@@ -34,8 +34,9 @@ ros2 launch mission_manager_pkg mission_manager.launch.py
 timeout 없이 유지한다. 노드 시작 후 유효한 차선 candidate를 한 번도
 받지 않았다면 최종 조향과 throttle을 0으로 발행한다.
 
-장애물 회피 노드는 YOLO의 `/detect/obstacle/detected`와 좌우 뒤 초음파를
-함께 확인해 회피 시작 여부와 방향을 정한다. 회피가 시작되면
+장애물 회피 노드는 YOLO의 `/detect/obstacle/detected` 감지와 좌우 뒤
+초음파의 감지→해제를 각각 상태로 저장한다. 두 상태가 모두 준비되면
+뒤 초음파가 감지했던 방향으로 즉시 회피를 시작한다. 회피가 시작되면
 `/detect/obstacle/avoidance_active`를 회전 완료까지 유지한다.
 회피 중 obstacle candidate가 invalid가 되면 과거 풀조향값을 유지하지 않고
 최종 조향과 throttle을 모두 0으로 발행한다.
@@ -70,8 +71,8 @@ ros2 run camera_pkg lane_camera_publisher --camera-index 1
 ros2 launch detect_pkg obstacle_detection.launch.py
 ```
 
-`obstacle_detection.launch.py`는 장애물 YOLO, 초음파 이벤트 필터, 장애물
-회피 candidate publisher를 함께 실행한다.
+`obstacle_detection.launch.py`는 장애물 YOLO와 4개 초음파 센서를 사용하는
+장애물 회피 candidate publisher를 함께 실행한다.
 
 ```text
 /detect/obstacle/detected                  YOLO 객체 검출 여부
@@ -89,24 +90,29 @@ ros2 launch detect_pkg obstacle_detection.launch.py
 
 ```text
 차선 주행
-  -> YOLO 객체 검출 + 좌/우 뒤 초음파 임계값 이하 연속 감지
-  -> avoidance_active=true, 직진 조향 후보 0도
-  -> 감지됐던 쪽의 뒤 초음파에서 장애물이 사라짐
-  -> 같은 방향 풀조향 후보
+  -> YOLO 객체 검출 상태를 독립적으로 래치
+  -> 좌/우 뒤 초음파의 "장애물 감지 후 해제" 상태를 독립적으로 래치
+  -> 두 상태가 모두 준비되는 순간 avoidance_active=true
+  -> 뒤 초음파가 감지했던 방향으로 즉시 풀조향 후보 발행
   -> 반대 방향 앞 초음파 거리가 감소한 뒤 증가
   -> avoidance_active=false, lane candidate로 복귀
 ```
 
-예를 들어 왼쪽 뒤 센서로 장애물을 잡았다면, 왼쪽 뒤 센서가 해제되는
-순간 왼쪽 풀조향을 발행하고 오른쪽 앞 센서의 거리 감소→증가를 기다린다.
-오른쪽 뒤에서 시작한 경우에는 반대로 오른쪽 풀조향과 왼쪽 앞 센서를
-사용한다.
+YOLO 검출과 초음파 감지→해제의 순서는 상관없다. 먼저 들어온 조건은
+상태로 유지되고, 나머지 조건까지 충족되는 콜백에서 바로 풀조향한다.
+예를 들어 왼쪽 뒤 센서로 장애물을 잡았다면 왼쪽 풀조향을 발행하고
+오른쪽 앞 센서의 거리 감소→증가를 기다린다. 오른쪽 뒤에서 시작한
+경우에는 반대로 오른쪽 풀조향과 왼쪽 앞 센서를 사용한다.
 
 회피 상태는 다음 토픽에서 확인한다.
 
 ```bash
 ros2 topic echo /detect/avoidance/status
 ```
+
+상태 JSON의 `yolo_latched`와 `rear_obstacle_state`에서 두 조건의 진행
+상태를 각각 확인할 수 있다. `rear_obstacle_state`는
+`wait_detection` → `detected` → `cleared_after_detection` 순서로 변한다.
 
 임계값, 풀조향각, 거리 증감 판정과 timeout은
 `src/detect_pkg/config/obstacle_detector.yaml`에서 조정한다.

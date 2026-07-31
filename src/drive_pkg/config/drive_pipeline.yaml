@@ -94,7 +94,7 @@ pure_pursuit:
     status_topic: "/lane/control/status"
 
     wheelbase_m: 0.545
-    max_steer_deg: 18.0
+    max_steer_deg: 25.0
     steering_gain: 5.00
     # true: 조향각에 따라 min~max 사이에서 목표점 이동.
     # false: lookahead_m 거리의 고정 목표점 사용.
