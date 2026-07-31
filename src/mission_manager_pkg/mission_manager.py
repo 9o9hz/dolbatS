@@ -31,7 +31,7 @@ DEFAULTS = {
     "final_throttle_topic": "/auto_throttle",
     "mission_state_topic": "/mission_state",
     "status_topic": "/mission_manager/status",
-    "auto_steer_angle_abs_max": 23.0,
+    "auto_steer_angle_abs_max": 25.0,
     "auto_throttle_max": 1.0,
     "throttle_curve_k": 0.0,
     "lane_throttle_min": 0.3,
