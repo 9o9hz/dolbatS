@@ -10,7 +10,9 @@ serial_bridge:
     reconnect_log_interval_sec: 5.0
 
     # 두 최종 명령이 모두 이 시간 안에 갱신돼야 구동 heartbeat를 보낸다.
-    command_timeout_sec: 0.3
+    # 0.0이면 steer/throttle을 최초 한 번 받은 뒤 마지막 명령을 계속 유지한다.
+    # 주의: ROS 명령 발행이 끊겨도 차량이 자동 정지하지 않는다.
+    command_timeout_sec: 0.0
     control_output_rate_hz: 20.0
     center_on_timeout: false
 

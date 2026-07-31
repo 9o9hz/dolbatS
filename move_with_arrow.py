@@ -14,7 +14,7 @@ last_drive_time = 0.0
 last_steer = None
 last_left_time = 0
 last_right_time = 0
-speed = 230
+speed = 120
 
 STEER_INTERVAL = 0.08  # 좌우 키를 누르고 있을 때 각도 변경 간격
 DRIVE_HEARTBEAT_INTERVAL = 0.1
