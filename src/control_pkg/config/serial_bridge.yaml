@@ -17,7 +17,7 @@ serial_bridge:
     center_on_timeout: false
 
     max_drive_pwm: 255
-    max_steer_angle: 20.0
+    max_steer_angle: 25.0
     throttle_deadband: 0.02
     max_throttle: 1.0
     invert_steer: false

@@ -1301,14 +1301,19 @@ class SegmentationLaneProcessor:
         self,
         previous: Optional[LaneGroup],
         groups: List[LaneGroup],
-        side: str,
     ) -> Optional[LaneGroup]:
         if previous is None:
             return None
+        # Match by curve-distance continuity only. Gating candidates by
+        # _group_side() first would exclude a group whose x_ref drifted
+        # across the frame-center threshold this frame even though it is
+        # still the closest (< lane_track_match_threshold_px) continuation
+        # of `previous` -- lane spacing (>= min_boundary_spacing_m, ~500px)
+        # is far larger than the match threshold (50px), so distance alone
+        # cannot confuse this with the opposite physical line.
         candidates = [
             group for group in groups
-            if self._group_side(group) == side
-            and self._group_has_path_overlap(group)
+            if self._group_has_path_overlap(group)
         ]
         if not candidates:
             return None
@@ -1335,10 +1340,15 @@ class SegmentationLaneProcessor:
             if previous is None:
                 continue
             for group in groups:
-                if (
-                    self._group_side(group) != side
-                    or not self._group_has_path_overlap(group)
-                ):
+                # Match by curve-distance continuity only -- do not gate on
+                # _group_side() here. Lane spacing (>= min_boundary_spacing_m,
+                # ~500px) is far larger than lane_track_match_threshold_px
+                # (50px), so a close-distance match can't be the opposite
+                # physical line; but a momentary x_ref drift across the
+                # frame-center threshold *can* wrongly relabel this group's
+                # side, which previously caused this loop to drop the
+                # correct continuation and let the track flip sides.
+                if not self._group_has_path_overlap(group):
                     continue
                 score = self._group_match_distance(previous, group)
                 if score <= self.config.lane_track_match_threshold_px:
@@ -1457,7 +1467,6 @@ class SegmentationLaneProcessor:
             matched = self._best_group_match(
                 self._solid_active_group,
                 groups,
-                str(self._solid_active_side),
             )
             if matched is not None:
                 self._solid_active_group = matched

@@ -97,7 +97,7 @@ def generate_launch_description() -> LaunchDescription:
                         "baud_rate": 115200,
                         "cmd_vel_topic": "/cmd_vel",
                         "wheelbase": 0.545,
-                        "max_steer_angle": 20.0,
+                        "max_steer_angle": 25.0,
                         "command_timeout": 0.5,
                     }
                 ],
