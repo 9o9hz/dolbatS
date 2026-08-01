@@ -74,10 +74,14 @@ drive_main:
     # 검출점의 잔떨림을 더 강하게 평활화한다.
     path_spline_smooth_factor: 10.0
     path_spline_points: 100
-    path_ema_alpha: 0.30
-    path_transition_blend_frames: 7
-    max_path_lateral_step_m: 0.04
-    max_missing_frames: 12
+    # 시간축 응답성 튜닝: 새 검출 경로를 55% 반영하고, 경로 소스가
+    # 바뀔 때도 2프레임 안에 전환한다. 급커브 추종을 막지 않도록
+    # 횡방향 변화 제한은 프레임당 10 cm로 완화한다.
+    path_ema_alpha: 0.55
+    path_transition_blend_frames: 2
+    max_path_lateral_step_m: 0.10
+    # 검출 누락 시 오래된 경로를 과도하게 유지하지 않는다.
+    max_missing_frames: 4
 
     path_topic: "/lane/path"
     debug_topic: "/lane/path/debug/compressed"

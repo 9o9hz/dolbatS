@@ -147,6 +147,7 @@ class LaneDriveNode(Node):
             "min_group_span_px": 80.0,
             "min_group_area": 500,
             "dashed_piece_threshold": 2,
+            "crosswalk_max_aspect_ratio": 1.50,
             "prefer_solid_when_dashed": True,
             "initial_lane": "lane_2",
             "lane_state_confirm_frames": 3,
@@ -235,6 +236,9 @@ class LaneDriveNode(Node):
             min_group_area=int(parameter("min_group_area")),
             dashed_piece_threshold=int(
                 parameter("dashed_piece_threshold")
+            ),
+            crosswalk_max_aspect_ratio=float(
+                parameter("crosswalk_max_aspect_ratio")
             ),
             prefer_solid_when_dashed=bool(
                 parameter("prefer_solid_when_dashed")

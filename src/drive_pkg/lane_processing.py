@@ -121,6 +121,7 @@ class LaneConfig:
     min_group_span_px: float = 80.0
     min_group_area: int = 500
     dashed_piece_threshold: int = 2
+    crosswalk_max_aspect_ratio: float = 1.50
     prefer_solid_when_dashed: bool = True
     initial_lane: str = "auto"
     lane_state_confirm_frames: int = 3
@@ -439,6 +440,10 @@ class SegmentationLaneProcessor:
             raise ValueError("Path sampling steps must be positive")
         if cfg.dashed_piece_threshold < 2:
             raise ValueError("dashed_piece_threshold must be at least 2")
+        if cfg.crosswalk_max_aspect_ratio <= 0.0:
+            raise ValueError(
+                "crosswalk_max_aspect_ratio must be positive"
+            )
         if str(cfg.initial_lane).strip().lower() not in (
             "auto",
             "lane_1",
@@ -1223,6 +1228,27 @@ class SegmentationLaneProcessor:
             overlap_max - overlap_min
             >= 2.0 * self.config.path_step_px
         )
+
+    def _group_is_crosswalk_shape(self, group: LaneGroup) -> bool:
+        """Detect a road marking that runs across, rather than along, BEV."""
+
+        points = np.asarray(group["points"], dtype=np.float32)
+        if len(points) < 2:
+            return False
+        width = float(np.ptp(points[:, 0]))
+        height = max(float(np.ptp(points[:, 1])), 1.0)
+        return width / height >= self.config.crosswalk_max_aspect_ratio
+
+    def _filter_crosswalk_candidates(
+        self, groups: List[LaneGroup]
+    ) -> List[LaneGroup]:
+        """Remove horizontal crosswalk stripes before boundary selection."""
+
+        return [
+            group
+            for group in groups
+            if not self._group_is_crosswalk_shape(group)
+        ]
 
     def _group_match_distance(
         self,
@@ -2379,6 +2405,7 @@ class SegmentationLaneProcessor:
 
         pieces = self._extract_bbox_pieces(instances)
         groups = self._group_pieces(pieces)
+        groups = self._filter_crosswalk_candidates(groups)
         which_lane = self._classify_which_lane(groups)
         (
             left,

@@ -165,6 +165,31 @@ class LaneTopologyTest(unittest.TestCase):
         self.assertIs(selected_left, left)
         self.assertIsNone(selected_right)
 
+    def test_horizontal_crosswalk_candidate_is_rejected(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(crosswalk_max_aspect_ratio=1.5),
+        )
+        crosswalk = group(120.0, False)
+        crosswalk["points"] = np.asarray(
+            [[20.0, 400.0], [260.0, 410.0]], dtype=np.float32
+        )
+
+        self.assertEqual(
+            processor._filter_crosswalk_candidates([crosswalk]), []
+        )
+
+    def test_longitudinal_lane_candidate_is_preserved(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(crosswalk_max_aspect_ratio=1.5),
+        )
+        lane = group(120.0, False)
+
+        self.assertEqual(
+            processor._filter_crosswalk_candidates([lane]), [lane]
+        )
+
     def test_solid_dashed_solid_respects_latched_lane(self):
         processor = SegmentationLaneProcessor(
             None,
