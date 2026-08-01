@@ -405,8 +405,8 @@ class LaneFollowerNode(Node):
         self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.4,0.8
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
-        self.MIN_LOOKAHEAD_DISTANCE = 1.4
-        self.MAX_LOOKAHEAD_DISTANCE = 1.8
+        self.MIN_LOOKAHEAD_DISTANCE = 1.3
+        self.MAX_LOOKAHEAD_DISTANCE = 1.6
         self.MAX_STEER_DEG = 25.0
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0

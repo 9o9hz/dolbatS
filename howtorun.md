@@ -16,6 +16,8 @@ ros2 launch drive_pkg drive_pipeline.launch.py
 ros2 launch mission_manager_pkg mission_manager.launch.py
 
 
+ros2 run control_pkg keyboard_drive_toggle 
+
 ros2 launch control_pkg serial_bridge.launch.py
 
   ros2 launch detect_pkg obstacle_detection.launch.py
