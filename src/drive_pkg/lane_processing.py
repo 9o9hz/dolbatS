@@ -2386,7 +2386,7 @@ class SegmentationLaneProcessor:
             selection_mode,
             dashed_region_count,
         ) = self._choose_boundaries(groups)
-        raw_path, reason = self._build_path(left, right)
+        raw_path, reason = self._build_path_spline(left, right)
         if selection_mode in (
             "solid_left_preferred",
             "solid_right_preferred",
