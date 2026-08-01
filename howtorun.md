@@ -1,4 +1,4 @@
-# T1. camera
+# T1. lane_camera
 ```
 ros2 run usb_cam usb_cam_node_exe --ros-args \
   -p video_device:=/dev/video4 \
@@ -10,6 +10,9 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
   -r image_raw/compressed:=/camera/lane/raw/compressed \
   -r camera_info:=/camera/lane/camera_info
 ```
+
+# T2. traffic_light_camera
+
 ```
 ros2 run usb_cam usb_cam_node_exe --ros-args \
   -p video_device:=/dev/video2 \
@@ -22,32 +25,32 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
   -r camera_info:=/camera/traffic_light/camera_info
 ```
 
-# T2. serial_bridge
+# T3. serial_bridge
 ```
 ros2 launch control_pkg serial_bridge.launch.py
 ```
 
-# T3. drive_pkg
+# T4. drive_pkg
 ```
 ros2 launch drive_pkg drive_pipeline.launch.py
 ```
 
-# T4. mission_manager
+# T5. mission_manager
 ```
 ros2 launch mission_manager_pkg mission_manager.launch.py
 ```
 
-# T5. keyboard_toggle
+# T6. keyboard_toggle
 ```
 ros2 run control_pkg keyboard_drive_toggle 
 ```
 
-# T6. obstacle
+# T7. obstacle
 ```
 ros2 launch detect_pkg obstacle_detection.launch.py
 ```
 
-# T7. traffic_light
+# T8. traffic_light
 ```
 ros2 run detect_pkg traffic_light_detection
 ```
