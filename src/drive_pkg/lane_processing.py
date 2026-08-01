@@ -777,6 +777,18 @@ class SegmentationLaneProcessor:
             y_min = float(np.min(points[:, 1]))
             y_max = float(np.max(points[:, 1]))
             x_reference_y = float(np.clip(reference_y, y_min, y_max))
+            class_name = str(
+                instance.get("class_name", "")
+            ).strip().lower()
+            if "dashed" in class_name:
+                semantic_type: Optional[str] = "DASHED"
+            elif "solid" in class_name:
+                semantic_type = "SOLID"
+            else:
+                semantic_type = None
+            semantic_confidence = float(
+                instance.get("confidence", 0.0)
+            )
             pieces.append(
                 {
                     "points": points,
@@ -784,7 +796,9 @@ class SegmentationLaneProcessor:
                     "y_min": y_min,
                     "y_max": y_max,
                     "area": area,
-                    "confidence": float(instance.get("confidence", 1.0)),
+                    "confidence": semantic_confidence,
+                    "semantic_type": semantic_type,
+                    "semantic_confidence": semantic_confidence,
                     "x_ref": self._curve_x(curve, x_reference_y),
                 }
             )
@@ -990,13 +1004,12 @@ class SegmentationLaneProcessor:
                 "yolo",
             )
 
-        fallback_type = (
-            "DASHED"
-            if len(group["pieces"])
-            >= self.config.dashed_piece_threshold
-            else "SOLID"
-        )
-        return fallback_type, None, "piece_count"
+        # Piece count is not a reliable semantic signal: one physical
+        # SOLID marking can be split into multiple YOLO instances by
+        # occlusion or segmentation gaps.  With no usable YOLO semantics,
+        # conservatively keep the group SOLID instead of reclassifying it
+        # as DASHED merely because it contains two or more pieces.
+        return "SOLID", None, "no_semantics"
 
     def _group_is_dashed(self, group: LaneGroup) -> bool:
         lane_type, _, _ = self._group_type(group)
