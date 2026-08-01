@@ -28,8 +28,8 @@ drive_main:
     pixels_per_meter_x: 627.5
     pixels_per_meter_y: 470.6
     line_width_target_m: 0.050
-    line_width_tolerance_m: 0.010
-    line_width_recovery_tolerance_m: 0.015
+    line_width_tolerance_m: 0.015
+    line_width_recovery_tolerance_m: 0.017
     line_width_recovery_aspect_ratio: 1.20
     line_width_measurement_scale: 0.80
     # 횡단보도 흰 줄 오탐 방지: BEV상 가로(진행방향에 수직)가 세로보다
@@ -49,6 +49,8 @@ drive_main:
     # bbox_close_ksize: 검출(bbox) 단위로 최대 성분을 뽑기 전 적용하는
     # morphological close 커널 크기.
     min_component_area: 250
+    # Zhang-Suen skeleton 점을 곡선 피팅에 전달할 때의 y축 샘플 간격.
+    # 기존처럼 각 행의 마스크 중간값을 계산하는 용도가 아니다.
     center_sample_step: 5
     bbox_close_ksize: 5
     same_line_threshold_px: 75.0
@@ -68,7 +70,10 @@ drive_main:
     path_bottom_margin: 30
     path_step_px: 10
     path_resample_step_px: 5
-    path_polynomial_degree: 3
+    # 중심 경로는 cubic B-spline으로 생성한다. smooth_factor가 클수록
+    # 검출점의 잔떨림을 더 강하게 평활화한다.
+    path_spline_smooth_factor: 10.0
+    path_spline_points: 100
     path_ema_alpha: 0.30
     path_transition_blend_frames: 7
     max_path_lateral_step_m: 0.04

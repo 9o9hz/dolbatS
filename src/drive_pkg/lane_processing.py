@@ -132,7 +132,8 @@ class LaneConfig:
     path_bottom_margin: int = 30
     path_step_px: int = 10
     path_resample_step_px: int = 5
-    path_polynomial_degree: int = 3
+    path_spline_smooth_factor: float = 10.0
+    path_spline_points: int = 100
     path_ema_alpha: float = 0.35
     path_transition_blend_frames: int = 6
     max_path_lateral_step_m: float = 0.04
@@ -464,10 +465,12 @@ class SegmentationLaneProcessor:
             )
         if cfg.path_bottom_margin < 0:
             raise ValueError("path_bottom_margin cannot be negative")
-        if cfg.path_polynomial_degree not in (2, 3):
+        if cfg.path_spline_smooth_factor < 0.0:
             raise ValueError(
-                "path_polynomial_degree must be 2 or 3"
+                "path_spline_smooth_factor must be non-negative"
             )
+        if cfg.path_spline_points < 4:
+            raise ValueError("path_spline_points must be at least 4")
         if not 0.0 <= cfg.path_ema_alpha <= 1.0:
             raise ValueError("path_ema_alpha must be between 0 and 1")
         if cfg.path_transition_blend_frames <= 0:
@@ -524,17 +527,96 @@ class SegmentationLaneProcessor:
         )
 
     @staticmethod
+    def _zhang_suen_thinning(mask: np.ndarray) -> np.ndarray:
+        """Thin a binary mask with the two-pass Zhang-Suen algorithm."""
+
+        image = np.pad(
+            (np.asarray(mask) > 0).astype(np.uint8),
+            1,
+            mode="constant",
+        )
+
+        def deletion_mask(step: int) -> np.ndarray:
+            center = image[1:-1, 1:-1]
+            p2 = image[:-2, 1:-1]
+            p3 = image[:-2, 2:]
+            p4 = image[1:-1, 2:]
+            p5 = image[2:, 2:]
+            p6 = image[2:, 1:-1]
+            p7 = image[2:, :-2]
+            p8 = image[1:-1, :-2]
+            p9 = image[:-2, :-2]
+            neighbors = (p2, p3, p4, p5, p6, p7, p8, p9)
+            neighbor_count = sum(neighbors)
+            transitions = sum(
+                (first == 0) & (second == 1)
+                for first, second in zip(
+                    neighbors,
+                    neighbors[1:] + neighbors[:1],
+                )
+            )
+            if step == 1:
+                connectivity = (
+                    (p2 * p4 * p6 == 0)
+                    & (p4 * p6 * p8 == 0)
+                )
+            else:
+                connectivity = (
+                    (p2 * p4 * p8 == 0)
+                    & (p2 * p6 * p8 == 0)
+                )
+            return (
+                (center == 1)
+                & (neighbor_count >= 2)
+                & (neighbor_count <= 6)
+                & (transitions == 1)
+                & connectivity
+            )
+
+        while True:
+            changed = False
+            for step in (1, 2):
+                remove = deletion_mask(step)
+                if np.any(remove):
+                    image[1:-1, 1:-1][remove] = 0
+                    changed = True
+            if not changed:
+                break
+
+        return image[1:-1, 1:-1] * np.uint8(255)
+
+    @staticmethod
     def _component_center_points(
         mask: np.ndarray, y_step: int
     ) -> PointArray:
-        points: List[Tuple[float, float]] = []
-        for y_value in range(0, mask.shape[0], y_step):
-            x_values = np.flatnonzero(mask[y_value])
-            if x_values.size:
-                points.append((float(np.mean(x_values)), float(y_value)))
-        if len(points) < 2:
+        """Return Zhang-Suen skeleton pixels instead of row-wise centroids.
+
+        Each isolated YOLO lane component is thinned to a one-pixel-wide
+        topology before curve fitting.  ``y_step`` only reduces the number
+        of skeleton pixels passed to the fitter; it no longer averages the
+        mask width on each image row.
+        """
+
+        foreground_y, foreground_x = np.nonzero(mask)
+        if foreground_x.size == 0:
             return None
-        return np.asarray(points, dtype=np.float32)
+        x_min = int(np.min(foreground_x))
+        x_max = int(np.max(foreground_x)) + 1
+        y_min = int(np.min(foreground_y))
+        y_max = int(np.max(foreground_y)) + 1
+        skeleton = SegmentationLaneProcessor._zhang_suen_thinning(
+            np.asarray(mask)[y_min:y_max, x_min:x_max]
+        )
+        y_values, x_values = np.nonzero(skeleton)
+        y_values += y_min
+        x_values += x_min
+        if y_step > 1:
+            sampled = (y_values % y_step) == 0
+            y_values = y_values[sampled]
+            x_values = x_values[sampled]
+        if len(x_values) < 2 or np.unique(y_values).size < 2:
+            return None
+        return np.column_stack((x_values, y_values)).astype(np.float32)
 
     @staticmethod
     def _fit_line(points: PointArray) -> Optional[Tuple[float, float]]:
@@ -2054,37 +2136,9 @@ class SegmentationLaneProcessor:
         return path_array, reason
 
     def _smooth_spatial(self, path: PointArray) -> PointArray:
-        if path is None or len(path) < 3:
-            return None
-        degree = self.config.path_polynomial_degree
-        if degree == 3 and len(np.unique(path[:, 1])) < 4:
-            degree = 2
-        try:
-            coefficients = np.polyfit(
-                path[:, 1], path[:, 0], degree
-            )
-        except (TypeError, ValueError, np.linalg.LinAlgError):
-            if degree != 3:
-                return path
-            try:
-                coefficients = np.polyfit(
-                    path[:, 1], path[:, 0], 2
-                )
-            except (TypeError, ValueError, np.linalg.LinAlgError):
-                return path
-        y_values = self._path_y_values()
-        x_values = np.polyval(coefficients, y_values)
-        if not np.all(np.isfinite(x_values)):
-            return None
-        margin = self.config.warp_width * 0.15
-        x_values = np.clip(
-            x_values,
-            -margin,
-            self.config.warp_width + margin,
-        )
-        return np.column_stack(
-            (x_values, y_values)
-        ).astype(np.float32)
+        """Generate the expected path with a cubic parametric B-spline."""
+
+        return self._smooth_spatial_spline(path)
 
     def _anchor_path_to_vehicle_center(
         self, path: PointArray

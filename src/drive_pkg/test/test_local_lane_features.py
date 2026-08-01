@@ -22,6 +22,23 @@ def group(x_ref: float, dashed: bool) -> dict:
 
 
 class LaneTopologyTest(unittest.TestCase):
+    def test_component_points_use_zhang_suen_skeleton(self):
+        component = np.zeros((20, 20), dtype=np.uint8)
+        component[2:18, 6:14] = 1
+        skeleton = SegmentationLaneProcessor._zhang_suen_thinning(
+            component
+        )
+        points = SegmentationLaneProcessor._component_center_points(
+            component, 1
+        )
+
+        self.assertGreater(np.count_nonzero(skeleton), 1)
+        self.assertTrue(np.all(skeleton[:, :8] == 0))
+        self.assertTrue(np.all(skeleton[:, 12:] == 0))
+        self.assertIsNotNone(points)
+        self.assertGreater(np.unique(points[:, 1]).size, 1)
+        self.assertLessEqual(float(np.ptp(points[:, 0])), 1.0)
+
     def test_yolo_semantics_override_piece_count(self):
         processor = SegmentationLaneProcessor(None, LaneConfig())
         solid_split = group(120.0, True)
@@ -212,13 +229,14 @@ class LaneTopologyTest(unittest.TestCase):
         self.assertIsNone(selected_left)
         self.assertIsNone(selected_right)
 
-    def test_local_path_is_polynomial_and_anchored_to_vehicle(self):
+    def test_local_path_is_bspline_and_anchored_to_vehicle(self):
         processor = SegmentationLaneProcessor(
             None,
             LaneConfig(
                 warp_width=500,
                 warp_height=640,
-                path_polynomial_degree=3,
+                path_spline_smooth_factor=10.0,
+                path_spline_points=100,
             ),
         )
         raw_path, _ = processor._build_path(

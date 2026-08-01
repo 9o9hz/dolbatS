@@ -158,7 +158,8 @@ class LaneDriveNode(Node):
             "path_bottom_margin": 30,
             "path_step_px": 10,
             "path_resample_step_px": 5,
-            "path_polynomial_degree": 3,
+            "path_spline_smooth_factor": 10.0,
+            "path_spline_points": 100,
             "path_ema_alpha": 0.20,
             "path_transition_blend_frames": 10,
             "max_path_lateral_step_m": 0.02,
@@ -256,9 +257,10 @@ class LaneDriveNode(Node):
             path_resample_step_px=int(
                 parameter("path_resample_step_px")
             ),
-            path_polynomial_degree=int(
-                parameter("path_polynomial_degree")
+            path_spline_smooth_factor=float(
+                parameter("path_spline_smooth_factor")
             ),
+            path_spline_points=int(parameter("path_spline_points")),
             path_ema_alpha=float(parameter("path_ema_alpha")),
             path_transition_blend_frames=int(
                 parameter("path_transition_blend_frames")
