@@ -53,7 +53,7 @@ class TrafficLightDetectorPublisher(Node):
         super().__init__("traffic_light_detector_publisher")
 
         self.declare_parameter("model_path", get_default_model_path())
-        self.declare_parameter("confidence_threshold", 0.5)
+        self.declare_parameter("confidence_threshold", 0.3)
         self.declare_parameter("detected_topic", "/detect/traffic_light/detected")
         self.declare_parameter("color_topic", "/detect/traffic_light/color")
         self.declare_parameter(
@@ -63,7 +63,7 @@ class TrafficLightDetectorPublisher(Node):
         self.declare_parameter(
             "detection_image_topic", "/detect/traffic_light/detection_view"
         )
-        self.declare_parameter("show_window", False if show_window is None else show_window)
+        self.declare_parameter("show_window", True if show_window is None else show_window)
 
         self.model_path = (
             self.get_parameter("model_path").get_parameter_value().string_value
@@ -150,7 +150,9 @@ class TrafficLightDetectorPublisher(Node):
         self.publish_confidence(confidence)
 
         detection_frame = frame.copy()
-        self.draw_detection_overlay(detection_frame, color, bbox)
+        self.draw_detection_overlay(
+            detection_frame, color, bbox, confidence
+        )
         self.publish_image(detection_frame, image_msg)
 
         if self.show_window:
@@ -235,6 +237,7 @@ class TrafficLightDetectorPublisher(Node):
         frame,
         color: Optional[str],
         bbox: Optional[Tuple[float, float, float, float]],
+        confidence: float,
     ) -> None:
         if bbox is None:
             return
@@ -248,7 +251,7 @@ class TrafficLightDetectorPublisher(Node):
         cv2.rectangle(frame, (x1, y1), (x2, y2), overlay_color, 2)
         cv2.putText(
             frame,
-            color or "unknown",
+            f"{color or 'unknown'} {confidence:.2f}",
             (x1, max(20, y1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,

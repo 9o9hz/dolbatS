@@ -3,7 +3,7 @@
 # Original image size: 640 x 480
 # Canvas size: 1000 x 800
 # Offset: (180, 160)
--32, 473 # 1 (L-Bot) [OUTSIDE]
-672, 473 # 2 (R-Bot) [OUTSIDE]
-121, 234 # 3 (L-Top) [INSIDE]
-513, 234 # 4 (R-Top) [INSIDE]
+-44, 481 # 1 (L-Bot) [OUTSIDE]
+700, 481 # 2 (R-Bot) [OUTSIDE]
+132, 224 # 3 (L-Top) [INSIDE]
+530, 224 # 4 (R-Top) [INSIDE]

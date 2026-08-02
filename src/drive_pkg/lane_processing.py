@@ -22,7 +22,7 @@ from sensor_msgs.msg import CompressedImage
 
 def _default_bev_params_path() -> Path:
     source_path = (
-        Path(__file__).resolve().parent / "resource" / "bev_params_0731.npz"
+        Path(__file__).resolve().parent / "resource" / "bev_params_0803.npz"
     )
     if source_path.is_file():
         return source_path
@@ -33,7 +33,7 @@ def _default_bev_params_path() -> Path:
         return (
             Path(get_package_share_directory("drive_pkg"))
             / "resource"
-            / "bev_params_0731.npz"
+            / "bev_params_0803.npz"
         )
     except (ImportError, LookupError):
         return source_path
@@ -112,8 +112,8 @@ class LaneConfig:
     )
     warp_width: int = 640
     warp_height: int = 640
-    pixels_per_meter_x: float = 627.5
-    pixels_per_meter_y: float = 470.6
+    pixels_per_meter_x: float = 533.3333333333
+    pixels_per_meter_y: float = 533.3333333333
     lane_width_m: float = 0.85
     min_boundary_spacing_m: float = 0.80
     max_boundary_spacing_m: float = 0.90

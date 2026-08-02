@@ -390,8 +390,12 @@ class LaneFollowerNode(Node):
             self.use_undistort = False
 
         # 3. 주행 파라미터
-        # BEV 640x640px 기준: 세로 1.36m, 가로 1.20m 실측(0731).
-        self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = 0.002125, 1.23, 0.001875
+        # BEV 640x640px 기준: x/y 방향 각각 1.20m (0803).
+        self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = (
+            0.001875,
+            1.23,
+            0.001875,
+        )
 
         self.tracked_lanes = {
             'left': {'xs': None, 'ys': None, 'age': 0, 'class_name': None},
@@ -405,8 +409,8 @@ class LaneFollowerNode(Node):
         self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.4,0.8
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
-        self.MIN_LOOKAHEAD_DISTANCE = 1.3
-        self.MAX_LOOKAHEAD_DISTANCE = 1.6
+        self.MIN_LOOKAHEAD_DISTANCE = 1.2
+        self.MAX_LOOKAHEAD_DISTANCE = 1.4
         self.MAX_STEER_DEG = 25.0
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0
@@ -418,7 +422,7 @@ class LaneFollowerNode(Node):
         self.last_valid_ld = float(self.MAX_LOOKAHEAD_DISTANCE)
 
         self.LANE_WIDTH_M = 0.9
-        # 좌/우 두 선이 이보다 가까우면 같은 물리적 선의 중복 검출로
+        # 좌/우 두 선이 이보다 가까우면 같은 물리적 선의 중복 검출로 
         # 보고 페어링하지 않는다 (차선폭의 70%).
         self.MIN_LANE_SPACING_M = self.LANE_WIDTH_M * 0.7
 
@@ -1099,7 +1103,7 @@ def main(args=None):
     parser = argparse.ArgumentParser()
 
     default_weights = _default_resource_path('best.pt')
-    default_params = _default_resource_path('bev_params_0731.npz')
+    default_params = _default_resource_path('bev_params_0803.npz')
     default_calib = _default_resource_path('camera_calibration.pkl')
 
     parser.add_argument('--weights', default=default_weights, help='Path to model weights')

@@ -15,8 +15,8 @@ ultrasonic_obstacle_event:
     left_distance_topic: /ultrasonic/left/rear
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
-    detect_threshold_cm: 45.0
-    clear_threshold_cm: 100.0
+    detect_threshold_cm: 40.0
+    clear_threshold_cm: 120.0
     consecutive_frames: 1
     default_avoid_direction: 1
 
@@ -31,12 +31,12 @@ yolo_obstacle_turn:
     candidate_steer_topic: /control/candidate/obstacle/steer_angle
     candidate_valid_topic: /control/candidate/obstacle/valid
     status_topic: /detect/avoidance/status
-    detect_threshold_cm: 45.0
-    clear_threshold_cm: 100.0
+    detect_threshold_cm: 40.0
+    clear_threshold_cm: 120.0
     consecutive_frames: 1
     # 펌웨어의 -1.0(에코 없음)을 연속 프레임일 때 뒤 장애물 해제로 취급한다.
     rear_no_echo_is_clear: true
-    full_steer_angle_deg: 25.0
+    full_steer_angle_deg: -25.0
     trend_epsilon_cm: 0.5
     minimum_drop_cm: 2.0
     rise_from_minimum_cm: 3.0

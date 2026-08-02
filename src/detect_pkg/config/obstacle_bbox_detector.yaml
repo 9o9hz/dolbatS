@@ -14,8 +14,8 @@ ultrasonic_obstacle_event:
     left_distance_topic: /ultrasonic/left/rear
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
-    detect_threshold_cm: 10.0
-    clear_threshold_cm: 50.0
+    detect_threshold_cm: 60.0
+    clear_threshold_cm: 100.0
     consecutive_frames: 3
     default_avoid_direction: 1
 
@@ -34,8 +34,8 @@ yolo_obstacle_bbox_turn:
     candidate_valid_topic: /control/candidate/obstacle/valid
     status_topic: /detect/avoidance/status
 
-    detect_threshold_cm: 40.0
-    clear_threshold_cm: 45.0
+    detect_threshold_cm: 60.0
+    clear_threshold_cm: 100.0
     consecutive_frames: 3
     rear_no_echo_is_clear: true
     full_steer_angle_deg: 25.0
@@ -43,8 +43,8 @@ yolo_obstacle_bbox_turn:
     publish_rate_hz: 30.0
 
     # raw 화면의 세로 경계선 비율. 0.25=1/4, 0.75=3/4 지점이다.
-    bbox_left_boundary_ratio: 0.25
-    bbox_right_boundary_ratio: 0.75
+    bbox_left_boundary_ratio: (0.33+0.25)/2.0
+    bbox_right_boundary_ratio: (0.66+0.75)/2.0
     # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
     # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
     bbox_exit_consecutive_frames: 3

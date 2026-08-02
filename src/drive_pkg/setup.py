@@ -27,8 +27,7 @@ setup(
             [
                 "resource/bev(0729).npz",
                 "resource/best.pt",
-                "resource/best_ver2.pt",
-                "resource/bev_params_0731.npz",
+                "resource/bev_params_0803.npz",
             ],
         ),
         (
