@@ -1735,19 +1735,23 @@ class SegmentationLaneProcessor:
             return None
         return dense_xs, dense_ys
 
-    @staticmethod
     def _offset_polyline_points(
+        self,
         xs: np.ndarray,
         ys: np.ndarray,
-        offset_px: float,
+        offset_m: float,
         direction: float,
         sample_step: int = 20,
         window: int = 30,
     ) -> Tuple[PointArray, PointArray]:
-        """Offset a polyline by its local normal direction, ported from
-        yolotl_ros2's ``offset_polyline_points``. Works off point-window
-        tangents rather than a fitted curve derivative, so it stays robust
-        where a quadratic fit would badly extrapolate."""
+        """Offset a polyline by a fixed metric normal distance.
+
+        Sparse normals are computed in metric space, made directionally
+        continuous, interpolated and smoothed as vectors, then normalized
+        again before applying ``offset_m`` to each original point.  Keeping
+        the point, direction and distance separate prevents interpolation
+        from shortening the requested half-lane-width offset on curves.
+        """
 
         if xs is None or ys is None or len(xs) < 2:
             return None, None
@@ -1762,38 +1766,88 @@ class SegmentationLaneProcessor:
         if indices[-1] != n - 1:
             indices = np.append(indices, n - 1)
 
-        sparse_xo: List[float] = []
-        sparse_yo: List[float] = []
+        ppm_x = self.config.pixels_per_meter_x
+        ppm_y = self.config.pixels_per_meter_y
+        sparse_nx_m: List[float] = []
+        sparse_ny_m: List[float] = []
         for i in indices:
             idx_prev = max(0, i - window)
             idx_next = min(n - 1, i + window)
             if idx_prev == idx_next:
-                dx, dy = 0.0, 1.0
+                tx_m, ty_m = 0.0, 1.0
             else:
-                dx = float(xs[idx_next] - xs[idx_prev])
-                dy = float(ys[idx_next] - ys[idx_prev])
-            norm = math.sqrt(dx * dx + dy * dy) + 1e-6
-            nx = dy / norm
-            ny = -dx / norm
-            sparse_xo.append(float(xs[i]) + direction * offset_px * nx)
-            sparse_yo.append(float(ys[i]) + direction * offset_px * ny)
+                tx_m = float(xs[idx_next] - xs[idx_prev]) / ppm_x
+                ty_m = float(ys[idx_next] - ys[idx_prev]) / ppm_y
+
+            tangent_length = math.hypot(tx_m, ty_m)
+            if tangent_length <= 1e-9:
+                if sparse_nx_m:
+                    nx_m = sparse_nx_m[-1]
+                    ny_m = sparse_ny_m[-1]
+                else:
+                    nx_m, ny_m = 1.0, 0.0
+            else:
+                nx_m = ty_m / tangent_length
+                ny_m = -tx_m / tangent_length
+
+            # A normal has two equivalent signs.  Keep adjacent sparse
+            # normals on the same hemisphere so interpolation cannot cancel
+            # two accidentally opposite vectors into a near-zero vector.
+            if sparse_nx_m:
+                normal_dot = (
+                    sparse_nx_m[-1] * nx_m
+                    + sparse_ny_m[-1] * ny_m
+                )
+                if normal_dot < 0.0:
+                    nx_m = -nx_m
+                    ny_m = -ny_m
+            sparse_nx_m.append(nx_m)
+            sparse_ny_m.append(ny_m)
 
         all_indices = np.arange(n)
-        out_xs = np.interp(all_indices, indices, sparse_xo).astype(
-            np.float32
-        )
-        out_ys = np.interp(all_indices, indices, sparse_yo).astype(
-            np.float32
-        )
+        normal_x_m = np.interp(
+            all_indices, indices, sparse_nx_m
+        ).astype(np.float64)
+        normal_y_m = np.interp(
+            all_indices, indices, sparse_ny_m
+        ).astype(np.float64)
 
-        if len(out_xs) >= 3:
+        # Smooth direction before applying the offset.  Smoothing the final
+        # x coordinates would change the metric distance again.
+        if n >= 3:
             k_size = 5
-            padded = np.pad(
-                out_xs, (k_size // 2, k_size // 2), mode="edge"
+            kernel = np.ones(k_size, dtype=np.float64) / k_size
+            pad = k_size // 2
+            normal_x_m = np.convolve(
+                np.pad(normal_x_m, (pad, pad), mode="edge"),
+                kernel,
+                mode="valid",
             )
-            out_xs = np.convolve(
-                padded, np.ones(k_size) / k_size, mode="valid"
-            ).astype(np.float32)
+            normal_y_m = np.convolve(
+                np.pad(normal_y_m, (pad, pad), mode="edge"),
+                kernel,
+                mode="valid",
+            )
+
+        normal_length = np.hypot(normal_x_m, normal_y_m)
+        invalid = ~np.isfinite(normal_length) | (normal_length <= 1e-9)
+        if np.any(invalid):
+            for bad_index in np.flatnonzero(invalid):
+                nearest = int(np.argmin(np.abs(indices - bad_index)))
+                normal_x_m[bad_index] = sparse_nx_m[nearest]
+                normal_y_m[bad_index] = sparse_ny_m[nearest]
+            normal_length = np.hypot(normal_x_m, normal_y_m)
+
+        normal_x_m /= normal_length
+        normal_y_m /= normal_length
+        out_xs = (
+            xs.astype(np.float64)
+            + direction * offset_m * normal_x_m * ppm_x
+        ).astype(np.float32)
+        out_ys = (
+            ys.astype(np.float64)
+            + direction * offset_m * normal_y_m * ppm_y
+        ).astype(np.float32)
         return out_xs, out_ys
 
     def _compute_fusion_centerline(
@@ -1802,7 +1856,7 @@ class SegmentationLaneProcessor:
         left_ys: np.ndarray,
         right_xs: np.ndarray,
         right_ys: np.ndarray,
-        offset_px: float,
+        offset_m: float,
         y_step: int = 1,
     ) -> Tuple[PointArray, PointArray]:
         """Fuse two boundary polylines into a centerline, ported from
@@ -1823,7 +1877,7 @@ class SegmentationLaneProcessor:
         )
 
         lx_off, ly_off = self._offset_polyline_points(
-            left_xs, left_ys, offset_px, direction=1.0
+            left_xs, left_ys, offset_m, direction=1.0
         )
         lx_off_dense, ly_off_dense = None, None
         if lx_off is not None and len(lx_off) > 1:
@@ -1836,7 +1890,7 @@ class SegmentationLaneProcessor:
             )
 
         rx_off, ry_off = self._offset_polyline_points(
-            right_xs, right_ys, offset_px, direction=-1.0
+            right_xs, right_ys, offset_m, direction=-1.0
         )
         rx_off_dense, ry_off_dense = None, None
         if rx_off is not None and len(rx_off) > 1:
@@ -1908,9 +1962,7 @@ class SegmentationLaneProcessor:
         if left is None and right is None:
             return None, "no_boundary"
 
-        offset_px = (
-            0.5 * self.config.lane_width_m * self.config.pixels_per_meter_x
-        )
+        offset_m = 0.5 * self.config.lane_width_m
         left_dense = self._densify_group_points(left)
         right_dense = self._densify_group_points(right)
 
@@ -1920,17 +1972,17 @@ class SegmentationLaneProcessor:
                 left_dense[1],
                 right_dense[0],
                 right_dense[1],
-                offset_px,
+                offset_m,
             )
             reason = "fused_boundaries"
         elif left_dense is not None:
             center_xs, center_ys = self._offset_polyline_points(
-                left_dense[0], left_dense[1], offset_px, direction=1.0
+                left_dense[0], left_dense[1], offset_m, direction=1.0
             )
             reason = "left_boundary_normal_offset"
         elif right_dense is not None:
             center_xs, center_ys = self._offset_polyline_points(
-                right_dense[0], right_dense[1], offset_px, direction=-1.0
+                right_dense[0], right_dense[1], offset_m, direction=-1.0
             )
             reason = "right_boundary_normal_offset"
         else:
