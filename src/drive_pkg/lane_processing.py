@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """BEV lane-mask path planner core, shared by path_plan.py and drive_main.py.
 
-The best1.pt model was trained on 640x640 BEV images with one ``lane`` class.
+The best_ver2.pt model was trained on 640x640 BEV lane images.
 Incoming 640x480 usb_cam frames are therefore warped to that training view
 before inference. Per-detection segmentation components are extracted,
 tracked frame to frame as left/right boundaries, and fused into a smoothed
@@ -40,7 +40,9 @@ def _default_bev_params_path() -> Path:
 
 
 def _default_model_path() -> Path:
-    source_path = Path(__file__).resolve().parent / "resource" / "best1.pt"
+    source_path = (
+        Path(__file__).resolve().parent / "resource" / "best_ver2.pt"
+    )
     if source_path.is_file():
         return source_path
 
@@ -50,7 +52,7 @@ def _default_model_path() -> Path:
         return (
             Path(get_package_share_directory("drive_pkg"))
             / "resource"
-            / "best1.pt"
+            / "best_ver2.pt"
         )
     except (ImportError, LookupError):
         return source_path

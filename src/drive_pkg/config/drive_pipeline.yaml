@@ -1,7 +1,7 @@
 drive_main:
   ros__parameters:
     # 현재 차량에서 실측한 YOLO 모델과 0731 BEV 보정값.
-    model_path: "src/drive_pkg/resource/best.pt"
+    model_path: "src/drive_pkg/resource/best_ver2.pt"
     bev_params: "src/drive_pkg/resource/bev_params_0731.npz"
     calibration_width: 640
     calibration_height: 480
@@ -27,9 +27,10 @@ drive_main:
     # BEV 640x640px 기준: 가로 1.02m, 세로 1.36m 실측(0731).
     pixels_per_meter_x: 627.5
     pixels_per_meter_y: 470.6
-    line_width_target_m: 0.050
+    # best_ver2 마스크 실측 중앙 폭(약 33.6mm)에 맞춘 후처리 기준.
+    line_width_target_m: 0.040
     line_width_tolerance_m: 0.015
-    line_width_recovery_tolerance_m: 0.017
+    line_width_recovery_tolerance_m: 0.020
     line_width_recovery_aspect_ratio: 1.20
     line_width_measurement_scale: 0.80
     # 횡단보도 흰 줄 오탐 방지: BEV상 가로(진행방향에 수직)가 세로보다
