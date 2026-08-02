@@ -1,6 +1,94 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""ROS usb_cam 실시간 BEV 설정 + 25 mm 체커보드 품질 검사 도구.
+
+준비:
+    1. Logitech C920은 보통 /dev/video2를 사용한다.
+    2. usb_cam이 /camera/lane/raw/compressed 토픽을 발행해야 한다.
+    3. 내부 코너 10x7, 한 칸 25 mm 체커보드를 평평한 바닥에 놓는다.
+
+실행 - 터미널 1 (C920 카메라 켜기):
+    cd /home/hanjingyu/dolbatS
+    source /opt/ros/humble/setup.bash
+    ros2 run usb_cam usb_cam_node_exe --ros-args \\
+      -p video_device:=/dev/video2 \\
+      -p image_width:=640 -p image_height:=480 -p framerate:=30.0 \\
+      -p io_method:=mmap -p pixel_format:=mjpeg2rgb \\
+      -p camera_name:=lane_camera -p frame_id:=lane_camera \\
+      -r image_raw:=/camera/lane/raw \\
+      -r image_raw/compressed:=/camera/lane/raw/compressed \\
+      -r camera_info:=/camera/lane/camera_info
+
+실행 - 터미널 2 (BEV 설정 도구):
+    cd /home/hanjingyu/dolbatS
+    source /opt/ros/humble/setup.bash
+    python3 utils/webcam_bev_drag_checkerboard_live.py \\
+      --topic /camera/lane/raw/compressed \\
+      --transport compressed
+
+사용 순서:
+    1. 원본 실시간 화면에서 체커보드 전체가 보이게 배치한다.
+    2. SPACE를 눌러 사진을 찍듯 현재 화면을 정지한다.
+    3. LB(좌하), RB(우하), LT(좌상), RT(우상) 순서로 클릭한다.
+       RB의 y는 LB에, RT의 y는 LT에 자동으로 맞춰진다.
+       원본 영상 바깥의 회색 여백도 클릭할 수 있으며 좌표는 음수 또는
+       640x480 범위 밖 값으로 저장되어 확장 BEV에 사용된다.
+    4. 네 점이 완성되면 정지 선택 창과 정지 BEV 체커보드 검사 창이
+       유지되고, 최신 원본 카메라와 실시간 BEV 창이 별도로 표시된다.
+    5. X/Y 비율은 1.0, 간격 CV와 직각 오차는 0에 가까울수록 좋다.
+    6. QUALITY PASS를 확인한 뒤 S를 눌러 NPZ와 보고서를 저장한다.
+
+BEV 검사 화면의 글자:
+    Checkerboard DETECTED
+        10x7 내부 코너 검출 성공 여부다.
+    Physical square
+        캘리브레이션에 저장된 실제 한 칸 크기이며 반드시 25.0 mm여야 한다.
+    X/Y px/square
+        BEV에서 체커보드 한 칸의 평균 가로/세로 픽셀 길이다.
+    X/Y CV
+        칸 간격의 변동계수다. 0%에 가까울수록 모든 칸 간격이 균일하다.
+    X/Y square difference
+        평균 가로와 세로 길이 차이다. 0%이면 한 칸이 정확한 정사각형이다.
+    Grid orthogonality error
+        가로·세로 격자가 90도에서 벗어난 각도다. 0도에 가까울수록 좋다.
+
+QUALITY PASS 기준:
+    가로/세로 한 칸 크기 차이 <= 2%
+    가로 간격 CV <= 5%
+    세로 간격 CV <= 5%
+    격자 직각 오차 <= 2도
+    metric BEV를 계산한 경우 목표 25 mm 배율 오차 <= 3%
+
+조정 요령:
+    가로/세로 크기 차이가 크면 ROI의 상·하단 폭 또는 높이를 조절한다.
+    간격 CV가 크면 체커보드가 휘었거나 바닥과 다른 평면에 있는지 확인한다.
+    직각 오차가 크면 좌우 점의 x를 조절해 가로·세로 격자를 직각으로 맞춘다.
+    체커보드는 주행 바닥과 같은 평면에 완전히 밀착해야 한다.
+
+키/마우스:
+    SPACE       화면 정지 또는 실시간 재개
+    왼쪽 클릭  새 점 선택 또는 기존 점 드래그
+    오른쪽 클릭 마지막 점 취소
+    R           네 점 초기화
+    S           강한 품질 재검사 후 저장
+    Q / ESC     종료
+
+기본 저장 결과:
+    utils/bev_params_y_auto.npz
+        주행용 bev_params_0731.npz와 동일하게 src_points, dst_points,
+        warp_w, warp_h 네 항목만 저장한다. 상세 측정값은 JSON/CSV에 저장한다.
+    utils/bev_preview_y_auto.jpg
+    utils/bev_checkerboard_analysis.jpg
+    utils/bev_checkerboard_report.json
+    utils/bev_checkerboard_spacing.csv
+
+주의:
+    확장 캔버스는 영상 밖 좌표로 homography를 외삽하기 위한 기능이다.
+    카메라가 실제로 촬영하지 않은 영역의 픽셀을 복원하지는 못하므로 선택
+    영역이 영상 밖으로 크게 나가면 BEV 가장자리가 검게 보일 수 있다.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -65,10 +153,15 @@ DEFAULT_MAX_OUTPUT_PIXELS = 1_500_000
 MIN_OUTPUT_SIDE = 96
 MAX_BEV_PREVIEW_WIDTH = 900
 MAX_BEV_PREVIEW_HEIGHT = 720
+DIRECT_PREVIEW_WIDTH = 640
+DIRECT_PREVIEW_HEIGHT = 640
+SELECTION_CANVAS_WIDTH = 1000
+SELECTION_CANVAS_HEIGHT = 800
 
 # 현재 프로젝트가 사용하는 체커보드 내부 코너 수.
 # 실제 값은 캘리브레이션 NPZ에서도 읽어 일치하는지 검증한다.
 EXPECTED_CHECKERBOARD_SIZE = (10, 7)
+EXPECTED_SQUARE_SIZE_MM = 25.0
 
 # 드래그 중 체커보드 검사 갱신 간격
 # 작을수록 자주 검사하지만 화면이 느려질 수 있음
@@ -629,7 +722,7 @@ def npz_integer(
 class WebcamBEVCheckerboardSetup:
     def __init__(self, arguments: argparse.Namespace) -> None:
         # 사용자가 직접 고르는 좌표 순서: 좌하, 우하, 좌상, 우상.
-        # 네 점은 카메라 기울어짐을 보존하기 위해 서로 독립적이다.
+        # 하단과 상단의 두 점은 각각 같은 원본 영상 y를 공유한다.
         self.src_points: list[tuple[int, int]] = []
 
         self.point_names = [
@@ -647,6 +740,7 @@ class WebcamBEVCheckerboardSetup:
         self.is_dragging = False
         self.active_point_index: int | None = None
         self.drag_original_point: tuple[int, int] | None = None
+        self.drag_original_points: list[tuple[int, int]] | None = None
         self.drag_added_new_point = False
 
         # 정지 원본에서 구한 체커보드 평면과 현재 네 점의 BEV 해.
@@ -693,6 +787,12 @@ class WebcamBEVCheckerboardSetup:
 
         self.image_width = npz_integer(calibration, "image_width")
         self.image_height = npz_integer(calibration, "image_height")
+        self.selection_offset_x = (
+            SELECTION_CANVAS_WIDTH - self.image_width
+        ) // 2
+        self.selection_offset_y = (
+            SELECTION_CANVAS_HEIGHT - self.image_height
+        ) // 2
         self.checkerboard_size = (
             npz_integer(calibration, "checkerboard_columns"),
             npz_integer(calibration, "checkerboard_rows"),
@@ -700,6 +800,16 @@ class WebcamBEVCheckerboardSetup:
         self.square_size_mm = float(
             npz_scalar(calibration, "square_size_mm")
         )
+        if not math.isclose(
+            self.square_size_mm,
+            EXPECTED_SQUARE_SIZE_MM,
+            rel_tol=0.0,
+            abs_tol=1.0e-6,
+        ):
+            raise ValueError(
+                "이 도구는 한 칸 25mm 체커보드용입니다: "
+                f"calibration={self.square_size_mm:g}mm"
+            )
 
         # 실시간 왜곡 보정용 맵
         self.map_x, self.map_y = cv2.initUndistortRectifyMap(
@@ -720,9 +830,13 @@ class WebcamBEVCheckerboardSetup:
                 "캘리브레이션으로 유효한 왜곡 보정 맵을 만들지 못했습니다."
             )
 
-        self.original_window = "Undistorted - Select 4 Independent BEV Points"
-        self.bev_window = "BEV + Checkerboard Inspection"
+        self.original_window = "Undistorted - Select Paired-Y BEV Points"
+        self.live_window = "Live Undistorted Camera"
+        self.bev_window = "BEV Snapshot + Checkerboard Inspection"
+        self.live_bev_window = "Live BEV Preview"
+        self.live_window_open = False
         self.bev_window_open = False
+        self.live_bev_window_open = False
         self.bev_window_image_shape: tuple[int, int] | None = None
         self.node: UsbCamTopicSubscriber | None = None
         self.last_remapped_serial = 0
@@ -904,13 +1018,21 @@ class WebcamBEVCheckerboardSetup:
         if not np.all(np.isfinite(source)):
             return "BEV 원본 좌표에 NaN 또는 inf가 있습니다."
 
+        minimum_x = -float(self.selection_offset_x)
+        maximum_x = float(
+            SELECTION_CANVAS_WIDTH - self.selection_offset_x - 1
+        )
+        minimum_y = -float(self.selection_offset_y)
+        maximum_y = float(
+            SELECTION_CANVAS_HEIGHT - self.selection_offset_y - 1
+        )
         if (
-            np.any(source[:, 0] < 0.0)
-            or np.any(source[:, 0] > self.image_width - 1)
-            or np.any(source[:, 1] < 0.0)
-            or np.any(source[:, 1] > self.image_height - 1)
+            np.any(source[:, 0] < minimum_x)
+            or np.any(source[:, 0] > maximum_x)
+            or np.any(source[:, 1] < minimum_y)
+            or np.any(source[:, 1] > maximum_y)
         ):
-            return "BEV 원본 좌표가 영상 범위를 벗어났습니다."
+            return "BEV 원본 좌표가 확장 선택 캔버스를 벗어났습니다."
 
         left_bottom, right_bottom, left_top, right_top = source
         left_center_x = float(
@@ -1016,6 +1138,37 @@ class WebcamBEVCheckerboardSetup:
             return None
         return index
 
+    def constrain_pair_y(
+        self,
+        index: int,
+        point: tuple[int, int],
+    ) -> tuple[int, int]:
+        """RB는 LB, RT는 LT와 같은 원본 영상 y를 사용한다."""
+
+        x, y = point
+        if index == 1 and len(self.src_points) >= 1:
+            y = self.src_points[0][1]
+        elif index == 3 and len(self.src_points) >= 3:
+            y = self.src_points[2][1]
+        return int(x), int(y)
+
+    def set_point_with_paired_y(
+        self,
+        index: int,
+        point: tuple[int, int],
+    ) -> None:
+        """선택점을 갱신하고 이미 존재하는 짝점의 y도 정렬한다."""
+
+        point = self.constrain_pair_y(index, point)
+        self.src_points[index] = point
+        _, y = point
+        if index == 0 and len(self.src_points) >= 2:
+            partner_x, _ = self.src_points[1]
+            self.src_points[1] = (partner_x, y)
+        elif index == 2 and len(self.src_points) >= 4:
+            partner_x, _ = self.src_points[3]
+            self.src_points[3] = (partner_x, y)
+
     def mouse_callback(
         self,
         event: int,
@@ -1024,7 +1177,7 @@ class WebcamBEVCheckerboardSetup:
         flags: int,
         param: object,
     ) -> None:
-        """LB, RB, LT, RT를 각각 배치하고 가까운 점을 독립 드래그한다."""
+        """LB/RB와 LT/RT의 y를 맞춰 네 BEV 점을 배치한다."""
         del param
 
         if not self.is_frozen:
@@ -1032,9 +1185,11 @@ class WebcamBEVCheckerboardSetup:
                 print("[WARNING] 먼저 SPACE를 눌러 화면을 멈추세요.")
             return
 
+        canvas_x = int(np.clip(x, 0, SELECTION_CANVAS_WIDTH - 1))
+        canvas_y = int(np.clip(y, 0, SELECTION_CANVAS_HEIGHT - 1))
         point = (
-            int(np.clip(x, 0, self.image_width - 1)),
-            int(np.clip(y, 0, self.image_height - 1)),
+            canvas_x - self.selection_offset_x,
+            canvas_y - self.selection_offset_y,
         )
 
         if event == cv2.EVENT_RBUTTONDOWN:
@@ -1048,7 +1203,9 @@ class WebcamBEVCheckerboardSetup:
             return
 
         if event == cv2.EVENT_LBUTTONDOWN:
+            self.drag_original_points = list(self.src_points)
             if len(self.src_points) < 4:
+                point = self.constrain_pair_y(len(self.src_points), point)
                 self.src_points.append(point)
                 self.active_point_index = len(self.src_points) - 1
                 self.drag_original_point = None
@@ -1070,7 +1227,7 @@ class WebcamBEVCheckerboardSetup:
                 self.drag_added_new_point = False
 
             self.is_dragging = True
-            self.src_points[self.active_point_index] = point
+            self.set_point_with_paired_y(self.active_point_index, point)
             self.mark_geometry_dirty()
 
         elif (
@@ -1079,7 +1236,10 @@ class WebcamBEVCheckerboardSetup:
             and (flags & cv2.EVENT_FLAG_LBUTTON)
         ):
             if self.active_point_index is not None:
-                self.src_points[self.active_point_index] = point
+                self.set_point_with_paired_y(
+                    self.active_point_index,
+                    point,
+                )
                 self.mark_geometry_dirty()
 
         elif (
@@ -1088,20 +1248,18 @@ class WebcamBEVCheckerboardSetup:
         ):
             self.is_dragging = False
             if self.active_point_index is not None:
-                self.src_points[self.active_point_index] = point
+                self.set_point_with_paired_y(
+                    self.active_point_index,
+                    point,
+                )
 
             if len(self.src_points) == 4:
                 geometry_error = self.source_geometry_error(self.src_points)
                 if geometry_error is not None:
                     if self.drag_added_new_point:
                         self.src_points.pop()
-                    elif (
-                        self.active_point_index is not None
-                        and self.drag_original_point is not None
-                    ):
-                        self.src_points[
-                            self.active_point_index
-                        ] = self.drag_original_point
+                    elif self.drag_original_points is not None:
+                        self.src_points = self.drag_original_points
                     print(f"[선택 취소] {geometry_error}")
                 else:
                     print("[네 점 확정]")
@@ -1121,6 +1279,7 @@ class WebcamBEVCheckerboardSetup:
 
             self.active_point_index = None
             self.drag_original_point = None
+            self.drag_original_points = None
             self.drag_added_new_point = False
             self.mark_geometry_dirty()
 
@@ -1697,12 +1856,20 @@ class WebcamBEVCheckerboardSetup:
     def read_undistorted_frame(
         self,
     ) -> np.ndarray | None:
-        """가장 최근의 새 ROS 프레임을 왜곡 보정한다."""
+        """선택 GUI용 프레임을 반환한다. 정지 중에는 고정 화면이다."""
+        live_frame = self.read_live_undistorted_frame()
         if self.is_frozen:
             if self.frozen_frame is None:
                 return None
 
             return self.frozen_frame
+
+        return live_frame
+
+    def read_live_undistorted_frame(
+        self,
+    ) -> np.ndarray | None:
+        """정지 상태와 무관하게 가장 최근 ROS 프레임을 왜곡 보정한다."""
 
         if self.node is None or self.node.latest_frame is None:
             return self.latest_frame
@@ -1827,28 +1994,121 @@ class WebcamBEVCheckerboardSetup:
             self.bev_window_image_shape = (height, width)
         cv2.imshow(self.bev_window, image)
 
+    def show_live_window(self, image: np.ndarray) -> None:
+        """네 점 확정 후 최신 왜곡 보정 원본을 별도 창에 표시한다."""
+
+        if self.live_window_open:
+            try:
+                if cv2.getWindowProperty(
+                    self.live_window,
+                    cv2.WND_PROP_VISIBLE,
+                ) < 1.0:
+                    self.live_window_open = False
+            except cv2.error:
+                self.live_window_open = False
+        if not self.live_window_open:
+            cv2.namedWindow(self.live_window, cv2.WINDOW_AUTOSIZE)
+            self.live_window_open = True
+        cv2.imshow(self.live_window, image)
+
+    def close_live_window(self) -> None:
+        if not self.live_window_open:
+            return
+        try:
+            cv2.destroyWindow(self.live_window)
+        except cv2.error:
+            pass
+        self.live_window_open = False
+
+    def show_live_bev_window(self, image: np.ndarray) -> None:
+        """현재 선택 좌표를 적용한 최신 BEV를 별도 창에 표시한다."""
+
+        if self.live_bev_window_open:
+            try:
+                if cv2.getWindowProperty(
+                    self.live_bev_window,
+                    cv2.WND_PROP_VISIBLE,
+                ) < 1.0:
+                    self.live_bev_window_open = False
+            except cv2.error:
+                self.live_bev_window_open = False
+        if not self.live_bev_window_open:
+            cv2.namedWindow(
+                self.live_bev_window,
+                cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO,
+            )
+            cv2.resizeWindow(
+                self.live_bev_window,
+                DIRECT_PREVIEW_WIDTH,
+                DIRECT_PREVIEW_HEIGHT,
+            )
+            self.live_bev_window_open = True
+        cv2.imshow(self.live_bev_window, image)
+
+    def close_live_bev_window(self) -> None:
+        if not self.live_bev_window_open:
+            return
+        try:
+            cv2.destroyWindow(self.live_bev_window)
+        except cv2.error:
+            pass
+        self.live_bev_window_open = False
+
+    def image_to_canvas_point(
+        self,
+        point: tuple[int, int] | np.ndarray,
+    ) -> tuple[int, int]:
+        """카메라 픽셀 좌표를 확장 선택 캔버스 좌표로 바꾼다."""
+
+        return (
+            int(round(float(point[0]))) + self.selection_offset_x,
+            int(round(float(point[1]))) + self.selection_offset_y,
+        )
+
     def draw_original_overlay(
         self,
         frame: np.ndarray,
     ) -> np.ndarray:
         """원본 보정 화면에 선택 ROI를 표시한다."""
-        display = frame.copy()
-        self.draw_grid(display)
+        camera_display = frame.copy()
+        self.draw_grid(camera_display)
+        display = np.full(
+            (SELECTION_CANVAS_HEIGHT, SELECTION_CANVAS_WIDTH, 3),
+            28,
+            dtype=np.uint8,
+        )
+        x0 = self.selection_offset_x
+        y0 = self.selection_offset_y
+        display[
+            y0 : y0 + self.image_height,
+            x0 : x0 + self.image_width,
+        ] = camera_display
+        cv2.rectangle(
+            display,
+            (x0, y0),
+            (x0 + self.image_width - 1, y0 + self.image_height - 1),
+            (180, 180, 180),
+            2,
+        )
 
         if (
             self.plane_model is not None
             and self.plane_model.corners is not None
         ):
+            shifted_corners = self.plane_model.corners.copy()
+            shifted_corners[:, 0, 0] += self.selection_offset_x
+            shifted_corners[:, 0, 1] += self.selection_offset_y
             cv2.drawChessboardCorners(
                 display,
                 self.checkerboard_size,
-                self.plane_model.corners,
+                shifted_corners,
                 True,
             )
 
         labels = ["LB", "RB", "LT", "RT"]
 
         for index, point in enumerate(self.src_points):
+            canvas_point = self.image_to_canvas_point(point)
             point_color = (
                 (0, 255, 255)
                 if index == self.active_point_index
@@ -1856,7 +2116,7 @@ class WebcamBEVCheckerboardSetup:
             )
             cv2.circle(
                 display,
-                point,
+                canvas_point,
                 7,
                 point_color,
                 -1,
@@ -1865,7 +2125,7 @@ class WebcamBEVCheckerboardSetup:
             cv2.putText(
                 display,
                 labels[index],
-                (point[0] + 8, point[1] - 8),
+                (canvas_point[0] + 8, canvas_point[1] - 8),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 point_color,
@@ -1875,10 +2135,10 @@ class WebcamBEVCheckerboardSetup:
 
         if len(self.src_points) == 4:
             polygon = np.array([
-                self.src_points[2],  # 좌상
-                self.src_points[3],  # 우상
-                self.src_points[1],  # 우하
-                self.src_points[0],  # 좌하
+                self.image_to_canvas_point(self.src_points[2]),  # 좌상
+                self.image_to_canvas_point(self.src_points[3]),  # 우상
+                self.image_to_canvas_point(self.src_points[1]),  # 우하
+                self.image_to_canvas_point(self.src_points[0]),  # 좌하
             ], dtype=np.int32)
 
             cv2.polylines(
@@ -1894,12 +2154,20 @@ class WebcamBEVCheckerboardSetup:
             )
 
         if self.bev_geometry is not None:
-            effective_polygon = np.rint(np.asarray([
-                self.bev_geometry.effective_src_points[2],
-                self.bev_geometry.effective_src_points[3],
-                self.bev_geometry.effective_src_points[1],
-                self.bev_geometry.effective_src_points[0],
-            ])).astype(np.int32)
+            effective_polygon = np.asarray([
+                self.image_to_canvas_point(
+                    self.bev_geometry.effective_src_points[2]
+                ),
+                self.image_to_canvas_point(
+                    self.bev_geometry.effective_src_points[3]
+                ),
+                self.image_to_canvas_point(
+                    self.bev_geometry.effective_src_points[1]
+                ),
+                self.image_to_canvas_point(
+                    self.bev_geometry.effective_src_points[0]
+                ),
+            ], dtype=np.int32)
             cv2.polylines(
                 display,
                 [effective_polygon],
@@ -2046,6 +2314,38 @@ class WebcamBEVCheckerboardSetup:
         )
 
         return bev, geometry.homography
+
+    def make_direct_preview_bev(
+        self,
+        frame: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """체커보드 평면과 무관하게 네 클릭점으로 즉시 BEV를 만든다."""
+
+        if len(self.src_points) != 4:
+            return None
+        if self.source_geometry_error(self.src_points) is not None:
+            return None
+        source = np.asarray(self.src_points, dtype=np.float32)
+        destination = np.asarray(
+            [
+                [0.0, DIRECT_PREVIEW_HEIGHT - 1.0],
+                [DIRECT_PREVIEW_WIDTH - 1.0, DIRECT_PREVIEW_HEIGHT - 1.0],
+                [0.0, 0.0],
+                [DIRECT_PREVIEW_WIDTH - 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        homography = cv2.getPerspectiveTransform(source, destination)
+        if not np.all(np.isfinite(homography)):
+            return None
+        bev = cv2.warpPerspective(
+            frame,
+            homography,
+            (DIRECT_PREVIEW_WIDTH, DIRECT_PREVIEW_HEIGHT),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        )
+        return bev, homography
 
     @staticmethod
     def make_statistics(
@@ -2406,6 +2706,10 @@ class WebcamBEVCheckerboardSetup:
                     f"QUALITY {'PASS' if not quality_errors else 'FAIL'}"
                 ),
                 (
+                    f"Physical square: {self.square_size_mm:.1f} mm | "
+                    "target X:Y = 1.0000"
+                ),
+                (
                     f"X: {float(metrics['horizontal_mean_px']):.2f} px/square "
                     f"CV {float(metrics['horizontal_cv_percent']):.2f}% "
                     f"[{metrics['horizontal_evaluation']}]"
@@ -2746,76 +3050,15 @@ class WebcamBEVCheckerboardSetup:
             + "\n",
         )
         self.save_spacing_csv()
+        # drive_pkg의 기존 bev_params_0731.npz와 키, shape, dtype을
+        # 동일하게 유지한다. 검사/캘리브레이션 메타데이터는 위에서 저장한
+        # JSON, CSV, TXT에 있으므로 주행용 NPZ에는 넣지 않는다.
         previous_bev_file = atomic_write_npz(
             self.output_npz,
             src_points=source_points,
-            selected_src_points=selected_source_points,
             dst_points=destination_points,
-            homography=homography,
-            warp_width=np.int32(geometry.warp_width),
-            warp_height=np.int32(geometry.warp_height),
-            calibration_width=np.int32(self.image_width),
-            calibration_height=np.int32(self.image_height),
-            checkerboard_size=np.asarray(
-                self.checkerboard_size,
-                dtype=np.int32,
-            ),
-            square_size_mm=np.float32(self.square_size_mm),
-            physical_width_mm=np.float64(
-                geometry.physical_width_mm
-            ),
-            physical_height_mm=np.float64(
-                geometry.physical_height_mm
-            ),
-            pixels_per_mm=np.float64(geometry.pixels_per_mm),
-            selected_metric_points_mm=np.asarray(
-                geometry.selected_metric_points_mm,
-                dtype=np.float64,
-            ),
-            effective_metric_points_mm=np.asarray(
-                geometry.effective_metric_points_mm,
-                dtype=np.float64,
-            ),
-            plane_to_image_homography=np.asarray(
-                plane_model.plane_to_image,
-                dtype=np.float64,
-            ),
-            image_to_plane_homography=np.asarray(
-                plane_model.image_to_plane,
-                dtype=np.float64,
-            ),
-            plane_reprojection_rms_px=np.float64(
-                plane_model.reprojection_rms_px
-            ),
-            plane_inlier_ratio=np.float64(
-                plane_model.inlier_ratio
-            ),
-            source_checker_mean_spacing_px=np.float64(
-                plane_model.checker_mean_spacing_px
-            ),
-            source_checker_area_px2=np.float64(
-                plane_model.checker_area_px2
-            ),
-            rectangle_snap_rms_mm=np.float64(
-                geometry.snap_rms_mm
-            ),
-            rectangle_snap_max_mm=np.float64(
-                geometry.snap_max_mm
-            ),
-            input_topic=np.asarray(self.topic),
-            input_transport=np.asarray(self.transport),
-            camera_frame_id=np.asarray(
-                self.node.latest_frame_id if self.node else ""
-            ),
-            camera_encoding=np.asarray(
-                self.node.latest_encoding if self.node else ""
-            ),
-            coordinate_space=np.asarray(
-                "full_undistorted_camera_image"
-            ),
-            selection_mode=np.asarray(
-                "independent_four_point_metric_checkerboard"
-            ),
+            warp_w=np.int64(geometry.warp_width),
+            warp_h=np.int64(geometry.warp_height),
         )
 
         print()
@@ -2888,6 +3131,7 @@ class WebcamBEVCheckerboardSetup:
         self.is_dragging = False
         self.active_point_index = None
         self.drag_original_point = None
+        self.drag_original_points = None
         self.drag_added_new_point = False
         self.bev_geometry = None
         self.geometry_error_message = None
@@ -2898,6 +3142,9 @@ class WebcamBEVCheckerboardSetup:
             self.plane_detection_attempted = False
 
         print("[초기화] 네 점과 BEV 영역을 지웠습니다.")
+
+        self.close_live_window()
+        self.close_live_bev_window()
 
         try:
             cv2.destroyWindow(self.bev_window)
@@ -2919,7 +3166,8 @@ class WebcamBEVCheckerboardSetup:
 
             print("[화면 정지]")
             print(
-                "LB, RB, LT, RT 순서로 네 점을 각각 클릭하세요. "
+                "LB, RB, LT, RT 순서로 네 점을 클릭하세요. "
+                "RB의 y는 LB에, RT의 y는 LT에 자동 정렬됩니다. "
                 "완료 후 각 점을 드래그해 수정할 수 있습니다."
             )
             self.ensure_plane_model(
@@ -3033,9 +3281,10 @@ class WebcamBEVCheckerboardSetup:
                 "1. 10x7 체커보드를 BEV 영역과 같은 평평한 바닥에 놓기"
             )
             print("2. 체커보드 전체가 보일 때 SPACE로 화면 정지")
-            print("3. LB, RB, LT, RT 순서로 네 점을 각각 클릭")
-            print("4. 필요하면 각 점을 독립적으로 드래그해 수정")
-            print("5. BEV 실제 비율과 10x7 격자 QUALITY PASS 확인")
+            print("3. LB, RB, LT, RT 순서로 클릭 (상·하단 y 자동 정렬)")
+            print("4. 필요하면 점을 드래그해 수정 (짝점 y도 함께 정렬)")
+            print("5. 정지 BEV에서 10x7 격자 QUALITY PASS 확인")
+            print("   동시에 별도 창에서 실시간 원본/BEV 확인")
             print("6. S를 눌러 강한 재검사 후 저장")
             print()
             print("R     : 다시 그리기")
@@ -3058,7 +3307,20 @@ class WebcamBEVCheckerboardSetup:
                     frame
                 )
 
+                live_frame = (
+                    self.latest_frame
+                    if self.is_frozen and self.latest_frame is not None
+                    else frame
+                )
+                if len(self.src_points) == 4:
+                    self.show_live_window(live_frame)
+                else:
+                    self.close_live_window()
+
+                # 체커보드 검사 BEV는 점을 선택한 정지 사진만 사용한다.
                 bev_data = self.make_bev(frame)
+                if bev_data is None and len(self.src_points) == 4:
+                    bev_data = self.make_direct_preview_bev(frame)
 
                 if bev_data is not None:
                     bev, _ = bev_data
@@ -3077,8 +3339,30 @@ class WebcamBEVCheckerboardSetup:
 
                     self.show_bev_window(analyzed_bev)
 
+                    live_bev_data = self.make_bev(live_frame)
+                    if live_bev_data is None:
+                        live_bev_data = self.make_direct_preview_bev(
+                            live_frame
+                        )
+                    if live_bev_data is not None:
+                        live_bev = live_bev_data[0].copy()
+                        cv2.putText(
+                            live_bev,
+                            "LIVE BEV",
+                            (15, 32),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (0, 255, 0),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                        self.show_live_bev_window(live_bev)
+                    else:
+                        self.close_live_bev_window()
+
                 else:
                     bev = None
+                    self.close_live_bev_window()
                     if self.bev_window_open:
                         try:
                             cv2.destroyWindow(self.bev_window)
