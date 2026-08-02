@@ -41,7 +41,7 @@ def generate_launch_description() -> LaunchDescription:
                     params_file,
                     {
                         "local_display": False,
-                        "image_topic": "/image_raw/compressed",
+                        "image_topic": "/camera/lane/raw/compressed",
                     },
                 ],
             ),
@@ -80,7 +80,7 @@ def generate_launch_description() -> LaunchDescription:
                             rate,
                             "--loop",
                             "--topics",
-                            "/image_raw/compressed",
+                            "/camera/lane/raw/compressed",
                         ],
                         output="screen",
                     )

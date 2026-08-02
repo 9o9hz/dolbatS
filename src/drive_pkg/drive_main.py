@@ -148,23 +148,25 @@ class LaneDriveNode(Node):
             "min_group_area": 500,
             "dashed_piece_threshold": 2,
             "crosswalk_max_aspect_ratio": 1.50,
+            "crosswalk_regular_min_groups": 3,
+            "crosswalk_spacing_tolerance_ratio": 0.25,
             "prefer_solid_when_dashed": True,
             "initial_lane": "lane_2",
             "lane_state_confirm_frames": 3,
-            "lane_track_max_age_frames": 5,
-            "lane_track_match_threshold_px": 50.0,
+            "lane_track_max_age_frames": 2,
+            "lane_track_match_threshold_px": 65.0,
             "solid_enter_frames": 4,
             "solid_exit_frames": 6,
             "path_top_y": 180,
             "path_bottom_margin": 30,
             "path_step_px": 10,
             "path_resample_step_px": 5,
-            "path_spline_smooth_factor": 10.0,
+            "path_spline_smooth_factor": 5.0,
             "path_spline_points": 100,
-            "path_ema_alpha": 0.20,
-            "path_transition_blend_frames": 10,
-            "max_path_lateral_step_m": 0.02,
-            "max_missing_frames": 12,
+            "path_ema_alpha": 0.75,
+            "path_transition_blend_frames": 1,
+            "max_path_lateral_step_m": 0.15,
+            "max_missing_frames": 2,
             "bbox_close_ksize": 5,
             "path_topic": "/lane/path",
             "debug_topic": "/lane/path/debug/compressed",
@@ -239,6 +241,12 @@ class LaneDriveNode(Node):
             ),
             crosswalk_max_aspect_ratio=float(
                 parameter("crosswalk_max_aspect_ratio")
+            ),
+            crosswalk_regular_min_groups=int(
+                parameter("crosswalk_regular_min_groups")
+            ),
+            crosswalk_spacing_tolerance_ratio=float(
+                parameter("crosswalk_spacing_tolerance_ratio")
             ),
             prefer_solid_when_dashed=bool(
                 parameter("prefer_solid_when_dashed")

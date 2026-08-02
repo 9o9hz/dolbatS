@@ -36,6 +36,11 @@ drive_main:
     # 이 배율 이상 넓으면 차선 후보에서 제외한다. 모델에 crosswalk
     # 클래스가 없어 흰 페인트를 dashed/solid로 오분류하는 걸 기하학적으로 거른다.
     crosswalk_max_aspect_ratio: 1.50
+    # 종류와 무관하게 차선처럼 보이는 그룹이 좌우로 일정 간격을 두고 3개 이상
+    # 반복되면 횡단보도 오검출로 보고 군집의 가장 오른쪽 그룹 하나만 사용한다.
+    # 각 간격은 전체 간격 중앙값에서 25% 이내여야 한다.
+    crosswalk_regular_min_groups: 3
+    crosswalk_spacing_tolerance_ratio: 0.25
     lane_width_m: 0.85
     # 둘 이상의 경계를 함께 사용할 때 허용하는 최소 중심 간격.
     min_boundary_spacing_m: 0.80
@@ -60,8 +65,10 @@ drive_main:
     prefer_solid_when_dashed: true
     initial_lane: "lane_2"
     lane_state_confirm_frames: 3
-    lane_track_max_age_frames: 5
-    lane_track_match_threshold_px: 50.0
+    # 순간 오검출은 곡선 연속성으로 거르고, 사라진 경계는 2프레임 뒤 폐기한다.
+    lane_track_max_age_frames: 2
+    # S자에서 같은 물리 차선의 프레임 간 곡률 이동을 허용한다.
+    lane_track_match_threshold_px: 65.0
     solid_enter_frames: 4
     solid_exit_frames: 6
 
@@ -72,16 +79,16 @@ drive_main:
     path_resample_step_px: 5
     # 중심 경로는 cubic B-spline으로 생성한다. smooth_factor가 클수록
     # 검출점의 잔떨림을 더 강하게 평활화한다.
-    path_spline_smooth_factor: 10.0
+    path_spline_smooth_factor: 5.0
     path_spline_points: 100
-    # 시간축 응답성 튜닝: 새 검출 경로를 55% 반영하고, 경로 소스가
-    # 바뀔 때도 2프레임 안에 전환한다. 급커브 추종을 막지 않도록
+    # 시간축 응답성 튜닝: 새 검출 경로를 75% 반영하고, 경로 소스가
+    # 바뀌면 즉시 전환한다. 급커브 추종을 막지 않도록
     # 횡방향 변화 제한은 프레임당 10 cm로 완화한다.
-    path_ema_alpha: 0.55
-    path_transition_blend_frames: 2
-    max_path_lateral_step_m: 0.10
+    path_ema_alpha: 0.75
+    path_transition_blend_frames: 1
+    max_path_lateral_step_m: 0.15
     # 검출 누락 시 오래된 경로를 과도하게 유지하지 않는다.
-    max_missing_frames: 4
+    max_missing_frames: 2
 
     path_topic: "/lane/path"
     debug_topic: "/lane/path/debug/compressed"

@@ -165,6 +165,78 @@ class LaneTopologyTest(unittest.TestCase):
         self.assertIs(selected_left, left)
         self.assertIsNone(selected_right)
 
+    def test_lane2_dashed_fallback_uses_strongest_not_nearest(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(warp_width=500, initial_lane="lane_2"),
+        )
+        stronger_far = group(80.0, True)
+        weaker_near = group(220.0, True)
+        for piece in stronger_far["pieces"]:
+            piece.update(
+                semantic_type="DASHED",
+                semantic_confidence=0.99,
+            )
+        for piece in weaker_near["pieces"]:
+            piece.update(
+                semantic_type="DASHED",
+                semantic_confidence=0.70,
+            )
+
+        selected_left, selected_right, mode, _ = (
+            processor._choose_boundaries([stronger_far, weaker_near])
+        )
+
+        self.assertIs(selected_left, stronger_far)
+        self.assertIsNone(selected_right)
+        self.assertEqual(mode, "dashed_detected_no_solid")
+
+    def test_boundary_reliability_uses_best_original_confidence(self):
+        processor = SegmentationLaneProcessor(None, LaneConfig())
+        contains_full_confidence = group(80.0, True)
+        contains_full_confidence["pieces"][0].update(
+            semantic_type="DASHED",
+            semantic_confidence=1.0,
+        )
+        contains_full_confidence["pieces"][1].update(
+            semantic_type="DASHED",
+            semantic_confidence=0.40,
+        )
+        consistent_but_weaker = group(220.0, True)
+        for piece in consistent_but_weaker["pieces"]:
+            piece.update(
+                semantic_type="DASHED",
+                semantic_confidence=0.80,
+            )
+
+        self.assertGreater(
+            processor._group_reliability(contains_full_confidence),
+            processor._group_reliability(consistent_but_weaker),
+        )
+
+    def test_new_track_uses_strongest_not_nearest(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(warp_width=500),
+        )
+        stronger_far = group(80.0, False)
+        weaker_near = group(220.0, False)
+        stronger_far["pieces"][0].update(
+            semantic_type="SOLID",
+            semantic_confidence=0.99,
+        )
+        weaker_near["pieces"][0].update(
+            semantic_type="SOLID",
+            semantic_confidence=0.70,
+        )
+
+        selected_left, selected_right = processor._update_lane_tracks(
+            [stronger_far, weaker_near]
+        )
+
+        self.assertIs(selected_left, stronger_far)
+        self.assertIsNone(selected_right)
+
     def test_horizontal_crosswalk_candidate_is_rejected(self):
         processor = SegmentationLaneProcessor(
             None,
@@ -190,6 +262,80 @@ class LaneTopologyTest(unittest.TestCase):
             processor._filter_crosswalk_candidates([lane]), [lane]
         )
 
+    def test_three_regular_lane_groups_keep_rightmost_edge(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                crosswalk_regular_min_groups=3,
+                crosswalk_spacing_tolerance_ratio=0.25,
+            ),
+        )
+        groups = [group(100.0, False), group(180.0, False), group(260.0, False)]
+
+        self.assertEqual(
+            processor._filter_crosswalk_candidates(groups), [groups[-1]]
+        )
+
+    def test_irregular_lane_groups_are_preserved(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                crosswalk_regular_min_groups=3,
+                crosswalk_spacing_tolerance_ratio=0.25,
+            ),
+        )
+        groups = [
+            group(100.0, False),
+            group(180.0, False),
+            group(340.0, False),
+        ]
+
+        self.assertEqual(
+            processor._filter_crosswalk_candidates(groups), groups
+        )
+
+    def test_regular_mixed_topology_keeps_rightmost_edge(self):
+        processor = SegmentationLaneProcessor(None, LaneConfig())
+        left = group(20.0, False)
+        dashed = group(200.0, True)
+        right = group(380.0, False)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED",
+                semantic_confidence=0.9,
+            )
+
+        groups = [left, dashed, right]
+        self.assertEqual(
+            processor._filter_crosswalk_candidates(groups), [right]
+        )
+
+    def test_regular_dashed_cluster_is_filtered_beside_solid(self):
+        processor = SegmentationLaneProcessor(None, LaneConfig())
+        dashed_groups = [
+            group(80.0, True),
+            group(140.0, True),
+            group(200.0, True),
+        ]
+        for dashed in dashed_groups:
+            for piece in dashed["pieces"]:
+                piece.update(
+                    semantic_type="DASHED",
+                    semantic_confidence=0.9,
+                )
+        solid = group(400.0, False)
+        solid["pieces"][0].update(
+            semantic_type="SOLID",
+            semantic_confidence=0.95,
+        )
+
+        self.assertEqual(
+            processor._filter_crosswalk_candidates(
+                dashed_groups + [solid]
+            ),
+            [dashed_groups[-1], solid],
+        )
+
     def test_solid_dashed_solid_respects_latched_lane(self):
         processor = SegmentationLaneProcessor(
             None,
@@ -203,6 +349,11 @@ class LaneTopologyTest(unittest.TestCase):
         left = group(20.0, False)
         dashed = group(200.0, True)
         right = group(380.0, False)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED",
+                semantic_confidence=0.9,
+            )
 
         selected_left, selected_right, mode, _ = (
             processor._choose_boundaries([left, dashed, right])

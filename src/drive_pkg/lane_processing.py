@@ -122,23 +122,25 @@ class LaneConfig:
     min_group_area: int = 500
     dashed_piece_threshold: int = 2
     crosswalk_max_aspect_ratio: float = 1.50
+    crosswalk_regular_min_groups: int = 3
+    crosswalk_spacing_tolerance_ratio: float = 0.25
     prefer_solid_when_dashed: bool = True
     initial_lane: str = "auto"
     lane_state_confirm_frames: int = 3
-    lane_track_max_age_frames: int = 7
-    lane_track_match_threshold_px: float = 90.0
+    lane_track_max_age_frames: int = 2
+    lane_track_match_threshold_px: float = 65.0
     solid_enter_frames: int = 4
     solid_exit_frames: int = 6
     path_top_y: int = 180
     path_bottom_margin: int = 30
     path_step_px: int = 10
     path_resample_step_px: int = 5
-    path_spline_smooth_factor: float = 10.0
+    path_spline_smooth_factor: float = 5.0
     path_spline_points: int = 100
-    path_ema_alpha: float = 0.35
-    path_transition_blend_frames: int = 6
-    max_path_lateral_step_m: float = 0.04
-    max_missing_frames: int = 8
+    path_ema_alpha: float = 0.75
+    path_transition_blend_frames: int = 1
+    max_path_lateral_step_m: float = 0.15
+    max_missing_frames: int = 2
     # Morphological close kernel size used when isolating one detection's
     # largest mask component within its own bounding box.
     bbox_close_ksize: int = 5
@@ -443,6 +445,14 @@ class SegmentationLaneProcessor:
         if cfg.crosswalk_max_aspect_ratio <= 0.0:
             raise ValueError(
                 "crosswalk_max_aspect_ratio must be positive"
+            )
+        if cfg.crosswalk_regular_min_groups < 3:
+            raise ValueError(
+                "crosswalk_regular_min_groups must be at least 3"
+            )
+        if not 0.0 <= cfg.crosswalk_spacing_tolerance_ratio < 1.0:
+            raise ValueError(
+                "crosswalk_spacing_tolerance_ratio must be in [0, 1)"
             )
         if str(cfg.initial_lane).strip().lower() not in (
             "auto",
@@ -1042,10 +1052,15 @@ class SegmentationLaneProcessor:
     def _group_reliability(
         self, group: LaneGroup
     ) -> Tuple[float, float, float]:
-        _, confidence, source = self._group_type(group)
+        lane_type, _, source = self._group_type(group)
+        matching_confidences = [
+            float(piece.get("semantic_confidence", 0.0))
+            for piece in group["pieces"]
+            if piece.get("semantic_type") == lane_type
+        ]
         semantic_score = (
-            float(confidence)
-            if source == "yolo" and confidence is not None
+            max(matching_confidences, default=0.0)
+            if source == "yolo"
             else 0.0
         )
         return (
@@ -1170,7 +1185,7 @@ class SegmentationLaneProcessor:
             return "lane_2"
 
         center_x = self.config.warp_width * 0.5
-        nearest_groups: Dict[str, LaneGroup] = {}
+        strongest_groups: Dict[str, LaneGroup] = {}
         for side in ("left", "right"):
             candidates = [
                 group
@@ -1179,21 +1194,19 @@ class SegmentationLaneProcessor:
                 and self._group_has_path_overlap(group)
             ]
             if candidates:
-                nearest_groups[side] = min(
+                strongest_groups[side] = max(
                     candidates,
-                    key=lambda group: abs(
-                        float(group["x_ref"]) - center_x
-                    ),
+                    key=self._group_reliability,
                 )
 
-        if "left" not in nearest_groups or "right" not in nearest_groups:
+        if "left" not in strongest_groups or "right" not in strongest_groups:
             return None
 
         left_is_dashed = self._group_is_dashed(
-            nearest_groups["left"]
+            strongest_groups["left"]
         )
         right_is_dashed = self._group_is_dashed(
-            nearest_groups["right"]
+            strongest_groups["right"]
         )
         if not left_is_dashed and right_is_dashed:
             return "lane_1"
@@ -1255,12 +1268,59 @@ class SegmentationLaneProcessor:
     def _filter_crosswalk_candidates(
         self, groups: List[LaneGroup]
     ) -> List[LaneGroup]:
-        """Remove horizontal crosswalk stripes before boundary selection."""
+        """Remove horizontal stripes and collapse regular false lane rows."""
 
-        return [
+        longitudinal_groups = [
             group
             for group in groups
             if not self._group_is_crosswalk_shape(group)
+        ]
+        if (
+            len(longitudinal_groups)
+            < self.config.crosswalk_regular_min_groups
+        ):
+            return longitudinal_groups
+
+        ordered = sorted(
+            longitudinal_groups,
+            key=lambda group: float(group["x_ref"]),
+        )
+        minimum = self.config.crosswalk_regular_min_groups
+        best_cluster: List[LaneGroup] = []
+        best_variation = float("inf")
+        for start in range(len(ordered)):
+            for end in range(start + minimum, len(ordered) + 1):
+                candidate = ordered[start:end]
+                spacings = np.diff(
+                    [float(group["x_ref"]) for group in candidate]
+                )
+                median_spacing = float(np.median(spacings))
+                if median_spacing <= 0.0:
+                    continue
+                variation = float(
+                    np.max(np.abs(spacings - median_spacing))
+                    / median_spacing
+                )
+                if (
+                    variation
+                    <= self.config.crosswalk_spacing_tolerance_ratio
+                    and (
+                        len(candidate) > len(best_cluster)
+                        or (
+                            len(candidate) == len(best_cluster)
+                            and variation < best_variation
+                        )
+                    )
+                ):
+                    best_cluster = candidate
+                    best_variation = variation
+
+        removed_ids = {id(group) for group in best_cluster[:-1]}
+
+        return [
+            group
+            for group in longitudinal_groups
+            if id(group) not in removed_ids
         ]
 
     def _group_match_distance(
@@ -1380,7 +1440,6 @@ class SegmentationLaneProcessor:
                     track["group"] = None
                     track["age"] = 0
 
-        center_x = self.config.warp_width * 0.5
         for side in ("left", "right"):
             track = self._tracked_lanes[side]
             if track["group"] is not None:
@@ -1394,11 +1453,9 @@ class SegmentationLaneProcessor:
             ]
             if not candidates:
                 continue
-            initialized = min(
+            initialized = max(
                 candidates,
-                key=lambda group: abs(
-                    float(group["x_ref"]) - center_x
-                ),
+                key=self._group_reliability,
             )
             track["group"] = initialized
             track["age"] = 0
@@ -1596,49 +1653,6 @@ class SegmentationLaneProcessor:
                 "invalid_spacing_yolo_confidence",
                 dashed_region_count,
             )
-
-        if self._current_lane in ("lane_1", "lane_2"):
-            center_x = self.config.warp_width * 0.5
-            dashed_candidates = [
-                group
-                for group in groups
-                if self._group_is_dashed(group)
-                and self._group_has_path_overlap(group)
-            ]
-            if self._current_lane == "lane_2":
-                left_dashed = [
-                    group
-                    for group in dashed_candidates
-                    if float(group["x_ref"]) < center_x
-                ]
-                if left_dashed:
-                    self._using_tracked_boundary = False
-                    return (
-                        max(
-                            left_dashed,
-                            key=lambda group: float(group["x_ref"]),
-                        ),
-                        None,
-                        "lane2_dashed_left_boundary_hold",
-                        dashed_region_count,
-                    )
-            else:
-                right_dashed = [
-                    group
-                    for group in dashed_candidates
-                    if float(group["x_ref"]) >= center_x
-                ]
-                if right_dashed:
-                    self._using_tracked_boundary = False
-                    return (
-                        None,
-                        min(
-                            right_dashed,
-                            key=lambda group: float(group["x_ref"]),
-                        ),
-                        "lane1_dashed_right_boundary_hold",
-                        dashed_region_count,
-                    )
 
         left, right = self._filter_boundary_spacing(
             *self._update_lane_tracks(groups)
