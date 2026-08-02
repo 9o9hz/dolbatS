@@ -34,7 +34,10 @@ const int ULTRASONIC_TRIG_PINS[ULTRASONIC_SENSOR_COUNT] = {
 };
 
 const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
-const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 30;
+const int ULTRASONIC_FAILURE_THRESHOLD = 3;
+// 네 센서를 순차 측정한다. 센서 사이에 45 ms를 두면 각 센서는
+// 에코 대기 시간을 포함해 약 5~6 Hz로 새 값을 측정한다.
+const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 45;
 
 enum UltrasonicState {
   ULTRASONIC_IDLE,
@@ -50,6 +53,9 @@ int activeUltrasonicSensor = 0;
 int nextUltrasonicSensor = 0;
 float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
   -1.0f, -1.0f, -1.0f, -1.0f
+};
+int ultrasonicConsecutiveFailures[ULTRASONIC_SENSOR_COUNT] = {
+  0, 0, 0, 0
 };
 
 // ---------------- Steering Sensor ----------------
@@ -94,6 +100,8 @@ unsigned long lastValidDriveCommandMs = 0;
 bool hasReceivedDriveCommand = false;
 bool driveWatchdogStopped = false;
 
+// 측정 사이에는 마지막 초음파 값을 유지하고, ROS bridge가
+// /ultrasonic/* 토픽을 100 Hz로 발행할 수 있게 텔레메트리를 보낸다.
 const unsigned long TELEMETRY_INTERVAL_MS = 10;
 unsigned long lastTelemetryMs = 0;
 
@@ -161,7 +169,20 @@ void startUltrasonicMeasurement(int sensor) {
 }
 
 void finishUltrasonicMeasurement(float distanceCm) {
-  ultrasonicDistanceCm[activeUltrasonicSensor] = distanceCm;
+  if (distanceCm >= 0.0f) {
+    ultrasonicDistanceCm[activeUltrasonicSensor] = distanceCm;
+    ultrasonicConsecutiveFailures[activeUltrasonicSensor] = 0;
+  }
+  else {
+    int &failureCount =
+      ultrasonicConsecutiveFailures[activeUltrasonicSensor];
+    if (failureCount < ULTRASONIC_FAILURE_THRESHOLD) {
+      failureCount++;
+    }
+    if (failureCount >= ULTRASONIC_FAILURE_THRESHOLD) {
+      ultrasonicDistanceCm[activeUltrasonicSensor] = -1.0f;
+    }
+  }
 
   ultrasonicState = ULTRASONIC_IDLE;
   lastUltrasonicTriggerMs = millis();
