@@ -177,9 +177,12 @@ class PurePursuitController:
     def set_current_throttle(self, throttle: float) -> None:
         if not math.isfinite(throttle):
             return
+        # This is a normalized command proxy because the vehicle currently
+        # has no wheel-speed/odometry topic.  Use magnitude so reverse and
+        # forward commands with the same requested speed get the same Ld.
         self.current_throttle = float(
             np.clip(
-                throttle,
+                abs(throttle),
                 self.ld_throttle_min,
                 self.ld_throttle_max,
             )
@@ -239,21 +242,13 @@ class PurePursuitController:
                 self.max_steer_deg,
             )
         )
-        lookahead_m = self._dynamic_lookahead()
-        visual_target_index = self._find_lookahead_index(
-            points, distances, lookahead_m
-        )
-        visual_target_distance = max(
-            float(distances[visual_target_index]),
-            1e-3,
-        )
         return SteeringCommand(
             path_valid=True,
             reason="ok",
             steering_deg=self.last_steering_deg,
             lookahead_m=lookahead_m,
-            target_distance_m=visual_target_distance,
-            target_index=visual_target_index,
+            target_distance_m=target_distance,
+            target_index=target_index,
         )
 
     def stop(self, reason: str) -> SteeringCommand:
@@ -330,16 +325,23 @@ class PurePursuitController:
     def _dynamic_lookahead(self) -> float:
         if self.lookahead_min_m == self.lookahead_max_m:
             return self.lookahead_min_m
-        steering_ratio = float(
+
+        # Schedule Ld from the requested speed proxy, not from the previous
+        # steering output.  Steering-based scheduling formed a positive
+        # feedback loop: more steering -> shorter Ld -> more steering.
+        throttle_ratio = float(
             np.clip(
-                abs(self.last_steering_deg) / self.max_steer_deg,
+                (
+                    self.current_throttle - self.ld_throttle_min
+                )
+                / (self.ld_throttle_max - self.ld_throttle_min),
                 0.0,
                 1.0,
             )
         )
-        lookahead = self.lookahead_max_m - (
+        lookahead = self.lookahead_min_m + (
             self.lookahead_max_m - self.lookahead_min_m
-        ) * steering_ratio
+        ) * throttle_ratio
         return float(
             np.clip(
                 lookahead,

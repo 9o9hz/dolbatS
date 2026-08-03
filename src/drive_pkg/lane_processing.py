@@ -1875,22 +1875,18 @@ class SegmentationLaneProcessor:
         offset_m: float,
         y_step: int = 1,
     ) -> Tuple[PointArray, PointArray]:
-        """Fuse two boundary polylines into a centerline, ported from
-        yolotl_ros2's ``compute_fusion_centerline``: y-wise average where
-        both boundaries are present, normal offset where only one is, and a
-        moving-average smoothing pass over the seam between the two."""
+        """Fuse metric normal-offset centerline estimates from both sides.
+
+        Averaging the raw left/right boundary x coordinates at the same BEV
+        y is only correct on a straight.  On a curve those samples are at
+        different arc stations and their midpoint is biased toward the
+        inside of the turn.  Offset each boundary by half the measured lane
+        width first; both results then describe the same physical centerline
+        and can safely be fused on a common y grid.
+        """
 
         if left_xs is None or right_xs is None:
             return None, None
-
-        y_min_l, y_max_l = int(np.min(left_ys)), int(np.max(left_ys))
-        lx_dense, ly_dense = self._resample_polyline_by_y(
-            left_xs, left_ys, y_min_l, y_max_l, y_step
-        )
-        y_min_r, y_max_r = int(np.min(right_ys)), int(np.max(right_ys))
-        rx_dense, ry_dense = self._resample_polyline_by_y(
-            right_xs, right_ys, y_min_r, y_max_r, y_step
-        )
 
         lx_off, ly_off = self._offset_polyline_points(
             left_xs, left_ys, offset_m, direction=1.0
@@ -1918,20 +1914,18 @@ class SegmentationLaneProcessor:
                 y_step,
             )
 
-        dict_lx = dict(zip(ly_dense, lx_dense)) if ly_dense is not None else {}
-        dict_rx = dict(zip(ry_dense, rx_dense)) if ry_dense is not None else {}
-        dict_lx_off = (
+        left_center = (
             dict(zip(ly_off_dense, lx_off_dense))
             if ly_off_dense is not None
             else {}
         )
-        dict_rx_off = (
+        right_center = (
             dict(zip(ry_off_dense, rx_off_dense))
             if ry_off_dense is not None
             else {}
         )
 
-        all_y = set(dict_lx.keys()) | set(dict_rx.keys())
+        all_y = set(left_center.keys()) | set(right_center.keys())
         if not all_y:
             return None, None
         min_y, max_y = int(min(all_y)), int(max(all_y))
@@ -1940,15 +1934,17 @@ class SegmentationLaneProcessor:
         merged_ys: List[float] = []
         for y_val in range(min_y, max_y + 1, y_step):
             y_f = float(y_val)
-            has_left = y_f in dict_lx
-            has_right = y_f in dict_rx
+            has_left = y_f in left_center
+            has_right = y_f in right_center
             center_x: Optional[float] = None
             if has_left and has_right:
-                center_x = (dict_lx[y_f] + dict_rx[y_f]) / 2.0
-            elif has_left and y_f in dict_lx_off:
-                center_x = dict_lx_off[y_f]
-            elif has_right and y_f in dict_rx_off:
-                center_x = dict_rx_off[y_f]
+                center_x = (
+                    left_center[y_f] + right_center[y_f]
+                ) / 2.0
+            elif has_left:
+                center_x = left_center[y_f]
+            elif has_right:
+                center_x = right_center[y_f]
             if center_x is not None:
                 merged_xs.append(center_x)
                 merged_ys.append(y_f)
