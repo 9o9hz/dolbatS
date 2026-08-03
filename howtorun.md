@@ -49,6 +49,10 @@ ros2 run control_pkg keyboard_drive_toggle
 ```
 ros2 launch detect_pkg obstacle_detection.launch.py
 ```
+```
+ros2 launch detect_pkg obstacle_detection_bbox.launch.py
+```
+
 
 # T8. traffic_light
 ```
