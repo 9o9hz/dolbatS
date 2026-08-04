@@ -10,6 +10,7 @@ setup(
     version="0.0.1",
     py_modules=[
         "serial_bridge",
+        "serial_protocol",
         "manual_cmd_vel",
         "keyboard_drive_toggle",
     ],
