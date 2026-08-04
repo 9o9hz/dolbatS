@@ -24,9 +24,9 @@ drive_main:
     instances_topic: "/lane/detection/instances"
 
     # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
-    # BEV 640x640px 기준: 가로 1.02m, 세로 1.36m 실측(0731).
-    pixels_per_meter_x: 627.5
-    pixels_per_meter_y: 470.6
+    # BEV 640x640px 기준: 가로 1.20m, 세로 1.20m.
+    pixels_per_meter_x: 533.333333
+    pixels_per_meter_y: 533.333333
     # best_ver2 마스크 실측 중앙 폭(약 33.6mm)에 맞춘 후처리 기준.
     line_width_target_m: 0.040
     line_width_tolerance_m: 0.015
@@ -129,13 +129,30 @@ pure_pursuit:
     ld_throttle_max: 0.8
     lookahead_min_m: 1.3
     lookahead_max_m: 1.6
-    # lookahead 목표점 탐색 방식: "simple"(|거리-LD| 최소, 로컬 기본값) / 
-    # "arc_length"(가장 가까운 점부터 누적 호길이로 LD 지점 탐색).
-    lookahead_search_mode: "simple"
+    # 기존 simple/arc_length는 롤백용이다. continuous_arc_length는 Ld가
+    # 통과하는 경로 선분 안을 보간해 목표점의 인덱스 스냅을 없앤다.
+    lookahead_search_mode: "continuous_arc_length"
 
+    # 속도 명령 기반 Ld를 유지하되 커브에서는 곡률에 비례해 최대 15cm
+    # 줄인다. 곡률은 경로 위 15cm 간격의 세 점 원곡률 중앙값을 사용한다.
+    curvature_lookahead_enabled: true
+    curvature_full_scale_1pm: 0.50
+    curvature_reduction_max_m: 0.15
+    curvature_sample_gap_m: 0.15
+    # throttle/곡률 변화가 Ld에 즉시 반영되지 않도록 실제 dt 기반으로 필터.
+    lookahead_filter_tau_sec: 0.25
+
+    # 새 limiter가 켜지면 아래 EMA/프레임당 제한은 롤백용으로만 남고
+    # 실제 조향 제한에는 사용되지 않는다.
     steering_ema_alpha: 0.35
     steering_deadband_deg: 0.3
     max_steering_change_deg: 4.0
+    time_based_steering_limit_enabled: true
+    nominal_control_rate_hz: 30.0
+    min_control_dt_sec: 0.005
+    max_control_dt_sec: 0.20
+    max_steering_rate_deg_s: 75.0
+    max_steering_accel_deg_s2: 300.0
 
     # main5.py 스타일 통합 cv2 창(segmentation | BEV 제어 | 검출선+경로).
     # path_visualizer 별도 노드를 없애고 이 프로세스에 흡수한 것 — 헤드리스

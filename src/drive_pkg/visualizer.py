@@ -615,23 +615,35 @@ class DrivingVisualizer:
     def update_lookahead_target(self, status: dict) -> None:
         path_points = self.last_reference_path
         try:
-            target_index = int(
+            lower_index = int(
                 status.get("lookahead_target_index", -1)
             )
+            upper_index = int(
+                status.get("lookahead_target_upper_index", lower_index)
+            )
+            segment_ratio = float(
+                status.get("lookahead_target_segment_ratio", 0.0)
+            )
         except (TypeError, ValueError):
-            target_index = -1
+            lower_index = -1
+            upper_index = -1
+            segment_ratio = 0.0
 
         self.latest_control_has_target = bool(
             path_points is not None
-            and 0 <= target_index < len(path_points)
+            and 0 <= lower_index < len(path_points)
+            and 0 <= upper_index < len(path_points)
         )
         if not self.latest_control_has_target:
             return
 
-        target = path_points[target_index]
+        ratio = float(np.clip(segment_ratio, 0.0, 1.0))
+        lower = np.asarray(path_points[lower_index], dtype=np.float64)
+        upper = np.asarray(path_points[upper_index], dtype=np.float64)
+        target = lower + ratio * (upper - lower)
         self.last_lookahead_target = (
-            int(target[0]),
-            int(target[1]),
+            int(round(float(target[0]))),
+            int(round(float(target[1]))),
         )
         self.last_lookahead_target_at = time.monotonic()
 

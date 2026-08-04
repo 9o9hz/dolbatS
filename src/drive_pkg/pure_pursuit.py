@@ -38,11 +38,20 @@ PARAMETER_DEFAULTS = {
     "steering_ema_alpha": 0.30,
     "steering_deadband_deg": 0.8,
     "max_steering_change_deg": 5.0,
-    # "simple": forward-points-only closest-to-Ld search (yolotl_ros2
-    # main5.py's actual default). "arc_length": accumulate arc length from
-    # the nearest point until Ld is reached (main5's alternate, disabled by
-    # default there too).
-    "lookahead_search_mode": "simple",
+    "curvature_lookahead_enabled": True,
+    "curvature_full_scale_1pm": 0.50,
+    "curvature_reduction_max_m": 0.15,
+    "curvature_sample_gap_m": 0.15,
+    "lookahead_filter_tau_sec": 0.25,
+    "time_based_steering_limit_enabled": True,
+    "nominal_control_rate_hz": 30.0,
+    "min_control_dt_sec": 0.005,
+    "max_control_dt_sec": 0.20,
+    "max_steering_rate_deg_s": 75.0,
+    "max_steering_accel_deg_s2": 300.0,
+    # Legacy nearest-index modes remain available for rollback. The default
+    # interpolates inside the segment where cumulative arc length reaches Ld.
+    "lookahead_search_mode": "continuous_arc_length",
     # main5.py-style local cv2 window (segmentation + BEV control + lines/
     # path), merged in-process from what used to be the separate
     # path_visualizer node. Set to false for headless runs.
@@ -75,9 +84,30 @@ class SteeringCommand:
     path_valid: bool
     reason: str
     steering_deg: float
+    raw_steering_deg: float
+    steering_rate_deg_s: float
     lookahead_m: float
+    lookahead_reference_m: float
+    path_curvature_1pm: float
     target_distance_m: float
     target_index: int
+    target_upper_index: int
+    target_segment_ratio: float
+    target_forward_m: float
+    target_left_m: float
+    target_clamped_to_endpoint: bool
+    control_dt_sec: float
+
+
+@dataclass
+class LookaheadTarget:
+    """Continuous target interpolated on one reference-path segment."""
+
+    point: np.ndarray
+    lower_index: int
+    upper_index: int
+    segment_ratio: float
+    clamped_to_endpoint: bool
 
 
 class PurePursuitController:
@@ -104,6 +134,17 @@ class PurePursuitController:
         steering_deadband_deg: float,
         max_steering_change_deg: float,
         lookahead_search_mode: str = "simple",
+        curvature_lookahead_enabled: bool = True,
+        curvature_full_scale_1pm: float = 0.50,
+        curvature_reduction_max_m: float = 0.15,
+        curvature_sample_gap_m: float = 0.15,
+        lookahead_filter_tau_sec: float = 0.25,
+        time_based_steering_limit_enabled: bool = True,
+        nominal_control_rate_hz: float = 30.0,
+        min_control_dt_sec: float = 0.005,
+        max_control_dt_sec: float = 0.20,
+        max_steering_rate_deg_s: float = 75.0,
+        max_steering_accel_deg_s2: float = 300.0,
     ) -> None:
         self.wheelbase_m = float(wheelbase_m)
         self.ld_throttle_min = float(ld_throttle_min)
@@ -133,9 +174,36 @@ class PurePursuitController:
         self.steering_deadband_deg = float(steering_deadband_deg)
         self.max_steering_change_deg = float(max_steering_change_deg)
         self.lookahead_search_mode = str(lookahead_search_mode)
+        self.curvature_lookahead_enabled = bool(
+            curvature_lookahead_enabled
+        )
+        self.curvature_full_scale_1pm = float(
+            curvature_full_scale_1pm
+        )
+        self.curvature_reduction_max_m = float(
+            curvature_reduction_max_m
+        )
+        self.curvature_sample_gap_m = float(curvature_sample_gap_m)
+        self.lookahead_filter_tau_sec = float(
+            lookahead_filter_tau_sec
+        )
+        self.time_based_steering_limit_enabled = bool(
+            time_based_steering_limit_enabled
+        )
+        self.nominal_control_rate_hz = float(nominal_control_rate_hz)
+        self.min_control_dt_sec = float(min_control_dt_sec)
+        self.max_control_dt_sec = float(max_control_dt_sec)
+        self.max_steering_rate_deg_s = float(
+            max_steering_rate_deg_s
+        )
+        self.max_steering_accel_deg_s2 = float(
+            max_steering_accel_deg_s2
+        )
         self._validate_parameters()
 
         self.last_steering_deg = 0.0
+        self.last_steering_rate_deg_s = 0.0
+        self.filtered_lookahead_m: Optional[float] = None
         self.path_fallback = False
 
     def _validate_parameters(self) -> None:
@@ -162,14 +230,38 @@ class PurePursuitController:
             )
         if self.steering_deadband_deg < 0.0:
             raise ValueError("steering_deadband_deg cannot be negative")
-        if self.lookahead_search_mode not in ("simple", "arc_length"):
+        if self.lookahead_search_mode not in (
+            "simple",
+            "arc_length",
+            "continuous_arc_length",
+        ):
             raise ValueError(
-                'lookahead_search_mode must be "simple" or "arc_length"'
+                "lookahead_search_mode must be simple, arc_length, or "
+                "continuous_arc_length"
             )
         if self.max_steering_change_deg <= 0.0:
             raise ValueError(
                 "max_steering_change_deg must be positive"
             )
+        if self.curvature_full_scale_1pm <= 0.0:
+            raise ValueError("curvature_full_scale_1pm must be positive")
+        if self.curvature_reduction_max_m < 0.0:
+            raise ValueError("curvature_reduction_max_m cannot be negative")
+        if self.curvature_sample_gap_m <= 0.0:
+            raise ValueError("curvature_sample_gap_m must be positive")
+        if self.lookahead_filter_tau_sec < 0.0:
+            raise ValueError("lookahead_filter_tau_sec cannot be negative")
+        if self.nominal_control_rate_hz <= 0.0:
+            raise ValueError("nominal_control_rate_hz must be positive")
+        if (
+            self.min_control_dt_sec <= 0.0
+            or self.max_control_dt_sec < self.min_control_dt_sec
+        ):
+            raise ValueError("control dt must satisfy 0 < min <= max")
+        if self.max_steering_rate_deg_s <= 0.0:
+            raise ValueError("max_steering_rate_deg_s must be positive")
+        if self.max_steering_accel_deg_s2 <= 0.0:
+            raise ValueError("max_steering_accel_deg_s2 must be positive")
 
     def set_path_fallback(self, fallback: bool) -> None:
         self.path_fallback = bool(fallback)
@@ -188,22 +280,62 @@ class PurePursuitController:
             )
         )
 
-    def compute(self, points: np.ndarray) -> SteeringCommand:
+    def compute(
+        self,
+        points: np.ndarray,
+        dt_sec: Optional[float] = None,
+    ) -> SteeringCommand:
         if (
             points is None
             or len(points) == 0
             or points.ndim != 2
+            or points.shape[1] != 2
             or not np.all(np.isfinite(points))
         ):
             return self.stop("empty_or_invalid_path")
 
-        lookahead_m = self._dynamic_lookahead()
-        distances = np.linalg.norm(points, axis=1)
-        target_index = self._find_lookahead_index(
-            points, distances, lookahead_m
+        control_dt = self._normalize_control_dt(dt_sec)
+        lookahead_reference_m = self._dynamic_lookahead()
+        path_curvature = self.estimate_path_curvature(
+            points,
+            lookahead_reference_m,
         )
-        forward, left = points[target_index]
-        target_distance = max(float(distances[target_index]), 1e-3)
+        lookahead_target_m = self._curvature_adjusted_lookahead(
+            lookahead_reference_m,
+            path_curvature,
+        )
+        lookahead_m = self._filter_lookahead(
+            lookahead_target_m,
+            control_dt,
+        )
+
+        if self.lookahead_search_mode == "continuous_arc_length":
+            target = self.interpolate_lookahead_point(
+                points,
+                lookahead_m,
+            )
+        else:
+            distances = np.linalg.norm(points, axis=1)
+            target_index = self._find_lookahead_index(
+                points,
+                distances,
+                lookahead_m,
+            )
+            target_point = np.asarray(
+                points[target_index], dtype=np.float64
+            )
+            target = LookaheadTarget(
+                point=target_point,
+                lower_index=target_index,
+                upper_index=target_index,
+                segment_ratio=0.0,
+                clamped_to_endpoint=False,
+            )
+
+        forward, left = target.point
+        target_distance = max(
+            float(np.linalg.norm(target.point)), 1e-3
+        )
         heading_error = math.atan2(
             float(left),
             max(float(forward), 1e-3),
@@ -224,8 +356,38 @@ class PurePursuitController:
         if abs(raw_steering_deg) < self.steering_deadband_deg:
             raw_steering_deg = 0.0
 
+        if self.time_based_steering_limit_enabled:
+            steering_deg = self._limit_steering_dynamics(
+                raw_steering_deg,
+                control_dt,
+            )
+        else:
+            steering_deg = self._limit_steering_legacy(
+                raw_steering_deg
+            )
+
+        return SteeringCommand(
+            path_valid=True,
+            reason="ok",
+            steering_deg=steering_deg,
+            raw_steering_deg=raw_steering_deg,
+            steering_rate_deg_s=self.last_steering_rate_deg_s,
+            lookahead_m=lookahead_m,
+            lookahead_reference_m=lookahead_reference_m,
+            path_curvature_1pm=path_curvature,
+            target_distance_m=target_distance,
+            target_index=target.lower_index,
+            target_upper_index=target.upper_index,
+            target_segment_ratio=target.segment_ratio,
+            target_forward_m=float(forward),
+            target_left_m=float(left),
+            target_clamped_to_endpoint=target.clamped_to_endpoint,
+            control_dt_sec=control_dt,
+        )
+
+    def _limit_steering_legacy(self, target_deg: float) -> float:
         filtered = (
-            self.steering_ema_alpha * raw_steering_deg
+            self.steering_ema_alpha * target_deg
             + (1.0 - self.steering_ema_alpha) * self.last_steering_deg
         )
         steering_step = float(
@@ -242,24 +404,346 @@ class PurePursuitController:
                 self.max_steer_deg,
             )
         )
-        return SteeringCommand(
-            path_valid=True,
-            reason="ok",
-            steering_deg=self.last_steering_deg,
-            lookahead_m=lookahead_m,
-            target_distance_m=target_distance,
-            target_index=target_index,
+        self.last_steering_rate_deg_s = 0.0
+        return self.last_steering_deg
+
+    def _limit_steering_dynamics(
+        self,
+        target_deg: float,
+        dt_sec: float,
+    ) -> float:
+        error = float(target_deg) - self.last_steering_deg
+        if abs(error) <= 1e-9:
+            desired_rate = 0.0
+        else:
+            accel_step = self.max_steering_accel_deg_s2 * dt_sec
+            # Discrete stopping-speed bound. The additional accel_step
+            # term starts braking one sample earlier than sqrt(2*a*x),
+            # preventing a sampled controller from crossing the target.
+            stopping_rate = max(
+                0.0,
+                -accel_step
+                + math.sqrt(
+                    accel_step * accel_step
+                    + 2.0
+                    * self.max_steering_accel_deg_s2
+                    * abs(error)
+                ),
+            )
+            desired_rate = math.copysign(
+                min(self.max_steering_rate_deg_s, stopping_rate),
+                error,
+            )
+
+        max_rate_change = self.max_steering_accel_deg_s2 * dt_sec
+        rate_delta = float(
+            np.clip(
+                desired_rate - self.last_steering_rate_deg_s,
+                -max_rate_change,
+                max_rate_change,
+            )
+        )
+        new_rate = self.last_steering_rate_deg_s + rate_delta
+        new_angle = self.last_steering_deg + new_rate * dt_sec
+
+        # Do not cross the requested angle when the discrete integration
+        # step reaches it. This also settles the stored rate at zero.
+        if error * (float(target_deg) - new_angle) <= 0.0:
+            new_angle = float(target_deg)
+            new_rate = 0.0
+
+        clipped_angle = float(
+            np.clip(new_angle, -self.max_steer_deg, self.max_steer_deg)
+        )
+        if clipped_angle != new_angle:
+            new_rate = 0.0
+
+        self.last_steering_deg = clipped_angle
+        self.last_steering_rate_deg_s = float(new_rate)
+        return self.last_steering_deg
+
+    def _normalize_control_dt(
+        self, dt_sec: Optional[float]
+    ) -> float:
+        nominal_dt = 1.0 / self.nominal_control_rate_hz
+        if dt_sec is None or not math.isfinite(dt_sec) or dt_sec <= 0.0:
+            self.last_steering_rate_deg_s = 0.0
+            return nominal_dt
+        if dt_sec > self.max_control_dt_sec:
+            # A long path gap must not become one large integration step.
+            self.last_steering_rate_deg_s = 0.0
+            return nominal_dt
+        return float(
+            np.clip(
+                dt_sec,
+                self.min_control_dt_sec,
+                self.max_control_dt_sec,
+            )
         )
 
     def stop(self, reason: str) -> SteeringCommand:
+        self.last_steering_rate_deg_s = 0.0
+        lookahead_m = (
+            self.filtered_lookahead_m
+            if self.filtered_lookahead_m is not None
+            else self._dynamic_lookahead()
+        )
         return SteeringCommand(
             path_valid=False,
             reason=reason,
             steering_deg=self.last_steering_deg,
-            lookahead_m=self._dynamic_lookahead(),
+            raw_steering_deg=self.last_steering_deg,
+            steering_rate_deg_s=self.last_steering_rate_deg_s,
+            lookahead_m=lookahead_m,
+            lookahead_reference_m=self._dynamic_lookahead(),
+            path_curvature_1pm=0.0,
             target_distance_m=0.0,
             target_index=-1,
+            target_upper_index=-1,
+            target_segment_ratio=0.0,
+            target_forward_m=0.0,
+            target_left_m=0.0,
+            target_clamped_to_endpoint=False,
+            control_dt_sec=0.0,
         )
+
+    @staticmethod
+    def _prepare_path(
+        points: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return a topology-preserving near-to-far path and index map."""
+
+        path = np.asarray(points, dtype=np.float64)
+        if (
+            path.ndim != 2
+            or path.shape[1] != 2
+            or len(path) == 0
+            or not np.all(np.isfinite(path))
+        ):
+            raise ValueError("invalid path")
+
+        original_indices = np.arange(len(path), dtype=np.int64)
+        # Do not sort individual points by radius: that can scramble a
+        # curved path. Only reverse the complete array when its endpoint
+        # order is far-to-near. drive_pkg currently already publishes
+        # near-to-far, so this is a compatibility guard.
+        if len(path) >= 2 and path[0, 0] > path[-1, 0]:
+            path = path[::-1]
+            original_indices = original_indices[::-1]
+
+        if len(path) >= 2:
+            segment_lengths = np.linalg.norm(
+                np.diff(path, axis=0), axis=1
+            )
+            keep = np.concatenate(([True], segment_lengths > 1e-6))
+            path = path[keep]
+            original_indices = original_indices[keep]
+        return path, original_indices
+
+    @classmethod
+    def interpolate_lookahead_point(
+        cls,
+        points: np.ndarray,
+        lookahead_m: float,
+    ) -> LookaheadTarget:
+        """Interpolate continuously where cumulative path length hits Ld."""
+
+        path, original_indices = cls._prepare_path(points)
+        first_distance = float(np.linalg.norm(path[0]))
+        if len(path) == 1 or lookahead_m <= first_distance:
+            index = int(original_indices[0])
+            return LookaheadTarget(
+                point=path[0].copy(),
+                lower_index=index,
+                upper_index=index,
+                segment_ratio=0.0,
+                clamped_to_endpoint=True,
+            )
+
+        cumulative = np.empty(len(path), dtype=np.float64)
+        cumulative[0] = first_distance
+        cumulative[1:] = first_distance + np.cumsum(
+            np.linalg.norm(np.diff(path, axis=0), axis=1)
+        )
+        if lookahead_m >= cumulative[-1]:
+            last = len(path) - 1
+            index = int(original_indices[last])
+            return LookaheadTarget(
+                point=path[last].copy(),
+                lower_index=index,
+                upper_index=index,
+                segment_ratio=1.0,
+                clamped_to_endpoint=True,
+            )
+
+        upper = int(
+            np.searchsorted(cumulative, lookahead_m, side="left")
+        )
+        lower = upper - 1
+        segment_length = cumulative[upper] - cumulative[lower]
+        ratio = float(
+            np.clip(
+                (lookahead_m - cumulative[lower])
+                / max(float(segment_length), 1e-6),
+                0.0,
+                1.0,
+            )
+        )
+        target = path[lower] + ratio * (path[upper] - path[lower])
+        return LookaheadTarget(
+            point=target,
+            lower_index=int(original_indices[lower]),
+            upper_index=int(original_indices[upper]),
+            segment_ratio=ratio,
+            clamped_to_endpoint=False,
+        )
+
+    @staticmethod
+    def _point_at_arc_length(
+        path: np.ndarray,
+        cumulative: np.ndarray,
+        distance_m: float,
+    ) -> np.ndarray:
+        if distance_m <= cumulative[0]:
+            return path[0]
+        if distance_m >= cumulative[-1]:
+            return path[-1]
+        upper = int(np.searchsorted(cumulative, distance_m, side="left"))
+        lower = upper - 1
+        length = cumulative[upper] - cumulative[lower]
+        ratio = (distance_m - cumulative[lower]) / max(length, 1e-6)
+        return path[lower] + ratio * (path[upper] - path[lower])
+
+    @staticmethod
+    def _three_point_curvature(
+        point_a: np.ndarray,
+        point_b: np.ndarray,
+        point_c: np.ndarray,
+    ) -> float:
+        ab = point_b - point_a
+        ac = point_c - point_a
+        bc = point_c - point_b
+        denominator = (
+            np.linalg.norm(ab)
+            * np.linalg.norm(ac)
+            * np.linalg.norm(bc)
+        )
+        if denominator <= 1e-9:
+            return 0.0
+        cross = ab[0] * ac[1] - ab[1] * ac[0]
+        return float(2.0 * cross / denominator)
+
+    def estimate_path_curvature(
+        self,
+        points: np.ndarray,
+        reference_lookahead_m: float,
+    ) -> float:
+        if not self.curvature_lookahead_enabled:
+            return 0.0
+        path, _ = self._prepare_path(points)
+        if len(path) < 3:
+            return 0.0
+
+        cumulative = np.zeros(len(path), dtype=np.float64)
+        cumulative[1:] = np.cumsum(
+            np.linalg.norm(np.diff(path, axis=0), axis=1)
+        )
+        first_distance = float(np.linalg.norm(path[0]))
+        preview_length = max(reference_lookahead_m - first_distance, 0.0)
+        preview_length = min(
+            float(cumulative[-1]),
+            preview_length + self.curvature_sample_gap_m,
+        )
+        if preview_length <= 1e-3:
+            return 0.0
+
+        gap = min(
+            self.curvature_sample_gap_m,
+            0.5 * preview_length,
+        )
+        if gap <= 1e-3:
+            return 0.0
+
+        last_start = preview_length - 2.0 * gap
+        if last_start <= 1e-6:
+            starts = np.asarray([0.0], dtype=np.float64)
+        else:
+            starts = np.arange(
+                0.0,
+                last_start + 0.25 * gap,
+                0.5 * gap,
+                dtype=np.float64,
+            )
+
+        curvatures = []
+        for start in starts:
+            point_a = self._point_at_arc_length(
+                path, cumulative, float(start)
+            )
+            point_b = self._point_at_arc_length(
+                path, cumulative, float(start + gap)
+            )
+            point_c = self._point_at_arc_length(
+                path, cumulative, float(start + 2.0 * gap)
+            )
+            curvature = self._three_point_curvature(
+                point_a, point_b, point_c
+            )
+            if math.isfinite(curvature):
+                curvatures.append(curvature)
+        if not curvatures:
+            return 0.0
+        return float(np.median(curvatures))
+
+    def _curvature_adjusted_lookahead(
+        self,
+        reference_lookahead_m: float,
+        path_curvature_1pm: float,
+    ) -> float:
+        if (
+            not self.dynamic_lookahead_enabled
+            or not self.curvature_lookahead_enabled
+        ):
+            return reference_lookahead_m
+        curvature_ratio = float(
+            np.clip(
+                abs(path_curvature_1pm)
+                / self.curvature_full_scale_1pm,
+                0.0,
+                1.0,
+            )
+        )
+        target = reference_lookahead_m - (
+            self.curvature_reduction_max_m * curvature_ratio
+        )
+        return float(
+            np.clip(target, self.lookahead_min_m, self.lookahead_max_m)
+        )
+
+    def _filter_lookahead(
+        self,
+        target_lookahead_m: float,
+        dt_sec: float,
+    ) -> float:
+        if self.filtered_lookahead_m is None:
+            self.filtered_lookahead_m = float(target_lookahead_m)
+        elif self.lookahead_filter_tau_sec <= 0.0:
+            self.filtered_lookahead_m = float(target_lookahead_m)
+        else:
+            alpha = 1.0 - math.exp(
+                -dt_sec / self.lookahead_filter_tau_sec
+            )
+            self.filtered_lookahead_m += alpha * (
+                target_lookahead_m - self.filtered_lookahead_m
+            )
+        self.filtered_lookahead_m = float(
+            np.clip(
+                self.filtered_lookahead_m,
+                self.lookahead_min_m,
+                self.lookahead_max_m,
+            )
+        )
+        return self.filtered_lookahead_m
 
     def _find_lookahead_index(
         self,
@@ -284,43 +768,28 @@ class PurePursuitController:
         del points
         return int(np.argmin(np.abs(distances - lookahead_m)))
 
-    @staticmethod
+    @classmethod
     def _arc_length_lookahead_index(
+        cls,
         points: np.ndarray,
         distances: np.ndarray,
         lookahead_m: float,
     ) -> int:
-        """Accumulate arc length from the nearest point until Ld is
-        reached, ported from yolotl_ros2 main5.py's
-        ``use_arc_length_lookahead`` branch.
+        """Legacy arc-length mode, corrected for either path direction."""
 
-        dolbatS orders path points far -> near (ascending BEV y); main5's
-        own point array is near -> far, so walk the reversed order here to
-        match main5's accumulation direction. Snaps to the nearest array
-        index instead of main5's sub-segment linear interpolation, since
-        ``SteeringCommand.target_index`` is an index into ``points``.
-        """
-
-        order = np.arange(len(points) - 1, -1, -1)
-        rev_points = points[order]
-        rev_distances = distances[order]
-
-        nearest_pos = int(np.argmin(rev_distances))
-        accum = float(rev_distances[nearest_pos])
-        if accum >= lookahead_m:
-            return int(order[nearest_pos])
-
-        for pos in range(nearest_pos, len(rev_points) - 1):
-            seg_len = float(
-                np.linalg.norm(rev_points[pos + 1] - rev_points[pos])
+        del distances
+        path, original_indices = cls._prepare_path(points)
+        cumulative = np.empty(len(path), dtype=np.float64)
+        cumulative[0] = float(np.linalg.norm(path[0]))
+        if len(path) > 1:
+            cumulative[1:] = cumulative[0] + np.cumsum(
+                np.linalg.norm(np.diff(path, axis=0), axis=1)
             )
-            if seg_len <= 1e-6:
-                continue
-            if accum + seg_len >= lookahead_m:
-                return int(order[pos + 1])
-            accum += seg_len
-
-        return int(order[-1])
+        position = int(
+            np.searchsorted(cumulative, lookahead_m, side="left")
+        )
+        position = min(position, len(path) - 1)
+        return int(original_indices[position])
 
     def _dynamic_lookahead(self) -> float:
         if self.lookahead_min_m == self.lookahead_max_m:
@@ -384,7 +853,41 @@ class PurePursuitNode(Node):
             lookahead_search_mode=str(
                 parameter("lookahead_search_mode")
             ),
+            curvature_lookahead_enabled=bool(
+                parameter("curvature_lookahead_enabled")
+            ),
+            curvature_full_scale_1pm=float(
+                parameter("curvature_full_scale_1pm")
+            ),
+            curvature_reduction_max_m=float(
+                parameter("curvature_reduction_max_m")
+            ),
+            curvature_sample_gap_m=float(
+                parameter("curvature_sample_gap_m")
+            ),
+            lookahead_filter_tau_sec=float(
+                parameter("lookahead_filter_tau_sec")
+            ),
+            time_based_steering_limit_enabled=bool(
+                parameter("time_based_steering_limit_enabled")
+            ),
+            nominal_control_rate_hz=float(
+                parameter("nominal_control_rate_hz")
+            ),
+            min_control_dt_sec=float(
+                parameter("min_control_dt_sec")
+            ),
+            max_control_dt_sec=float(
+                parameter("max_control_dt_sec")
+            ),
+            max_steering_rate_deg_s=float(
+                parameter("max_steering_rate_deg_s")
+            ),
+            max_steering_accel_deg_s2=float(
+                parameter("max_steering_accel_deg_s2")
+            ),
         )
+        self.last_control_time_ns: Optional[int] = None
 
         path_topic = str(parameter("path_topic"))
         path_status_topic = str(parameter("path_status_topic"))
@@ -499,6 +1002,12 @@ class PurePursuitNode(Node):
         self.controller.set_path_fallback(status.get("fallback", False))
 
     def on_path(self, message: Path) -> None:
+        now_ns = self.get_clock().now().nanoseconds
+        dt_sec: Optional[float] = None
+        if self.last_control_time_ns is not None:
+            dt_sec = (now_ns - self.last_control_time_ns) * 1e-9
+        self.last_control_time_ns = now_ns
+
         points = np.asarray(
             [
                 (pose.pose.position.x, pose.pose.position.y)
@@ -506,7 +1015,7 @@ class PurePursuitNode(Node):
             ],
             dtype=np.float64,
         )
-        command = self.controller.compute(points)
+        command = self.controller.compute(points, dt_sec=dt_sec)
         self._publish_command(command)
 
     def _publish_command(self, command: SteeringCommand) -> None:
@@ -518,14 +1027,40 @@ class PurePursuitNode(Node):
             "reason": command.reason,
             "fallback": self.controller.path_fallback,
             "steering_deg": round(command.steering_deg, 2),
+            "raw_steering_deg": round(command.raw_steering_deg, 2),
+            "steering_rate_deg_s": round(
+                command.steering_rate_deg_s, 2
+            ),
+            "control_dt_sec": round(command.control_dt_sec, 4),
             "dynamic_lookahead_enabled": (
                 self.controller.dynamic_lookahead_enabled
             ),
             "lookahead_m": round(command.lookahead_m, 3),
+            "lookahead_reference_m": round(
+                command.lookahead_reference_m, 3
+            ),
+            "path_curvature_1pm": round(
+                command.path_curvature_1pm, 4
+            ),
             "lookahead_target_m": round(
                 command.target_distance_m, 3
             ),
             "lookahead_target_index": int(command.target_index),
+            "lookahead_target_upper_index": int(
+                command.target_upper_index
+            ),
+            "lookahead_target_segment_ratio": round(
+                command.target_segment_ratio, 4
+            ),
+            "lookahead_target_forward_m": round(
+                command.target_forward_m, 4
+            ),
+            "lookahead_target_left_m": round(
+                command.target_left_m, 4
+            ),
+            "lookahead_target_clamped": (
+                command.target_clamped_to_endpoint
+            ),
             "current_final_throttle": round(
                 self.controller.current_throttle, 3
             ),

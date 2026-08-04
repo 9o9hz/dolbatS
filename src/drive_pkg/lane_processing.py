@@ -112,8 +112,8 @@ class LaneConfig:
     )
     warp_width: int = 640
     warp_height: int = 640
-    pixels_per_meter_x: float = 627.5
-    pixels_per_meter_y: float = 470.6
+    pixels_per_meter_x: float = 533.333333
+    pixels_per_meter_y: float = 533.333333
     lane_width_m: float = 0.85
     min_boundary_spacing_m: float = 0.80
     max_boundary_spacing_m: float = 0.90

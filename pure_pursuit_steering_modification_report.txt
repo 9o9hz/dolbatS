@@ -1,0 +1,318 @@
+Pure Pursuit 및 Arduino 조향 개선 적용 보고서
+작성일: 2026-08-04
+
+1. 결론
+
+아래의 다섯 문제를 현재 실행 구조와 토픽 구조를 바꾸지
+않는 범위에서 적용했다.
+
+  1) Pure Pursuit 목표점의 배열 인덱스 스냅 제거
+  2) throttle 기반 Ld에 경로 곡률 보정 추가
+  3) 프레임 기반 조향 제한을 실제 dt 기반 rate/acceleration 제한으로 대체
+  4) Ld가 프레임마다 즉시 바뀌지 않도록 시간상수 필터 추가
+  5) Arduino 고정 PWM 150 bang-bang 제어를 가변 PWM PD+feedforward로 대체
+
+drive_pipeline.launch.py, 노드 개수, 토픽 이름, 메시지 타입, mission manager
+구성, Arduino의 S,angle 시리얼 명령 형식은 변경하지 않았다.
+
+
+2. 수정 파일
+
+이번 작업에서 직접 수정한 파일:
+
+  - src/drive_pkg/pure_pursuit.py
+  - src/drive_pkg/config/drive_pipeline.yaml의 pure_pursuit 구간
+  - src/drive_pkg/visualizer.py
+  - src/drive_pkg/test/test_dynamic_lookahead.py
+  - arduino/dol-soi/dol-soi.ino
+
+이번 작업 이전부터 있던 로컬 변경이며 그대로 보존한 파일/내용:
+
+  - src/drive_pkg/config/drive_pipeline.yaml의 BEV ppm 설정
+  - src/drive_pkg/drive_main.py의 BEV ppm 기본값
+  - src/drive_pkg/lane_processing.py의 BEV ppm 기본값
+  - pixels_per_meter_x = 533.333333
+  - pixels_per_meter_y = 533.333333
+
+drive_main.py와 lane_processing.py는 이번 제어 개선 작업에서 추가로
+수정하지 않았다.
+
+
+3. 목표점 인덱스 스냅 제거
+
+기존 방식:
+
+  - simple: |경로점 거리 - Ld|가 가장 작은 배열점 하나 선택
+  - arc_length: 누적거리가 Ld를 넘는 배열점 하나 선택
+  - 목표점이 point[25]에서 point[26]으로 계단식 이동
+
+변경 방식:
+
+  - continuous_arc_length 모드 추가 및 기본 활성화
+  - 경로 배열의 전체 방향만 near-to-far로 통일
+  - 곡선의 연결 순서를 보존하기 위해 점별 거리 sort는 하지 않음
+  - 연속 중복점을 제거해 0 길이 선분 방지
+  - 차량 원점에서 첫 경로점까지의 거리를 누적거리 시작값으로 포함
+  - Ld가 들어 있는 lower/upper 선분을 찾음
+  - 두 점 사이를 segment_ratio로 선형 보간
+  - Pure Pursuit 계산에는 보간 목표점까지의 실제 직선거리를 사용
+
+기존 simple 및 arc_length 모드는 롤백을 위해 남겼다. 기존 arc_length가
+현재 path 순서와 반대로 배열을 뒤집던 오류도 함께 수정했다.
+
+활성 파라미터:
+
+  lookahead_search_mode: "continuous_arc_length"
+
+
+4. 곡률 기반 Ld 보정
+
+기존에는 /auto_throttle 절댓값만으로 Ld를 1.3~1.6m 사이에서 계산했다.
+이제 throttle 기준 Ld를 reference Ld로 유지하면서 커브에서는 경로
+곡률에 비례해 Ld를 제한적으로 줄인다.
+
+곡률 계산:
+
+  - near-to-far 경로 사용
+  - 경로 위 약 0.15m 간격의 세 점을 연속 보간
+  - 세 점 원곡률(Menger curvature) 계산
+  - 여러 구간의 유효 곡률 중앙값 사용
+  - 좌/우 부호는 상태 진단에 유지하고 Ld 감소에는 절댓값 사용
+
+적용식 개념:
+
+  curvature_ratio = clamp(|curvature| / full_scale, 0, 1)
+  target_Ld = reference_Ld - max_reduction * curvature_ratio
+  target_Ld = clamp(target_Ld, lookahead_min, lookahead_max)
+
+활성 파라미터:
+
+  curvature_lookahead_enabled: true
+  curvature_full_scale_1pm: 0.50
+  curvature_reduction_max_m: 0.15
+  curvature_sample_gap_m: 0.15
+
+고정 Ld 모드(dynamic_lookahead_enabled=false)에서는 곡률 보정을 적용하지
+않아 기존 fixed lookahead 의미를 보존한다.
+
+
+5. Ld 시간 필터
+
+기존에는 throttle이 바뀌면 Ld가 같은 프레임에서 즉시 바뀌었다.
+변경 후 reference Ld와 곡률 보정 결과를 target Ld로 만든 다음
+실제 control dt와 시간상수로 필터링한다.
+
+  alpha = 1 - exp(-dt / tau)
+  filtered_Ld += alpha * (target_Ld - filtered_Ld)
+
+첫 유효 프레임에서는 불필요한 시작 ramp를 만들지 않고 target Ld로
+초기화한다.
+
+활성 파라미터:
+
+  lookahead_filter_tau_sec: 0.25
+
+
+6. 시간 기반 조향 제한
+
+기존 max_steering_change_deg=4.0은 프레임당 제한이므로 30Hz에서는
+120deg/s, 15Hz에서는 60deg/s가 되어 처리 주기에 따라 동작이 달라졌다.
+
+변경 후:
+
+  - ROS clock으로 /lane/path 콜백 사이 실제 dt 측정
+  - 최대 조향속도 75deg/s 제한
+  - 최대 조향가속도 300deg/s^2 제한
+  - 목표각 근처에서는 정지거리 기반으로 조향속도를 사전에 감소
+  - 이산시간 제어에서 목표점을 넘지 않도록 discrete stopping bound 적용
+  - 0 이하/NaN dt는 nominal dt 사용
+  - 0.2초보다 긴 경로 공백은 rate를 초기화하고 nominal dt 사용
+  - invalid path에서는 저장된 조향속도를 0으로 초기화
+
+활성 파라미터:
+
+  time_based_steering_limit_enabled: true
+  nominal_control_rate_hz: 30.0
+  min_control_dt_sec: 0.005
+  max_control_dt_sec: 0.20
+  max_steering_rate_deg_s: 75.0
+  max_steering_accel_deg_s2: 300.0
+
+기존 steering_ema_alpha와 max_steering_change_deg는 삭제하지 않고 rollback
+모드용으로 남겼다. time_based_steering_limit_enabled=true일 때는 기존
+EMA/프레임 제한을 중복 적용하지 않는다.
+
+
+7. 동일 상태 토픽에 진단 필드 추가
+
+/lane/control/status 토픽과 std_msgs/String 타입은 그대로 유지했다. 기존
+필드도 삭제하지 않았고 다음 JSON 필드만 추가했다.
+
+  raw_steering_deg
+  steering_rate_deg_s
+  control_dt_sec
+  lookahead_reference_m
+  path_curvature_1pm
+  lookahead_target_upper_index
+  lookahead_target_segment_ratio
+  lookahead_target_forward_m
+  lookahead_target_left_m
+  lookahead_target_clamped
+
+visualizer는 lower/upper index와 segment ratio를 사용해 배열점이 아닌 실제
+보간 목표점을 표시한다. 예전 상태 형식이 들어오면 기존 단일 index 방식으로
+fallback하므로 호환성을 유지한다.
+
+
+8. Arduino 가변 PWM PD+feedforward
+
+삭제/대체한 항목:
+
+  - 고정 const int STEER_PWM = 150 삭제
+  - raw 오차가 허용범위 밖이면 항상 PWM 150을 주던 bang-bang 분기 삭제
+  - 인자 없는 handleLeft(), handleRight()를 PWM 인자 방식으로 대체
+  - STEER_RAW_TOLERANCE 기반 단일 stop 조건을 각도 히스테리시스로 대체
+
+추가한 항목:
+
+  - 10ms 고정 조향 제어 주기
+  - A4 조향각 저역통과 필터
+  - 측정 조향속도 필터
+  - 각도 오차 비례 P항
+  - 목표로 접근하는 조향속도를 감쇠하는 D항
+  - 정지마찰을 보상하는 좌/우 최소 PWM feedforward
+  - stop 0.5도 / restart 0.9도 히스테리시스
+  - 방향 반전 전에 한 제어 주기 모터 정지
+  - 기존 raw 조향 안전범위 유지
+
+초기 파라미터:
+
+  STEER_PWM_MIN_LEFT = 70
+  STEER_PWM_MIN_RIGHT = 70
+  STEER_PWM_MAX = 150
+  STEER_KP = 3.0
+  STEER_KD = 1.0
+  STEER_SENSOR_ALPHA = 0.25
+  STEER_RATE_ALPHA = 0.25
+  STEER_STOP_TOLERANCE_DEG = 0.5
+  STEER_RESTART_TOLERANCE_DEG = 0.9
+  STEER_CONTROL_INTERVAL_MS = 10
+
+시리얼 명령 D,<dir>,<pwm> 및 S,<angle> 형식과 115200 baud는 변경하지
+않았다. ROS는 계속 목표 조향각을 보내고, Arduino가 A4 피드백을 이용해
+그 목표각을 추종한다.
+
+
+9. 실행/토픽 구조 유지 확인
+
+변경하지 않은 항목:
+
+  - src/drive_pkg/launch/drive_pipeline.launch.py
+  - drive_main + pure_pursuit 두 노드 실행 구조
+  - /lane/path 구독
+  - /lane/path/status 구독
+  - /auto_throttle 구독
+  - /control/candidate/lane/steer_angle 발행
+  - /control/candidate/lane/valid 발행
+  - /lane/control/status 발행
+  - mission_manager 연결 구조
+  - Arduino S,angle 프로토콜
+  - lane_processing의 공간/시간 path filter
+
+기존 실행 명령도 동일하다.
+
+  ros2 launch drive_pkg drive_pipeline.launch.py
+
+Arduino 변경은 소스 pull 또는 ROS 노드 재시작만으로 차량 보드에 반영되지
+않는다. dol-soi.ino를 해당 Arduino 보드에 별도로 업로드해야 한다.
+
+
+10. 테스트 및 검증 결과
+
+수행 결과:
+
+  - drive_pipeline.yaml YAML 파싱: 통과
+  - pure_pursuit.py Python 문법 검사: 통과
+  - visualizer.py Python 문법 검사: 통과
+  - test_dynamic_lookahead.py Python 문법 검사: 통과
+  - git diff --check: 통과
+  - Python unittest 전체 38개: 통과
+
+추가/교체한 주요 테스트:
+
+  - throttle 증가에 따른 reference Ld 증가
+  - fixed Ld 보존
+  - 선분 내부 연속 목표점 보간
+  - near-to-far/far-to-near 입력 동일 결과
+  - 연속 중복점 처리
+  - 점 밀도 9개/81개에서 동일 목표점
+  - 짧은 경로의 endpoint clamp
+  - 반경 2m 원호의 곡률 0.5 1/m 검증
+  - 곡률 Ld 감소 및 min clamp
+  - dt 기반 Ld 필터 수식 검증
+  - 조향 rate/acceleration 제한 검증
+  - 30Hz/60Hz 조향 결과 비교
+  - 긴/비정상 dt 처리
+  - NaN path invalid 처리
+  - 상태 진단 필드 생성
+
+AGENTS.md 지시에 따라 패키지 빌드는 수행하지 않았다. 현재 환경에는
+arduino-cli가 없어 Arduino 펌웨어 컴파일 검증은 수행하지 못했다.
+
+
+11. 실제 차량 적용 전 필수 튜닝
+
+다음 값은 안전한 초기 구현값이며 차량별 최종값이 아니다.
+
+  - STEER_PWM_MIN_LEFT/RIGHT
+  - STEER_KP, STEER_KD
+  - max_steering_rate_deg_s
+  - max_steering_accel_deg_s2
+  - curvature_full_scale_1pm
+  - curvature_reduction_max_m
+  - lookahead_filter_tau_sec
+
+권장 시험 순서:
+
+  1) 앞바퀴를 지면에서 띄우고 좌/우 최소 동작 PWM을 각각 측정
+  2) S,0 / S,+5 / S,-5 / S,+10 / S,-10 계단 명령 시험
+  3) A4 실제각의 overshoot, 정착시간, 정상상태 오차 기록
+  4) P항을 먼저 조정하고 overshoot가 남으면 D항 증가
+  5) 저속 직선 주행으로 조향 중앙값 및 좌우 비대칭 확인
+  6) 동일 rosbag 곡선 구간으로 continuous target과 Ld 진단값 확인
+  7) 저속 실차 곡선 시험 후 rate/acceleration과 곡률 감소량 조정
+
+/vehicle/drive_pwm 및 /auto_throttle은 실제 측정 속도가 아니라 명령값이므로
+현재 속도 기반 Ld는 throttle proxy 방식이다. 향후 wheel odometry가 추가되면
+reference Ld 입력만 실제 속도로 교체하는 것이 바람직하다.
+
+
+12. 현재 원격 브랜치와의 주의사항
+
+작업 완료 시점의 로컬 main은 origin/main보다 7커밋 뒤에 있다. 사용자 로컬
+변경을 덮거나 충돌시키지 않기 위해 이번 작업에서는 pull/merge를 수행하지
+않았다.
+
+원격 변경과 현재 working tree 변경이 겹치는 파일:
+
+  - arduino/dol-soi/dol-soi.ino
+  - src/drive_pkg/config/drive_pipeline.yaml
+  - src/drive_pkg/drive_main.py
+  - src/drive_pkg/lane_processing.py
+
+특히 원격 Arduino는 차량 텔레메트리를 기존 한 줄 형식에서 VEH/ULT 분리
+형식으로 변경한다. 현재 로컬 Arduino에 적용한 PD 조향 블록은 그 원격
+텔레메트리 변경 전 버전을 기준으로 하므로, 이후 pull할 때 Arduino 파일을
+단순히 한쪽 버전으로 선택하면 다음 중 하나가 사라질 수 있다.
+
+  - 이번 작업의 가변 PWM PD 조향 제어
+  - 원격의 VEH/ULT 텔레메트리 분리
+
+따라서 다음 pull 전에는 현재 변경을 커밋 또는 patch로 보관한 뒤, Arduino의
+텔레메트리 함수는 원격 버전을 유지하고 Steering Sensor/handleLeft/
+handleRight/applySteer 구간에는 이번 PD 제어를 수동 병합해야 한다.
+
+drive_pipeline.yaml도 원격에서 0803 NPZ/model 및 line width 값이 변경되어
+있으므로 BEV 실측값 선택 없이 자동으로 한쪽을 덮어쓰면 안 된다. 이번 작업의
+Pure Pursuit 파라미터 구간은 보존하면서, drive_main 구간은 실제 테스트에서
+사용 중인 NPZ와 ppm을 기준으로 별도 결정해야 한다.
