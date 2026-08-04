@@ -114,9 +114,51 @@ def git_output(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
+def git_has_commit(sha: str) -> bool:
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def commits_from_github_event(after: str) -> list[str]:
+    """Recover pushed SHAs when the event's before commit is no longer fetchable."""
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "").strip()
+    revisions = []
+    if event_path:
+        try:
+            with open(event_path, encoding="utf-8") as event_file:
+                event = json.load(event_file)
+            revisions = [
+                commit["id"]
+                for commit in event.get("commits", [])
+                if isinstance(commit, dict)
+                and isinstance(commit.get("id"), str)
+                and git_has_commit(commit["id"])
+            ]
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"warning: cannot read GitHub event payload: {error}", file=sys.stderr)
+
+    if git_has_commit(after) and after not in revisions:
+        revisions.append(after)
+    return revisions
+
+
 def commits_for_push(before: str, after: str) -> list[dict]:
     if not before or before == ZERO_SHA:
         revisions = [after]
+    elif not git_has_commit(before):
+        print(
+            f"warning: previous commit {before} is unavailable; "
+            "using commit SHAs from the push event",
+            file=sys.stderr,
+        )
+        revisions = commits_from_github_event(after)
+        if not revisions:
+            raise RuntimeError(f"Pushed commit {after} is not available in the checkout")
     else:
         revisions = git_output("rev-list", "--reverse", f"{before}..{after}").splitlines()
 
