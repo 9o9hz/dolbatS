@@ -1,5 +1,38 @@
 # dolbatS
 
+## GitHub 커밋을 Notion에 동기화
+
+`main` 브랜치에 push하면 `.github/workflows/sync-commits-to-notion.yml`이
+새 커밋을 Notion 데이터베이스의 행(페이지)으로 추가합니다. 같은 Commit SHA가
+이미 있으면 다시 추가하지 않습니다.
+
+Notion 데이터베이스에 다음 이름과 타입의 속성을 정확히 만드세요.
+
+| 속성 이름 | Notion 타입 |
+| --- | --- |
+| `Name` | 제목(Title) |
+| `Commit SHA` | 텍스트(Rich text) |
+| `Repository` | 텍스트(Rich text) |
+| `Branch` | 텍스트(Rich text) |
+| `Author` | 텍스트(Rich text) |
+| `Committed At` | 날짜(Date) |
+| `URL` | URL |
+
+Notion integration을 만든 다음 해당 데이터베이스의 연결에 integration을
+추가하세요. GitHub 저장소의 **Settings → Secrets and variables → Actions**에
+다음 Repository secrets를 등록합니다.
+
+- `NOTION_SECRET`: Notion integration의 새 API secret
+- `NOTION_DATABASE`: 동기화할 Notion 데이터베이스 ID
+
+데이터베이스에는 data source가 정확히 하나 있어야 합니다. 워크플로우가
+데이터베이스 ID에서 data source ID를 자동으로 찾아 최신 Notion API로
+조회하고 행을 생성합니다.
+
+토큰은 코드나 워크플로우 파일에 직접 입력하지 마세요. 기본 동기화 브랜치는
+워크플로우의 `branches`에 지정된 `main`입니다. 다른 브랜치도 동기화하려면
+그 목록에 브랜치를 추가해야 합니다.
+
 ## 명령어 체계
 돌쇠는 다음과 같은 명령어 체계를 가지고 움직입니다. `Serial` 통신을 통해 `115200 baudrate`로 명령어를 전송받습니다. 모든 명령어의 끝은 `\n`으로 끝나야 합니다.
 
