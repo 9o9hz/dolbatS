@@ -3,8 +3,9 @@ import math
 from typing import Optional, Sequence
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int8MultiArray
+from std_msgs.msg import Bool, Float32, Int8MultiArray
 
 
 EVENT_CLEARED = 0
@@ -23,6 +24,9 @@ class UltrasonicObstacleEvent(Node):
         self.declare_parameter("left_distance_topic", "/ultrasonic/left/rear")
         self.declare_parameter("right_distance_topic", "/ultrasonic/right/rear")
         self.declare_parameter("event_topic", "/detect/obstacle_event")
+        self.declare_parameter(
+            "enable_topic", "/detect/obstacle/ultrasonic_enabled"
+        )
         self.declare_parameter("detect_threshold_cm", 40.0)
         self.declare_parameter("clear_threshold_cm", 45.0)
         self.declare_parameter("consecutive_frames", 3)
@@ -31,6 +35,7 @@ class UltrasonicObstacleEvent(Node):
         left_topic = str(self.get_parameter("left_distance_topic").value)
         right_topic = str(self.get_parameter("right_distance_topic").value)
         event_topic = str(self.get_parameter("event_topic").value)
+        enable_topic = str(self.get_parameter("enable_topic").value)
         self.detect_threshold_cm = float(
             self.get_parameter("detect_threshold_cm").value
         )
@@ -59,8 +64,12 @@ class UltrasonicObstacleEvent(Node):
         self.obstacle_detected = False
         self.pending_frames = 0
         self.last_avoid_direction = DIRECTION_NONE
+        self.enabled = False
 
         self.event_pub = self.create_publisher(Int8MultiArray, event_topic, 10)
+        self.enable_subscription = self.create_subscription(
+            Bool, enable_topic, self.on_enable, 10
+        )
         self.left_subscription = self.create_subscription(
             Float32, left_topic, self.on_left_distance, 10
         )
@@ -70,9 +79,23 @@ class UltrasonicObstacleEvent(Node):
 
         self.get_logger().info(
             f"Ultrasonic event filter: {left_topic}, {right_topic} -> {event_topic}; "
+            f"enabled by {enable_topic}; "
             f"detect <= {self.detect_threshold_cm:.1f} cm, "
             f"clear > {self.clear_threshold_cm:.1f} cm, "
             f"{self.consecutive_frames} consecutive frames"
+        )
+
+    def on_enable(self, msg: Bool) -> None:
+        requested = bool(msg.data)
+        if requested == self.enabled:
+            return
+        self.enabled = requested
+        self.pending_frames = 0
+        if not requested:
+            self.obstacle_detected = False
+            self.last_avoid_direction = DIRECTION_NONE
+        self.get_logger().info(
+            f"Ultrasonic event detection {'enabled' if requested else 'disabled'}"
         )
 
     @staticmethod
@@ -94,6 +117,8 @@ class UltrasonicObstacleEvent(Node):
     def process_frame(
         self, left_distance: Optional[float], right_distance: Optional[float]
     ) -> None:
+        if not self.enabled:
+            return
         left_valid = self.is_valid_distance(left_distance)
         right_valid = self.is_valid_distance(right_distance)
 
@@ -170,7 +195,7 @@ def main(args: Optional[Sequence[str]] = None) -> None:
     node = UltrasonicObstacleEvent()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

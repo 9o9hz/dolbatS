@@ -5,6 +5,7 @@ import math
 from typing import Optional, Sequence
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32MultiArray
 
@@ -41,9 +42,7 @@ class YoloObstacleBboxTurn(YoloObstacleTurn):
         super().__init__()
 
         defaults = {
-            "bbox_topic": "/detect/obstacle/bbox",
             "raw_image_topic": "/camera/lane/raw",
-            "fallback_image_width_px": 640,
             "bbox_left_boundary_ratio": 0.25,
             "bbox_right_boundary_ratio": 0.75,
             "bbox_exit_consecutive_frames": 3,
@@ -84,12 +83,6 @@ class YoloObstacleBboxTurn(YoloObstacleTurn):
             self.on_raw_image,
             10,
         )
-        self.bbox_sub = self.create_subscription(
-            Float32MultiArray,
-            str(parameter("bbox_topic")),
-            self.on_bbox,
-            10,
-        )
         self.publish_status("bbox_exit_node_ready")
         self.get_logger().info(
             "BBox-exit avoidance ready: "
@@ -101,12 +94,11 @@ class YoloObstacleBboxTurn(YoloObstacleTurn):
     def on_raw_image(self, msg: Image) -> None:
         if msg.width > 0:
             self.raw_image_width = int(msg.width)
+            self.yolo_image_width = int(msg.width)
 
     def on_bbox(self, msg: Float32MultiArray) -> None:
+        super().on_bbox(msg)
         if len(msg.data) < 4:
-            self.get_logger().warning(
-                "Ignoring malformed obstacle bbox; expected [cx, cy, w, h]"
-            )
             return
 
         center_x = float(msg.data[0])
@@ -186,7 +178,7 @@ def main(args: Optional[Sequence[str]] = None) -> None:
     node = YoloObstacleBboxTurn()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

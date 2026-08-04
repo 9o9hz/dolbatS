@@ -35,9 +35,9 @@ const int ULTRASONIC_TRIG_PINS[ULTRASONIC_SENSOR_COUNT] = {
 
 const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
 const int ULTRASONIC_FAILURE_THRESHOLD = 3;
-// 네 센서를 순차 측정한다. 센서 사이에 45 ms를 두면 각 센서는
-// 에코 대기 시간을 포함해 약 5~6 Hz로 새 값을 측정한다.
-const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 45;
+// 네 센서를 하나씩 60 ms 간격으로 순차 측정한다.
+// 같은 센서의 새 값은 약 240 ms(약 4.2 Hz)마다 생성된다.
+const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 60;
 
 enum UltrasonicState {
   ULTRASONIC_IDLE,
@@ -62,7 +62,8 @@ int ultrasonicConsecutiveFailures[ULTRASONIC_SENSOR_COUNT] = {
 const int STEER_SENSOR_PIN = A4;
 
 // A4 값이 STEER_CENTER_RAW일 때 조향각 0도
-const int STEER_CENTER_RAW = 446;
+const int STEER_CENTER_RAW = 465;
+// 340 ~ 580 -> 465
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
@@ -100,6 +101,13 @@ unsigned long lastValidDriveCommandMs = 0;
 bool hasReceivedDriveCommand = false;
 bool driveWatchdogStopped = false;
 
+// 줄바꿈으로 끝나는 명령을 기다리는 동안 제어 루프가 멈추지 않도록
+// 도착한 바이트만 고정 크기 버퍼에 저장한다.
+const uint8_t SERIAL_BUFFER_SIZE = 40;
+char serialBuffer[SERIAL_BUFFER_SIZE];
+uint8_t serialBufferLength = 0;
+bool discardSerialUntilNewline = false;
+
 // 측정 사이에는 마지막 초음파 값을 유지하고, ROS bridge가
 // /ultrasonic/* 토픽을 100 Hz로 발행할 수 있게 텔레메트리를 보낸다.
 const unsigned long TELEMETRY_INTERVAL_MS = 10;
@@ -107,7 +115,6 @@ unsigned long lastTelemetryMs = 0;
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(5);
 
   pinMode(HANDLE_IN1, OUTPUT);
   pinMode(HANDLE_IN2, OUTPUT);
@@ -138,18 +145,49 @@ void setup() {
 }
 
 void loop() {
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-
-    parseCommand(cmd);
-  }
+  updateSerialCommands();
 
   updateDriveWatchdog();
   applyDrive();
   applySteer();
   updateUltrasonicSensors();
   publishTelemetry();
+}
+
+// ---------------- 비차단 명령 수신 ----------------
+
+void updateSerialCommands() {
+  while (Serial.available() > 0) {
+    char received = static_cast<char>(Serial.read());
+
+    if (received == '\r') {
+      continue;
+    }
+
+    if (received == '\n') {
+      if (!discardSerialUntilNewline && serialBufferLength > 0) {
+        serialBuffer[serialBufferLength] = '\0';
+        parseCommand(String(serialBuffer));
+      }
+
+      serialBufferLength = 0;
+      discardSerialUntilNewline = false;
+      continue;
+    }
+
+    if (discardSerialUntilNewline) {
+      continue;
+    }
+
+    if (serialBufferLength < SERIAL_BUFFER_SIZE - 1) {
+      serialBuffer[serialBufferLength++] = received;
+    }
+    else {
+      // 너무 긴 명령의 뒷부분을 정상 명령으로 잘못 해석하지 않는다.
+      serialBufferLength = 0;
+      discardSerialUntilNewline = true;
+    }
+  }
 }
 
 // ---------------- 비차단 초음파 거리 측정 ----------------
@@ -168,9 +206,27 @@ void startUltrasonicMeasurement(int sensor) {
   ultrasonicState = ULTRASONIC_WAIT_RISE;
 }
 
+float filterUltrasonicDistance(int sensor, float newDistance) {
+  float previous = ultrasonicDistanceCm[sensor];
+
+  if (previous < 0.0f) {
+    return newDistance;
+  }
+
+  // 가까운 장애물은 지연 없이 반영한다.
+  if (newDistance < previous) {
+    return newDistance;
+  }
+
+  // 장애물이 사라졌다는 판단은 완만하게 반영한다.
+  const float alpha = 0.25f;
+  return previous + alpha * (newDistance - previous);
+}
+
 void finishUltrasonicMeasurement(float distanceCm) {
   if (distanceCm >= 0.0f) {
-    ultrasonicDistanceCm[activeUltrasonicSensor] = distanceCm;
+    ultrasonicDistanceCm[activeUltrasonicSensor] =
+      filterUltrasonicDistance(activeUltrasonicSensor, distanceCm);
     ultrasonicConsecutiveFailures[activeUltrasonicSensor] = 0;
   }
   else {

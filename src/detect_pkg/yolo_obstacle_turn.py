@@ -3,12 +3,14 @@
 
 import json
 import math
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional, Sequence
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, Float32, String
+from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 
 
 class AvoidanceState(Enum):
@@ -24,13 +26,59 @@ class RearObstacleState(Enum):
     CLEARED_AFTER_DETECTION = auto()
 
 
+@dataclass
+class LeftHalfDisappearanceTrigger:
+    """Enable ultrasonic processing after a left-half YOLO target vanishes."""
+
+    boundary_ratio: float = 0.5
+    missing_frames_required: int = 3
+    seen_in_left_half: bool = False
+    missing_frames: int = 0
+    enabled: bool = False
+
+    def observe_bbox(self, center_x: float, image_width: int) -> bool:
+        """Record a valid detection and return whether left-half was newly seen."""
+        if self.enabled or image_width <= 0 or not math.isfinite(center_x):
+            return False
+        newly_seen = (
+            not self.seen_in_left_half
+            and center_x < image_width * self.boundary_ratio
+        )
+        if newly_seen:
+            self.seen_in_left_half = True
+        self.missing_frames = 0
+        return newly_seen
+
+    def observe_detection(self, detected: bool) -> bool:
+        """Return True only on the frame that opens the ultrasonic gate."""
+        if self.enabled:
+            return False
+        if detected:
+            self.missing_frames = 0
+            return False
+        if not self.seen_in_left_half:
+            return False
+
+        self.missing_frames += 1
+        if self.missing_frames < self.missing_frames_required:
+            return False
+        self.enabled = True
+        return True
+
+    def reset(self) -> None:
+        self.seen_in_left_half = False
+        self.missing_frames = 0
+        self.enabled = False
+
+
 class YoloObstacleTurn(Node):
     """Generate an obstacle candidate for mission_manager.
 
-    YOLO detection and a rear-ultrasonic detect-then-clear event are latched
-    independently. Once both conditions are ready, steer fully toward the
-    rear sensor side. End avoidance after the opposite-side front sensor
-    decreases and then increases.
+    A YOLO bbox must first appear in the left half of the image and then
+    disappear for the configured number of frames. That sequence opens the
+    ultrasonic gate. A rear-ultrasonic detect-then-clear event then starts
+    full steering toward the rear sensor side. Avoidance ends after the
+    opposite-side front sensor decreases and then increases.
 
     candidate_valid and avoidance_active are only True in TURN. While either
     condition is still pending, mission_manager continues lane driving.
@@ -41,6 +89,13 @@ class YoloObstacleTurn(Node):
 
         defaults = {
             "yolo_detected_topic": "/detect/obstacle/detected",
+            "bbox_topic": "/detect/obstacle/bbox",
+            "fallback_image_width_px": 640,
+            "left_half_boundary_ratio": 0.5,
+            "yolo_disappear_consecutive_frames": 3,
+            "ultrasonic_enable_topic": (
+                "/detect/obstacle/ultrasonic_enabled"
+            ),
             "left_front_distance_topic": (
                 "/ultrasonic/left/front"
             ),
@@ -84,6 +139,24 @@ class YoloObstacleTurn(Node):
         self.consecutive_frames = max(
             1, int(parameter("consecutive_frames"))
         )
+        self.fallback_image_width_px = max(
+            1, int(parameter("fallback_image_width_px"))
+        )
+        left_half_boundary_ratio = float(
+            parameter("left_half_boundary_ratio")
+        )
+        if not 0.0 < left_half_boundary_ratio < 1.0:
+            raise ValueError(
+                "left_half_boundary_ratio must be between 0 and 1"
+            )
+        self.yolo_trigger = LeftHalfDisappearanceTrigger(
+            boundary_ratio=left_half_boundary_ratio,
+            missing_frames_required=max(
+                1,
+                int(parameter("yolo_disappear_consecutive_frames")),
+            ),
+        )
+        self.yolo_image_width = self.fallback_image_width_px
         self.rear_no_echo_is_clear = bool(
             parameter("rear_no_echo_is_clear")
         )
@@ -155,11 +228,20 @@ class YoloObstacleTurn(Node):
         self.status_pub = self.create_publisher(
             String, str(parameter("status_topic")), 10
         )
+        self.ultrasonic_enable_pub = self.create_publisher(
+            Bool, str(parameter("ultrasonic_enable_topic")), 10
+        )
 
         self.yolo_sub = self.create_subscription(
             Bool,
             str(parameter("yolo_detected_topic")),
             self.on_yolo_detected,
+            10,
+        )
+        self.bbox_sub = self.create_subscription(
+            Float32MultiArray,
+            str(parameter("bbox_topic")),
+            self.on_bbox,
             10,
         )
         self.left_front_sub = self.create_subscription(
@@ -192,8 +274,8 @@ class YoloObstacleTurn(Node):
         self.publish_candidate()
         self.publish_status("ready")
         self.get_logger().info(
-            "Obstacle candidate ready: latched YOLO + rear ultrasonic "
-            "detect-then-clear trigger; "
+            "Obstacle candidate ready: left-half YOLO disappearance "
+            "enables rear ultrasonic detect-then-clear processing; "
             f"detect <= {self.detect_threshold_cm:.1f} cm, "
             f"clear > {self.clear_threshold_cm:.1f} cm"
         )
@@ -224,17 +306,39 @@ class YoloObstacleTurn(Node):
                 self.reset_for_next_obstacle()
             return
 
-        if (
-            self.state == AvoidanceState.LANE_FOLLOW
-            and self.yolo_detected
-            and not self.yolo_latched
-        ):
+        if self.state != AvoidanceState.LANE_FOLLOW:
+            return
+
+        if self.yolo_trigger.observe_detection(self.yolo_detected):
             self.yolo_latched = True
-            self.publish_status("yolo_detection_latched")
+            self.publish_status(
+                "left_half_yolo_disappeared_ultrasonic_enabled"
+            )
             self.get_logger().warning(
-                "YOLO obstacle detection state latched"
+                "Left-half YOLO target disappeared: ultrasonic obstacle "
+                "detection enabled"
             )
             self.try_start_turn()
+
+    def on_bbox(self, msg: Float32MultiArray) -> None:
+        if len(msg.data) < 4:
+            self.get_logger().warning(
+                "Ignoring malformed obstacle bbox; expected [cx, cy, w, h]"
+            )
+            return
+        center_x = float(msg.data[0])
+        if self.yolo_trigger.observe_bbox(
+            center_x, self.yolo_image_width
+        ):
+            self.publish_status("yolo_seen_in_left_half")
+            boundary_x = (
+                self.yolo_image_width
+                * self.yolo_trigger.boundary_ratio
+            )
+            self.get_logger().info(
+                f"YOLO target entered left half: x={center_x:.1f}px, "
+                f"boundary={boundary_x:.1f}px"
+            )
 
     def on_left_front_distance(self, msg: Float32) -> None:
         self.left_front_distance = float(msg.data)
@@ -264,6 +368,8 @@ class YoloObstacleTurn(Node):
         right_rear: Optional[float],
     ) -> None:
         if self.state == AvoidanceState.LANE_FOLLOW:
+            if not self.yolo_trigger.enabled:
+                return
             self.update_rear_obstacle_state(left_rear, right_rear)
             return
 
@@ -460,6 +566,7 @@ class YoloObstacleTurn(Node):
         self.side_frames = 0
         self.clear_frames = 0
         self.yolo_clear_frames = 0
+        self.yolo_trigger.reset()
         self.publish_candidate()
         self.publish_status("rearmed")
 
@@ -490,6 +597,9 @@ class YoloObstacleTurn(Node):
         self.candidate_steer_pub.publish(Float32(data=steer))
         self.candidate_valid_pub.publish(Bool(data=valid))
         self.avoidance_active_pub.publish(Bool(data=active))
+        self.ultrasonic_enable_pub.publish(
+            Bool(data=self.yolo_trigger.enabled)
+        )
 
     def enter_fault(self, reason: str) -> None:
         if self.state == AvoidanceState.FAULT:
@@ -512,6 +622,13 @@ class YoloObstacleTurn(Node):
                         "reason": reason,
                         "yolo_detected": self.yolo_detected,
                         "yolo_latched": self.yolo_latched,
+                        "yolo_seen_in_left_half": (
+                            self.yolo_trigger.seen_in_left_half
+                        ),
+                        "yolo_missing_frames": (
+                            self.yolo_trigger.missing_frames
+                        ),
+                        "ultrasonic_enabled": self.yolo_trigger.enabled,
                         "rear_obstacle_state": (
                             self.rear_obstacle_state.name.lower()
                         ),
@@ -531,7 +648,7 @@ class YoloObstacleTurn(Node):
         )
 
     def destroy_node(self) -> bool:
-        if hasattr(self, "candidate_valid_pub"):
+        if rclpy.ok() and hasattr(self, "candidate_valid_pub"):
             self.state = AvoidanceState.FAULT
             self.publish_candidate()
         return super().destroy_node()
@@ -542,7 +659,7 @@ def main(args: Optional[Sequence[str]] = None) -> None:
     node = YoloObstacleTurn()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

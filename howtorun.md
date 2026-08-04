@@ -46,6 +46,8 @@ ros2 run control_pkg keyboard_drive_toggle
 ```
 
 # T7. obstacle
+아래 두 launch는 대체 실행 방식이므로 동시에 실행하지 않는다.
+
 ```
 ros2 launch detect_pkg obstacle_detection.launch.py
 ```

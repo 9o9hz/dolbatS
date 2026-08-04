@@ -162,12 +162,13 @@ source install/setup.bash
 | --- | --- | --- |
 | `/camera/traffic_light/raw` | `sensor_msgs/Image` | 신호등 카메라 raw BGR 프레임 |
 | `/camera/lane/raw` | `sensor_msgs/Image` | 차선 카메라 raw BGR 프레임 |
-| `/camera/lane/detection_view` | `sensor_msgs/Image` | 차선 카메라의 RViz용 장애물 감지 영상 |
+| `/camera/lane/detection_view/compressed` | `sensor_msgs/CompressedImage` | 차선 카메라의 JPEG 압축 장애물 감지 영상 |
 | `/detect/traffic_light/detected` | `std_msgs/Bool` | 신호등 감지 여부 |
 | `/detect/traffic_light/color` | `std_msgs/String` | `red`, `yellow`, `green`, `none` |
 | `/detect/traffic_light/confidence` | `std_msgs/Float32` | 선택한 신호등 검출 confidence, 미검출은 `0.0` |
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
+| `/detect/obstacle/ultrasonic_enabled` | `std_msgs/Bool` | 화면 왼쪽 절반의 YOLO 대상이 사라진 뒤 초음파 판정을 활성화 |
 | `/ultrasonic/left/front` | `std_msgs/Float32` | 왼쪽 앞 초음파 거리(cm) |
 | `/ultrasonic/left/rear` | `std_msgs/Float32` | 왼쪽 뒤 초음파 거리(cm) |
 | `/ultrasonic/right/front` | `std_msgs/Float32` | 오른쪽 앞 초음파 거리(cm) |
@@ -177,7 +178,8 @@ source install/setup.bash
 
 ## ROS2 초음파 장애물 이벤트
 
-`ultrasonic_obstacle_event`는 좌우 거리 한 쌍을 한 프레임으로 처리합니다.
+`ultrasonic_obstacle_event`는 `/detect/obstacle/ultrasonic_enabled`가 참일
+때만 좌우 거리 한 쌍을 한 프레임으로 처리합니다.
 기본값으로 40cm 이하가 3프레임 연속되면 감지 이벤트를, 양쪽 모두
 45cm 초과가 3프레임 연속되면 해제 이벤트를 발행합니다. `-1.0`, NaN,
 무한대는 유효한 거리로 세지 않으며, 센서 오류만으로 해제 이벤트가

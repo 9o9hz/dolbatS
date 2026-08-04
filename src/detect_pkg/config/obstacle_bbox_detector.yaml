@@ -6,16 +6,18 @@ obstacle_detector_publisher:
     compressed_image_topic: /camera/lane/raw/compressed
     detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
-    detection_image_topic: /camera/lane/detection_view
+    detection_image_topic: /camera/lane/detection_view/compressed
+    detection_jpeg_quality: 80
     show_window: true
 
 ultrasonic_obstacle_event:
   ros__parameters:
+    enable_topic: /detect/obstacle/ultrasonic_enabled
     left_distance_topic: /ultrasonic/left/rear
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
-    detect_threshold_cm: 10.0
-    clear_threshold_cm: 50.0
+    detect_threshold_cm: 45.0
+    clear_threshold_cm: 100.0
     consecutive_frames: 3
     default_avoid_direction: 1
 
@@ -23,6 +25,10 @@ yolo_obstacle_bbox_turn:
   ros__parameters:
     yolo_detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
+    fallback_image_width_px: 640
+    left_half_boundary_ratio: 0.5
+    yolo_disappear_consecutive_frames: 3
+    ultrasonic_enable_topic: /detect/obstacle/ultrasonic_enabled
     raw_image_topic: /camera/lane/raw
     left_front_distance_topic: /ultrasonic/left/front
     left_rear_distance_topic: /ultrasonic/left/rear
@@ -35,7 +41,7 @@ yolo_obstacle_bbox_turn:
     status_topic: /detect/avoidance/status
 
     detect_threshold_cm: 40.0
-    clear_threshold_cm: 45.0
+    clear_threshold_cm: 100.0
     consecutive_frames: 3
     rear_no_echo_is_clear: true
     full_steer_angle_deg: 25.0
@@ -43,11 +49,8 @@ yolo_obstacle_bbox_turn:
     publish_rate_hz: 30.0
 
     # raw 화면의 세로 경계선 비율. 0.25=1/4, 0.75=3/4 지점이다.
-    bbox_left_boundary_ratio: 0.25
-    bbox_right_boundary_ratio: 0.75
+    bbox_left_boundary_ratio: 0.29
+    bbox_right_boundary_ratio: 0.705
     # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
     # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
     bbox_exit_consecutive_frames: 3
-    # raw Image가 아직 수신되지 않았을 때만 사용하는 임시 화면 너비다.
-    fallback_image_width_px: 640
-

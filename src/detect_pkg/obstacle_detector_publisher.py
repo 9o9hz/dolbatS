@@ -8,7 +8,7 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage, Image
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32MultiArray, MultiArrayDimension
 
 
@@ -45,8 +45,10 @@ class ObstacleDetectorPublisher(Node):
             "compressed_image_topic", "/image_raw/compressed"
         )
         self.declare_parameter(
-            "detection_image_topic", "/camera/lane/detection_view"
+            "detection_image_topic",
+            "/camera/lane/detection_view/compressed",
         )
+        self.declare_parameter("detection_jpeg_quality", 80)
         self.declare_parameter("show_window", False if show_window is None else show_window)
 
         self.model_path = (
@@ -57,6 +59,13 @@ class ObstacleDetectorPublisher(Node):
         )
         self.show_window = (
             self.get_parameter("show_window").get_parameter_value().bool_value
+        )
+        self.detection_jpeg_quality = max(
+            1,
+            min(
+                100,
+                int(self.get_parameter("detection_jpeg_quality").value),
+            ),
         )
         self.enabled = bool(self.get_parameter("enabled_at_startup").value)
 
@@ -79,7 +88,7 @@ class ObstacleDetectorPublisher(Node):
         self.detected_pub = self.create_publisher(Bool, detected_topic, 10)
         self.bbox_pub = self.create_publisher(Float32MultiArray, bbox_topic, 10)
         self.detection_image_pub = self.create_publisher(
-            Image, detection_image_topic, 10
+            CompressedImage, detection_image_topic, 10
         )
         self.logged_first_frame = False
 
@@ -201,13 +210,21 @@ class ObstacleDetectorPublisher(Node):
         return frame
 
     def publish_image(self, frame, source_msg: CompressedImage) -> None:
-        msg = Image()
+        success, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, self.detection_jpeg_quality],
+        )
+        if not success:
+            self.get_logger().error(
+                "Failed to encode obstacle detection image as JPEG"
+            )
+            return
+
+        msg = CompressedImage()
         msg.header = source_msg.header
-        msg.height, msg.width = frame.shape[:2]
-        msg.encoding = "bgr8"
-        msg.is_bigendian = False
-        msg.step = int(frame.strides[0])
-        msg.data = frame.tobytes()
+        msg.format = "jpeg"
+        msg.data = encoded.tobytes()
         self.detection_image_pub.publish(msg)
 
     def draw_detection_overlay(self, frame, bbox: Optional[BBox]) -> None:

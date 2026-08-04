@@ -7,11 +7,12 @@ obstacle_detector_publisher:
     compressed_image_topic: /camera/lane/raw/compressed
     detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
-    detection_image_topic: /camera/lane/detection_view
+    detection_image_topic: /camera/lane/detection_view/compressed
     show_window: true
 
 ultrasonic_obstacle_event:
   ros__parameters:
+    enable_topic: /detect/obstacle/ultrasonic_enabled
     left_distance_topic: /ultrasonic/left/rear
     right_distance_topic: /ultrasonic/right/rear
     event_topic: /detect/obstacle_event
@@ -23,6 +24,11 @@ ultrasonic_obstacle_event:
 yolo_obstacle_turn:
   ros__parameters:
     yolo_detected_topic: /detect/obstacle/detected
+    bbox_topic: /detect/obstacle/bbox
+    fallback_image_width_px: 640
+    left_half_boundary_ratio: 0.5
+    yolo_disappear_consecutive_frames: 3
+    ultrasonic_enable_topic: /detect/obstacle/ultrasonic_enabled
     left_front_distance_topic: /ultrasonic/left/front
     left_rear_distance_topic: /ultrasonic/left/rear
     right_front_distance_topic: /ultrasonic/right/front
