@@ -12,6 +12,12 @@ import serial
 from rclpy.node import Node
 from std_msgs.msg import Float32
 
+from serial_protocol import (
+    ULTRASONIC_FRAME,
+    VEHICLE_FRAME,
+    parse_telemetry_line,
+)
+
 
 class SerialBridge(Node):
     """Forward only fresh steer/throttle pairs and reconnect after I/O loss."""
@@ -342,34 +348,31 @@ class SerialBridge(Node):
 
     def publish_telemetry_line(self, raw_line: bytes) -> None:
         try:
-            fields = raw_line.decode("ascii").strip().split(",")
-            if len(fields) != 6:
-                raise ValueError("expected six comma-separated fields")
-            values = tuple(float(field) for field in fields)
-            drive_pwm, steering_angle = values[:2]
-            if not all(math.isfinite(value) for value in values):
-                raise ValueError("telemetry contains a non-finite value")
-            if not -255.0 <= drive_pwm <= 255.0:
-                raise ValueError("drive PWM is outside -255..255")
-        except (UnicodeDecodeError, ValueError) as exc:
+            frame_type, values = parse_telemetry_line(raw_line)
+        except ValueError as exc:
             self.get_logger().warning(
                 f"Ignoring invalid Arduino telemetry {raw_line!r}: {exc}",
                 throttle_duration_sec=2.0,
             )
             return
 
-        self.steering_angle_pub.publish(Float32(data=steering_angle))
-        self.drive_pwm_pub.publish(Float32(data=drive_pwm))
-        (
-            left_front_distance,
-            left_rear_distance,
-            right_front_distance,
-            right_rear_distance,
-        ) = values[2:]
-        self.left_front_distance_pub.publish(Float32(data=left_front_distance))
-        self.left_rear_distance_pub.publish(Float32(data=left_rear_distance))
-        self.right_front_distance_pub.publish(Float32(data=right_front_distance))
-        self.right_rear_distance_pub.publish(Float32(data=right_rear_distance))
+        if frame_type == VEHICLE_FRAME:
+            drive_pwm, steering_angle = values
+            self.drive_pwm_pub.publish(Float32(data=drive_pwm))
+            self.steering_angle_pub.publish(Float32(data=steering_angle))
+            return
+
+        if frame_type == ULTRASONIC_FRAME:
+            side, position, distance = values
+            ultrasonic_publishers = {
+                ("L", "F"): self.left_front_distance_pub,
+                ("L", "R"): self.left_rear_distance_pub,
+                ("R", "F"): self.right_front_distance_pub,
+                ("R", "R"): self.right_rear_distance_pub,
+            }
+            ultrasonic_publishers[(side, position)].publish(
+                Float32(data=distance)
+            )
 
     def _write_command(self, command: str, force: bool, kind: str) -> bool:
         with self.serial_lock:

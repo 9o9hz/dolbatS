@@ -32,6 +32,12 @@ const int ULTRASONIC_TRIG_PINS[ULTRASONIC_SENSOR_COUNT] = {
   RIGHT_FRONT_ULTRASONIC_TRIG,
   RIGHT_REAR_ULTRASONIC_TRIG
 };
+const char ULTRASONIC_SIDE_CODES[ULTRASONIC_SENSOR_COUNT] = {
+  'L', 'L', 'R', 'R'
+};
+const char ULTRASONIC_POSITION_CODES[ULTRASONIC_SENSOR_COUNT] = {
+  'F', 'R', 'F', 'R'
+};
 
 const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
 const int ULTRASONIC_FAILURE_THRESHOLD = 3;
@@ -57,6 +63,8 @@ float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
 int ultrasonicConsecutiveFailures[ULTRASONIC_SENSOR_COUNT] = {
   0, 0, 0, 0
 };
+bool ultrasonicTelemetryPending = false;
+int pendingUltrasonicTelemetrySensor = 0;
 
 // ---------------- Steering Sensor ----------------
 const int STEER_SENSOR_PIN = A4;
@@ -124,10 +132,9 @@ char serialBuffer[SERIAL_BUFFER_SIZE];
 uint8_t serialBufferLength = 0;
 bool discardSerialUntilNewline = false;
 
-// 측정 사이에는 마지막 초음파 값을 유지하고, ROS bridge가
-// /ultrasonic/* 토픽을 100 Hz로 발행할 수 있게 텔레메트리를 보낸다.
-const unsigned long TELEMETRY_INTERVAL_MS = 10;
-unsigned long lastTelemetryMs = 0;
+// 차량 상태는 초음파 측정 주기와 독립적으로 100 Hz로 송출한다.
+const unsigned long VEHICLE_TELEMETRY_INTERVAL_MS = 10;
+unsigned long lastVehicleTelemetryMs = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -169,7 +176,8 @@ void loop() {
   applyDrive();
   applySteer();
   updateUltrasonicSensors();
-  publishTelemetry();
+  publishVehicleTelemetry();
+  publishUltrasonicTelemetry();
 }
 
 // ---------------- 비차단 명령 수신 ----------------
@@ -262,6 +270,8 @@ void finishUltrasonicMeasurement(float distanceCm) {
   lastUltrasonicTriggerMs = millis();
   nextUltrasonicSensor =
     (activeUltrasonicSensor + 1) % ULTRASONIC_SENSOR_COUNT;
+  pendingUltrasonicTelemetrySensor = activeUltrasonicSensor;
+  ultrasonicTelemetryPending = true;
 }
 
 void updateUltrasonicSensors() {
@@ -301,9 +311,12 @@ void updateUltrasonicSensors() {
 
 // ---------------- 상태 송출 ----------------
 
-void publishTelemetry() {
+void publishVehicleTelemetry() {
   unsigned long now = millis();
-  if (now - lastTelemetryMs < TELEMETRY_INTERVAL_MS) {
+  if (
+    now - lastVehicleTelemetryMs
+      < VEHICLE_TELEMETRY_INTERVAL_MS
+  ) {
     return;
   }
 
@@ -315,22 +328,32 @@ void publishTelemetry() {
     signedSpeed = -driveSpeed;
   }
 
-  // 형식: signed_drive_pwm,current_steer,left_front_cm,left_rear_cm,
-  //       right_front_cm,right_rear_cm
-  // 첫 필드는 측정 속도가 아니라 명령된 PWM(-255~255)이다.
+  // 형식: VEH,signed_drive_pwm,current_steer
+  // 속도 필드는 측정 속도가 아니라 명령된 PWM(-255~255)이다.
+  Serial.print("VEH,");
   Serial.print(signedSpeed);
   Serial.print(",");
-  Serial.print(currentSteerDeg, 1);
-  Serial.print(",");
-  Serial.print(ultrasonicDistanceCm[0], 1);
-  Serial.print(",");
-  Serial.print(ultrasonicDistanceCm[1], 1);
-  Serial.print(",");
-  Serial.print(ultrasonicDistanceCm[2], 1);
-  Serial.print(",");
-  Serial.println(ultrasonicDistanceCm[3], 1);
+  Serial.println(currentSteerDeg, 1);
 
-  lastTelemetryMs = now;
+  lastVehicleTelemetryMs = now;
+}
+
+void publishUltrasonicTelemetry() {
+  if (!ultrasonicTelemetryPending) {
+    return;
+  }
+
+  // 새 측정이 끝난 센서의 값만 송출한다.
+  // 형식: ULT,side(L/R),position(F/R),distance_cm
+  int sensor = pendingUltrasonicTelemetrySensor;
+  Serial.print("ULT,");
+  Serial.print(ULTRASONIC_SIDE_CODES[sensor]);
+  Serial.print(",");
+  Serial.print(ULTRASONIC_POSITION_CODES[sensor]);
+  Serial.print(",");
+  Serial.println(ultrasonicDistanceCm[sensor], 1);
+
+  ultrasonicTelemetryPending = false;
 }
 
 // ---------------- 현재 조향각 읽기 ----------------

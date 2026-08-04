@@ -1,8 +1,8 @@
 drive_main:
   ros__parameters:
-    # 현재 차량에서 실측한 YOLO 모델과 0731 BEV 보정값.
-    model_path: "src/drive_pkg/resource/best_ver2.pt"
-    bev_params: "src/drive_pkg/resource/bev_params_0731.npz"
+    # 현재 차량에서 실측한 YOLO 모델과 0803 BEV 보정값.
+    model_path: "src/drive_pkg/resource/best.pt"
+    bev_params: "src/drive_pkg/resource/bev_params_0803.npz"
     calibration_width: 640
     calibration_height: 480
 
@@ -23,12 +23,11 @@ drive_main:
     detection_status_topic: "/lane/detection/status"
     instances_topic: "/lane/detection/instances"
 
-    # BEV 픽셀 좌표를 차량 기준 metric path로 바꾸는 실측값.
-    # BEV 640x640px 기준: 가로 1.20m, 세로 1.20m.
-    pixels_per_meter_x: 533.333333
-    pixels_per_meter_y: 533.333333
-    # best_ver2 마스크 실측 중앙 폭(약 33.6mm)에 맞춘 후처리 기준.
-    line_width_target_m: 0.040
+    # BEV 640x640px 기준: x/y 방향 각각 1.20m (0803).
+    # x/y = 1.20m / 640px = 0.001875m/px.
+    pixels_per_meter_x: 533.3333333333
+    pixels_per_meter_y: 533.3333333333
+    line_width_target_m: 0.050
     line_width_tolerance_m: 0.015
     line_width_recovery_tolerance_m: 0.020
     line_width_recovery_aspect_ratio: 1.20

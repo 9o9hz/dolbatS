@@ -1,5 +1,38 @@
 # dolbatS
 
+## GitHub 커밋을 Notion에 동기화
+
+`main` 브랜치에 push하면 `.github/workflows/sync-commits-to-notion.yml`이
+새 커밋을 Notion 데이터베이스의 행(페이지)으로 추가합니다. 같은 Commit SHA가
+이미 있으면 다시 추가하지 않습니다.
+
+Notion 데이터베이스에 다음 이름과 타입의 속성을 정확히 만드세요.
+
+| 속성 이름 | Notion 타입 |
+| --- | --- |
+| `Name` | 제목(Title) |
+| `Commit SHA` | 텍스트(Rich text) |
+| `Repository` | 텍스트(Rich text) |
+| `Branch` | 텍스트(Rich text) |
+| `Author` | 텍스트(Rich text) |
+| `Committed At` | 날짜(Date) |
+| `URL` | URL |
+
+Notion integration을 만든 다음 해당 데이터베이스의 연결에 integration을
+추가하세요. GitHub 저장소의 **Settings → Secrets and variables → Actions**에
+다음 Repository secrets를 등록합니다.
+
+- `NOTION_SECRET`: Notion integration의 새 API secret
+- `NOTION_DATABASE`: 동기화할 Notion 데이터베이스 ID
+
+데이터베이스에는 data source가 정확히 하나 있어야 합니다. 워크플로우가
+데이터베이스 ID에서 data source ID를 자동으로 찾아 최신 Notion API로
+조회하고 행을 생성합니다.
+
+토큰은 코드나 워크플로우 파일에 직접 입력하지 마세요. 기본 동기화 브랜치는
+워크플로우의 `branches`에 지정된 `main`입니다. 다른 브랜치도 동기화하려면
+그 목록에 브랜치를 추가해야 합니다.
+
 ## 명령어 체계
 돌쇠는 다음과 같은 명령어 체계를 가지고 움직입니다. `Serial` 통신을 통해 `115200 baudrate`로 명령어를 전송받습니다. 모든 명령어의 끝은 `\n`으로 끝나야 합니다.
 
@@ -35,20 +68,30 @@ S,15.3\n
 
 Arduino Mega의 초음파 핀은 `ECHO/TRIG` 순서로 왼쪽 앞 22/23번,
 왼쪽 뒤 24/25번, 오른쪽 앞 26/27번, 오른쪽 뒤 28/29번입니다.
-아두이노는 10ms마다
-`signed_drive_pwm,현재조향각,왼쪽앞cm,왼쪽뒤cm,오른쪽앞cm,오른쪽뒤cm`
-형식으로 최신 상태를 송출합니다. 첫 값은 실제 측정 속도가 아니라 현재
-구동 명령 PWM이며 범위는 `-255~255`입니다(양수=전진, 음수=후진).
-초음파 센서는 상호 간섭을 줄이기 위해 네 개를 하나씩 순차 측정하며,
-측정 실패 또는 범위 초과는 `-1.0`으로 표시합니다.
+아두이노 텔레메트리는 차량 상태와 초음파 상태를 접두어로 구분합니다.
+
+```text
+VEH,signed_drive_pwm,현재조향각
+ULT,좌우(L/R),앞뒤(F/R),거리cm
+```
+
+`VEH`는 초음파 측정과 독립적으로 10ms마다 송출합니다. 속도 필드는 실제
+측정 속도가 아니라 현재 구동 명령 PWM이며 범위는 `-255~255`입니다
+(양수=전진, 음수=후진). `ULT`는 네 센서를 하나씩 순차 측정하면서 새
+측정이 끝난 센서의 값 하나만 송출합니다. 측정 실패 또는 범위 초과가
+연속해서 발생하면 해당 값은 `-1.0`으로 표시합니다.
 
 유효한 `D,...` 명령이 500ms 동안 들어오지 않으면 Arduino watchdog이
 구동 PWM을 0으로 만들고 정지한다. 새 유효 명령이 오면 정상 제어로
 복귀하며, timeout 때 조향 목표는 갑자기 중앙으로 바꾸지 않고 유지한다.
 
 ```
-128,5.2,35.2,40.1,41.8,38.7
--80,-10.1,-1.0,120.4,80.2,-1.0
+VEH,128,5.2
+ULT,L,F,35.2
+ULT,L,R,40.1
+VEH,-80,-10.1
+ULT,R,F,80.2
+ULT,R,R,-1.0
 ```
 
 ## ROS2 카메라 인식 토픽 발행

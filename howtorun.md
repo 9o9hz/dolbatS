@@ -1,7 +1,7 @@
 # T1. lane_camera
 ```
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-  -p video_device:=/dev/video4 \
+  -p video_device:=/dev/video2 \
   -p pixel_format:=mjpeg2rgb \
   -p image_width:=640 \
   -p image_height:=480 \
@@ -15,7 +15,7 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
 
 ```
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-  -p video_device:=/dev/video2 \
+  -p video_device:=/dev/video4 \
   -p pixel_format:=mjpeg2rgb \
   -p image_width:=640 \
   -p image_height:=480 \
