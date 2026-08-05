@@ -65,6 +65,15 @@ PointArray = Optional[np.ndarray]
 LaneGroup = Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class BoundarySpacingMeasurement:
+    """Robust metric spacing measured over two boundaries' common span."""
+
+    median_m: float
+    sample_count: int
+    mad_m: float
+
+
 def resolve_data_path(value: str, fallback: Path) -> Path:
     """Resolve absolute, current-working-dir, or workspace-relative data."""
     normalized = str(value).strip()
@@ -117,6 +126,9 @@ class LaneConfig:
     lane_width_m: float = 0.85
     min_boundary_spacing_m: float = 0.80
     max_boundary_spacing_m: float = 0.90
+    boundary_spacing_sample_step_px: float = 10.0
+    boundary_spacing_min_samples: int = 5
+    boundary_spacing_max_mad_m: float = 0.05
     min_component_area: int = 250
     center_sample_step: int = 5
     same_line_threshold_px: float = 75.0
@@ -431,6 +443,24 @@ class SegmentationLaneProcessor:
         if cfg.max_boundary_spacing_m < cfg.lane_width_m:
             raise ValueError(
                 "max_boundary_spacing_m must be >= lane_width_m"
+            )
+        if (
+            not math.isfinite(cfg.boundary_spacing_sample_step_px)
+            or cfg.boundary_spacing_sample_step_px <= 0.0
+        ):
+            raise ValueError(
+                "boundary_spacing_sample_step_px must be finite and positive"
+            )
+        if cfg.boundary_spacing_min_samples < 3:
+            raise ValueError(
+                "boundary_spacing_min_samples must be at least 3"
+            )
+        if (
+            not math.isfinite(cfg.boundary_spacing_max_mad_m)
+            or cfg.boundary_spacing_max_mad_m < 0.0
+        ):
+            raise ValueError(
+                "boundary_spacing_max_mad_m must be finite and non-negative"
             )
         if not math.isfinite(cfg.bev_reference_forward_offset_m):
             raise ValueError(
@@ -1027,24 +1057,134 @@ class SegmentationLaneProcessor:
         lane_type, _, _ = self._group_type(group)
         return lane_type == "DASHED"
 
+    def _measure_boundary_spacing(
+        self,
+        first: LaneGroup,
+        second: LaneGroup,
+    ) -> Optional[BoundarySpacingMeasurement]:
+        """Measure lane width on the groups' shared BEV y interval.
+
+        A single ``x_ref`` subtraction can compare points at different y
+        stations when either detection ends before the reference row.  It
+        also overestimates width on a slanted or curved lane.  Sample both
+        fitted curves at common y values, project their separation onto the
+        local metric normal, and use the median to reject local mask noise.
+        """
+
+        y_min = max(
+            float(first["y_min"]),
+            float(second["y_min"]),
+            float(self.config.path_top_y),
+        )
+        y_max = min(
+            float(first["y_max"]),
+            float(second["y_max"]),
+            float(
+                self.config.warp_height
+                - self.config.path_bottom_margin
+            ),
+        )
+        if not np.isfinite(y_min) or not np.isfinite(y_max):
+            return None
+        if y_max < y_min:
+            return None
+
+        sample_y = np.arange(
+            y_min,
+            y_max + 1e-6,
+            self.config.boundary_spacing_sample_step_px,
+            dtype=np.float64,
+        )
+        if len(sample_y) < self.config.boundary_spacing_min_samples:
+            return None
+
+        first_curve = np.asarray(first["curve"], dtype=np.float64)
+        second_curve = np.asarray(second["curve"], dtype=np.float64)
+        if first_curve.shape != (3,) or second_curve.shape != (3,):
+            return None
+        if not np.all(np.isfinite(first_curve)) or not np.all(
+            np.isfinite(second_curve)
+        ):
+            return None
+
+        first_x = np.polyval(first_curve, sample_y)
+        second_x = np.polyval(second_curve, sample_y)
+        first_slope = 2.0 * first_curve[0] * sample_y + first_curve[1]
+        second_slope = (
+            2.0 * second_curve[0] * sample_y + second_curve[1]
+        )
+        center_slope = 0.5 * (first_slope + second_slope)
+
+        tangent_x_m = center_slope / self.config.pixels_per_meter_x
+        tangent_y_m = np.full_like(
+            tangent_x_m,
+            1.0 / self.config.pixels_per_meter_y,
+        )
+        tangent_norm = np.hypot(tangent_x_m, tangent_y_m)
+        signed_gap_px = second_x - first_x
+        reference_sign = np.sign(
+            float(second["x_ref"]) - float(first["x_ref"])
+        )
+        if reference_sign == 0.0:
+            reference_sign = np.sign(float(np.median(signed_gap_px)))
+        if reference_sign == 0.0:
+            return None
+
+        valid = (
+            np.isfinite(first_x)
+            & np.isfinite(second_x)
+            & np.isfinite(tangent_norm)
+            & (tangent_norm > 1e-12)
+            & (signed_gap_px * reference_sign > 0.0)
+        )
+        if np.count_nonzero(valid) < self.config.boundary_spacing_min_samples:
+            return None
+
+        normal_x = tangent_y_m[valid] / tangent_norm[valid]
+        horizontal_gap_m = (
+            signed_gap_px[valid] / self.config.pixels_per_meter_x
+        )
+        spacing_samples_m = np.abs(horizontal_gap_m * normal_x)
+        spacing_samples_m = spacing_samples_m[
+            np.isfinite(spacing_samples_m)
+        ]
+        if len(spacing_samples_m) < self.config.boundary_spacing_min_samples:
+            return None
+
+        median_m = float(np.median(spacing_samples_m))
+        mad_m = float(np.median(np.abs(spacing_samples_m - median_m)))
+        return BoundarySpacingMeasurement(
+            median_m=median_m,
+            sample_count=int(len(spacing_samples_m)),
+            mad_m=mad_m,
+        )
+
+    def _boundary_spacing_is_valid(
+        self,
+        measurement: Optional[BoundarySpacingMeasurement],
+    ) -> bool:
+        if measurement is None:
+            return False
+        return (
+            measurement.sample_count
+            >= self.config.boundary_spacing_min_samples
+            and measurement.mad_m
+            <= self.config.boundary_spacing_max_mad_m
+            and self.config.min_boundary_spacing_m
+            <= measurement.median_m
+            <= self.config.max_boundary_spacing_m
+        )
+
     def _filter_boundary_spacing(
         self,
         left: Optional[LaneGroup],
         right: Optional[LaneGroup],
     ) -> Tuple[Optional[LaneGroup], Optional[LaneGroup]]:
-        """Keep one boundary when a detected pair is physically too close."""
+        """Keep one boundary when a pair has invalid metric spacing."""
         if left is None or right is None:
             return left, right
-        spacing_px = float(right["x_ref"]) - float(left["x_ref"])
-        minimum_px = (
-            self.config.min_boundary_spacing_m
-            * self.config.pixels_per_meter_x
-        )
-        maximum_px = (
-            self.config.max_boundary_spacing_m
-            * self.config.pixels_per_meter_x
-        )
-        if minimum_px <= spacing_px <= maximum_px:
+        measurement = self._measure_boundary_spacing(left, right)
+        if self._boundary_spacing_is_valid(measurement):
             return left, right
 
         if self._group_reliability(left) >= self._group_reliability(right):
@@ -1097,70 +1237,45 @@ class SegmentationLaneProcessor:
         if not dashed_groups or not solid_groups:
             return None, None, None
 
-        expected_spacing = (
-            self.config.lane_width_m
-            * self.config.pixels_per_meter_x
-        )
-        minimum_spacing = (
-            self.config.min_boundary_spacing_m
-            * self.config.pixels_per_meter_x
-        )
-        maximum_spacing = (
-            self.config.max_boundary_spacing_m
-            * self.config.pixels_per_meter_x
-        )
         candidates = []
         for dashed in dashed_groups:
             dashed_x = float(dashed["x_ref"])
-            left_options = [
-                group
-                for group in solid_groups
-                if dashed_x - float(group["x_ref"])
-                >= minimum_spacing
-                and dashed_x - float(group["x_ref"])
-                <= maximum_spacing
-            ]
-            right_options = [
-                group
-                for group in solid_groups
-                if float(group["x_ref"]) - dashed_x
-                >= minimum_spacing
-                and float(group["x_ref"]) - dashed_x
-                <= maximum_spacing
-            ]
-            left = (
-                min(
-                    left_options,
-                    key=lambda group: dashed_x
-                    - float(group["x_ref"]),
+            left_options = []
+            right_options = []
+            for solid in solid_groups:
+                measurement = self._measure_boundary_spacing(dashed, solid)
+                if measurement is None or not self._boundary_spacing_is_valid(
+                    measurement
+                ):
+                    continue
+                option = (
+                    abs(measurement.median_m - self.config.lane_width_m),
+                    abs(float(solid["x_ref"]) - dashed_x),
+                    solid,
                 )
+                if float(solid["x_ref"]) < dashed_x:
+                    left_options.append(option)
+                elif float(solid["x_ref"]) > dashed_x:
+                    right_options.append(option)
+            left_option = (
+                min(left_options, key=lambda item: item[:2])
                 if left_options
                 else None
             )
-            right = (
-                min(
-                    right_options,
-                    key=lambda group: float(group["x_ref"])
-                    - dashed_x,
-                )
+            right_option = (
+                min(right_options, key=lambda item: item[:2])
                 if right_options
                 else None
             )
+            left = left_option[2] if left_option is not None else None
+            right = right_option[2] if right_option is not None else None
             if left is None and right is None:
                 continue
-            spacing_error = 0.0
-            if left is not None:
-                spacing_error += abs(
-                    dashed_x
-                    - float(left["x_ref"])
-                    - expected_spacing
-                )
-            if right is not None:
-                spacing_error += abs(
-                    float(right["x_ref"])
-                    - dashed_x
-                    - expected_spacing
-                )
+            spacing_error = sum(
+                option[0]
+                for option in (left_option, right_option)
+                if option is not None
+            )
             completeness = int(left is not None) + int(right is not None)
             candidates.append(
                 (-completeness, spacing_error, dashed_x, left, dashed, right)

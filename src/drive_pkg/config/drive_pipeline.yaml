@@ -46,6 +46,12 @@ drive_main:
     min_boundary_spacing_m: 0.80
     # 850mm 기준 ±50mm 범위 밖이면 confidence 높은 한 선만 사용.
     max_boundary_spacing_m: 0.90
+    # 두 경계가 함께 보이는 Y 구간에서 법선 방향 차선 폭을 반복 측정한다.
+    # 중앙값은 국소 마스크 노이즈에 강하고, MAD가 크면 평행 경계가 아닌
+    # 불안정한 쌍으로 판단하여 기존 confidence 기반 단일 경계로 복귀한다.
+    boundary_spacing_sample_step_px: 10.0
+    boundary_spacing_min_samples: 5
+    boundary_spacing_max_mad_m: 0.05
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
     # BEV 설정시마다 변경
     bev_reference_forward_offset_m: 1.04
@@ -118,7 +124,7 @@ pure_pursuit:
     wheelbase_m: 0.545
     max_steer_deg: 25.0
     # Pure Pursuit 기하 조향을 실제 목표각으로 과도하게 증폭하지 않는다.
-    steering_gain: 2.00
+    steering_gain: 1.00
     # true: /auto_throttle 절댓값을 속도 명령의 대용값으로 사용해
     # 저속에서는 짧게, 고속에서는 길게 min~max 사이에서 목표점 이동.
     # false: lookahead_m 거리의 고정 목표점 사용.

@@ -140,6 +140,9 @@ class LaneDriveNode(Node):
             "lane_width_m": 0.85,
             "min_boundary_spacing_m": 0.80,
             "max_boundary_spacing_m": 0.90,
+            "boundary_spacing_sample_step_px": 10.0,
+            "boundary_spacing_min_samples": 5,
+            "boundary_spacing_max_mad_m": 0.05,
             "bev_reference_forward_offset_m": 1.04,
             "min_component_area": 250,
             "center_sample_step": 5,
@@ -225,6 +228,15 @@ class LaneDriveNode(Node):
             ),
             max_boundary_spacing_m=float(
                 parameter("max_boundary_spacing_m")
+            ),
+            boundary_spacing_sample_step_px=float(
+                parameter("boundary_spacing_sample_step_px")
+            ),
+            boundary_spacing_min_samples=int(
+                parameter("boundary_spacing_min_samples")
+            ),
+            boundary_spacing_max_mad_m=float(
+                parameter("boundary_spacing_max_mad_m")
             ),
             bev_reference_forward_offset_m=float(
                 parameter("bev_reference_forward_offset_m")
