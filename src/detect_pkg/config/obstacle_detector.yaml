@@ -13,8 +13,8 @@ obstacle_detector_publisher:
 ultrasonic_obstacle_event:
   ros__parameters:
     enable_topic: /detect/obstacle/ultrasonic_enabled
-    left_distance_topic: /ultrasonic/left/rear
-    right_distance_topic: /ultrasonic/right/rear
+    left_distance_topic: /sonic/left/rear
+    right_distance_topic: /sonic/right/rear
     event_topic: /detect/obstacle_event
     detect_threshold_cm: 40.0
     clear_threshold_cm: 120.0
@@ -29,10 +29,10 @@ yolo_obstacle_turn:
     left_half_boundary_ratio: 0.5
     yolo_disappear_consecutive_frames: 3
     ultrasonic_enable_topic: /detect/obstacle/ultrasonic_enabled
-    left_front_distance_topic: /ultrasonic/left/front
-    left_rear_distance_topic: /ultrasonic/left/rear
-    right_front_distance_topic: /ultrasonic/right/front
-    right_rear_distance_topic: /ultrasonic/right/rear
+    left_front_distance_topic: /sonic/left/front
+    left_rear_distance_topic: /sonic/left/rear
+    right_front_distance_topic: /sonic/right/front
+    right_rear_distance_topic: /sonic/right/rear
     avoidance_active_topic: /detect/obstacle/avoidance_active
     candidate_steer_topic: /control/candidate/obstacle/steer_angle
     candidate_valid_topic: /control/candidate/obstacle/valid

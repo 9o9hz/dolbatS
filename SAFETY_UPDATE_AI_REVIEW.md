@@ -120,7 +120,7 @@
 
 ### 4.4 `path_visualizer.py`
 
-- `/vehicle/current_steering_angle`을 구독해 차량이 보고한 실제 조향각을
+- `/vehicle/angle`을 구독해 차량이 보고한 실제 조향각을
   표시했다.
 - 계산 조향각, 실제 명령 조향각, 실제 피드백 조향각을 구분했다.
 - 경로와 제어 상태의 timestamp가 일치할 때만 Look-ahead 목표점을
@@ -214,7 +214,7 @@
 - 루트 `howtorun.md`
 - `src/drive_pkg/howtorun.md`
 
-이 문서들은 `/lane/path/control`과 `/vehicle/current_steering_angle`을
+이 문서들은 `/lane/path/control`과 `/vehicle/angle`을
 현재 파이프라인의 구성으로 설명하지만, 복원된 `drive_pkg` 실행 코드는
 각 토픽을 사용하지 않는다. AI 에이전트는 안전 변경의 최종 채택 여부를
 결정한 뒤 문서도 같은 구조로 동기화해야 한다.

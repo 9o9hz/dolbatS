@@ -24,7 +24,7 @@
         <plot line_width="3.0" flip_x="false" flip_y="false" mode="TimeSeries">
          <range left="372.266701" bottom="-30.000000" top="30.000000" right="378.832212"/>
          <limitY min="-30" max="30"/>
-         <curve name="/vehicle/current_steering_angle/data" color="#1ac938"/>
+         <curve name="/vehicle/angle/data" color="#1ac938"/>
         </plot>
        </DockArea>
       </DockSplitter>
@@ -57,7 +57,7 @@
    <max_array_size value="100"/>
    <boolean_strings_to_number value="true"/>
    <remove_suffix_from_strings value="true"/>
-   <selected_topics value="/auto_steer_angle;/auto_throttle;/control/candidate/lane/steer_angle;/vehicle/current_steering_angle"/>
+   <selected_topics value="/auto_steer_angle;/auto_throttle;/control/candidate/lane/steer_angle;/vehicle/angle"/>
   </plugin>
   <plugin ID="UDP Server"/>
   <plugin ID="WebSocket Server"/>
@@ -79,4 +79,3 @@
  <snippets/>
  <!-- - - - - - - - - - - - - - - -->
 </root>
-

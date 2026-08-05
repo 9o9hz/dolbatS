@@ -97,16 +97,16 @@ class YoloObstacleTurn(Node):
                 "/detect/obstacle/ultrasonic_enabled"
             ),
             "left_front_distance_topic": (
-                "/ultrasonic/left/front"
+                "/sonic/left/front"
             ),
             "left_rear_distance_topic": (
-                "/ultrasonic/left/rear"
+                "/sonic/left/rear"
             ),
             "right_front_distance_topic": (
-                "/ultrasonic/right/front"
+                "/sonic/right/front"
             ),
             "right_rear_distance_topic": (
-                "/ultrasonic/right/rear"
+                "/sonic/right/rear"
             ),
             "avoidance_active_topic": (
                 "/detect/obstacle/avoidance_active"

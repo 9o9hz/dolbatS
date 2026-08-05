@@ -213,10 +213,10 @@ source install/setup.bash
 | `/detect/obstacle/detected` | `std_msgs/Bool` | 감지 여부. 매 프레임 발행 |
 | `/detect/obstacle/bbox` | `std_msgs/Float32MultiArray` | 감지된 경우에만 `[center_x, center_y, width, height]` 발행 |
 | `/detect/obstacle/ultrasonic_enabled` | `std_msgs/Bool` | 화면 왼쪽 절반의 YOLO 대상이 사라진 뒤 초음파 판정을 활성화 |
-| `/ultrasonic/left/front` | `std_msgs/Float32` | 왼쪽 앞 초음파 거리(cm) |
-| `/ultrasonic/left/rear` | `std_msgs/Float32` | 왼쪽 뒤 초음파 거리(cm) |
-| `/ultrasonic/right/front` | `std_msgs/Float32` | 오른쪽 앞 초음파 거리(cm) |
-| `/ultrasonic/right/rear` | `std_msgs/Float32` | 오른쪽 뒤 초음파 거리(cm) |
+| `/sonic/left/front` | `std_msgs/Float32` | 왼쪽 앞 초음파 거리(cm) |
+| `/sonic/left/rear` | `std_msgs/Float32` | 왼쪽 뒤 초음파 거리(cm) |
+| `/sonic/right/front` | `std_msgs/Float32` | 오른쪽 앞 초음파 거리(cm) |
+| `/sonic/right/rear` | `std_msgs/Float32` | 오른쪽 뒤 초음파 거리(cm) |
 | `/vehicle/drive_pwm` | `std_msgs/Float32` | Arduino의 구동 명령 PWM(`-255~255`), 실제 측정 속도 아님 |
 | `/detect/obstacle_event` | `std_msgs/Int8MultiArray` | 초음파 장애물 상태가 바뀔 때만 `[event, avoid_direction]` 발행 |
 

@@ -9,14 +9,14 @@
        <plot flip_x="false" flip_y="false" line_width="1.0" mode="TimeSeries">
         <range bottom="-1.000000" left="401.005305" right="406.002024" top="61.945002"/>
         <limitY min="-1"/>
-        <curve color="#1f77b4" name="/ultrasonic/left/front/data"/>
+        <curve color="#1f77b4" name="/sonic/left/front/data"/>
        </plot>
       </DockArea>
       <DockArea name="...">
        <plot flip_x="false" flip_y="false" line_width="1.0" mode="TimeSeries">
         <range bottom="-1.000000" left="401.005305" right="406.002024" top="80.832498"/>
         <limitY min="-1"/>
-        <curve color="#1ac938" name="/ultrasonic/right/front/data"/>
+        <curve color="#1ac938" name="/sonic/right/front/data"/>
        </plot>
       </DockArea>
      </DockSplitter>
@@ -25,14 +25,14 @@
        <plot flip_x="false" flip_y="false" line_width="1.0" mode="TimeSeries">
         <range bottom="-1.000000" left="401.005305" right="406.002024" top="80.155003"/>
         <limitY min="-1"/>
-        <curve color="#d62728" name="/ultrasonic/left/rear/data"/>
+        <curve color="#d62728" name="/sonic/left/rear/data"/>
        </plot>
       </DockArea>
       <DockArea name="...">
        <plot flip_x="false" flip_y="false" line_width="1.0" mode="TimeSeries">
         <range bottom="-1.000000" left="401.005305" right="406.002024" top="62.024999"/>
         <limitY min="-1"/>
-        <curve color="#ff7f0e" name="/ultrasonic/right/rear/data"/>
+        <curve color="#ff7f0e" name="/sonic/right/rear/data"/>
        </plot>
       </DockArea>
      </DockSplitter>
@@ -75,7 +75,7 @@
    <max_array_size value="100"/>
    <boolean_strings_to_number value="true"/>
    <remove_suffix_from_strings value="true"/>
-   <selected_topics value="/ultrasonic/left/front;/ultrasonic/left/rear;/ultrasonic/right/front;/ultrasonic/right/rear"/>
+   <selected_topics value="/sonic/left/front;/sonic/left/rear;/sonic/right/front;/sonic/right/rear"/>
   </plugin>
   <plugin ID="UDP Server"/>
   <plugin ID="WebSocket Server"/>

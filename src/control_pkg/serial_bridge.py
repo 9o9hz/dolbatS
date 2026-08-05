@@ -45,20 +45,20 @@ class SerialBridge(Node):
         self.declare_parameter("center_on_timeout", False)
         self.declare_parameter("invert_steer", False)
         self.declare_parameter(
-            "steering_angle_topic", "/vehicle/current_steering_angle"
+            "steering_angle_topic", "/vehicle/angle"
         )
         self.declare_parameter("drive_pwm_topic", "/vehicle/drive_pwm")
         self.declare_parameter(
-            "left_front_distance_topic", "/ultrasonic/left/front"
+            "left_front_distance_topic", "/sonic/left/front"
         )
         self.declare_parameter(
-            "left_rear_distance_topic", "/ultrasonic/left/rear"
+            "left_rear_distance_topic", "/sonic/left/rear"
         )
         self.declare_parameter(
-            "right_front_distance_topic", "/ultrasonic/right/front"
+            "right_front_distance_topic", "/sonic/right/front"
         )
         self.declare_parameter(
-            "right_rear_distance_topic", "/ultrasonic/right/rear"
+            "right_rear_distance_topic", "/sonic/right/rear"
         )
 
         steer_command_topic = str(

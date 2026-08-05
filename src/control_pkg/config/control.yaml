@@ -13,9 +13,9 @@ serial_bridge:
     command_timeout: 0.5
     center_on_timeout: true
     invert_angular: false
-    steering_angle_topic: /vehicle/current_steering_angle
+    steering_angle_topic: /vehicle/angle
     speed_topic: /vehicle/current_speed
-    left_front_distance_topic: /ultrasonic/left/front
-    left_rear_distance_topic: /ultrasonic/left/rear
-    right_front_distance_topic: /ultrasonic/right/front
-    right_rear_distance_topic: /ultrasonic/right/rear
+    left_front_distance_topic: /sonic/left/front
+    left_rear_distance_topic: /sonic/left/rear
+    right_front_distance_topic: /sonic/right/front
+    right_rear_distance_topic: /sonic/right/rear

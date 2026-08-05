@@ -150,7 +150,7 @@ invalid이면 과거 풀조향값을 사용하지 않고 정지한다.
 | 후보 | `/control/candidate/lane/valid` | `std_msgs/Bool` | 현재 path 기반 후보 유효 여부 |
 | 입력 | `/auto_throttle` | `std_msgs/Float32` | 최종 throttle 피드백(동적 LD 계산) |
 | 제어 | `/lane/control/status` | `std_msgs/String` | 후보 조향·LD JSON (`pure_pursuit` 발행) |
-| 차량 피드백 | `/vehicle/current_steering_angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
+| 차량 피드백 | `/vehicle/angle` | `std_msgs/Float32` | Arduino가 보고한 실제 조향각 |
 
 `pure_pursuit`는 실제 주행 명령이나 throttle 후보를 발행하지 않는다.
 빈 경로를 받으면 `valid=false`를 발행하고 마지막 조향값은 상태 표시용으로
