@@ -38,11 +38,6 @@ const char ULTRASONIC_SIDE_CODES[ULTRASONIC_SENSOR_COUNT] = {
 const char ULTRASONIC_POSITION_CODES[ULTRASONIC_SENSOR_COUNT] = {
   'F', 'R', 'F', 'R'
 };
-// 인접 센서의 잔향 간섭을 줄이기 위해 물리적으로 먼 순서로 측정한다.
-// LF(0) -> RR(3) -> LR(1) -> RF(2)
-const int ULTRASONIC_SCAN_ORDER[ULTRASONIC_SENSOR_COUNT] = {
-  0, 3, 1, 2
-};
 
 const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
 const int ULTRASONIC_FAILURE_THRESHOLD = 3;
@@ -61,7 +56,7 @@ unsigned long ultrasonicTriggerStartUs = 0;
 unsigned long ultrasonicEchoStartUs = 0;
 unsigned long lastUltrasonicTriggerMs = 0;
 int activeUltrasonicSensor = 0;
-int nextUltrasonicScanIndex = 0;
+int nextUltrasonicSensor = 0;
 float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
   -1.0f, -1.0f, -1.0f, -1.0f
 };
@@ -88,37 +83,21 @@ const float DEG_PER_ADC = 270.0f / 1024.0f;
 const int STEER_SIGN = -1;
 const float MAX_STEER_DEG = 25.0f;
 
-// 조향 센서의 안전 동작 범위 (ADC raw)
+// 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
 // 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
 const int STEER_RAW_LIMIT_OFFSET =
   (int)(MAX_STEER_DEG / DEG_PER_ADC + 0.5f);
 const int STEER_RAW_MIN = STEER_CENTER_RAW - STEER_RAW_LIMIT_OFFSET;
 const int STEER_RAW_MAX = STEER_CENTER_RAW + STEER_RAW_LIMIT_OFFSET;
+const int STEER_RAW_TOLERANCE = 2;
 
-// 조향 위치 제어: 최소 PWM은 정지마찰 보상(feedforward), P항은
-// 오차가 클 때 출력을 높이고 D항은 목표로 접근하는 속도를 감쇠한다.
-// 좌우 최소 PWM은 실제 차량에서 각각 실측해 다시 튜닝해야 한다.
-const int STEER_PWM_MIN_LEFT = 70;
-const int STEER_PWM_MIN_RIGHT = 70;
-const int STEER_PWM_MAX = 150;
-const float STEER_KP = 3.0f;
-const float STEER_KD = 1.0f;
-const float STEER_SENSOR_ALPHA = 0.25f;
-const float STEER_RATE_ALPHA = 0.25f;
-const float STEER_STOP_TOLERANCE_DEG = 0.5f;
-const float STEER_RESTART_TOLERANCE_DEG = 0.9f;
-const unsigned long STEER_CONTROL_INTERVAL_MS = 10;
+// 조향 모터 PWM
+const int STEER_PWM = 150;
 
 // ---------------- State Variables ----------------
 float currentSteerDeg = 0.0f;
-float previousSteerDeg = 0.0f;
-float filteredSteerRateDegS = 0.0f;
-float targetSteerDeg = 0.0f;
 int currentSteerRaw = STEER_CENTER_RAW;
 int targetSteerRaw = STEER_CENTER_RAW;
-unsigned long lastSteerControlMs = 0;
-bool steeringActive = false;
-int lastSteerDirection = 0;
 
 int driveSpeed = 0;
 char driveDir = 'S';
@@ -165,8 +144,6 @@ void setup() {
 
   currentSteerRaw = readSteerSensorRaw();
   currentSteerDeg = steerRawToDeg(currentSteerRaw);
-  previousSteerDeg = currentSteerDeg;
-  targetSteerDeg = currentSteerDeg;
   targetSteerRaw = constrain(
     currentSteerRaw,
     STEER_RAW_MIN,
@@ -273,8 +250,8 @@ void finishUltrasonicMeasurement(float distanceCm) {
 
   ultrasonicState = ULTRASONIC_IDLE;
   lastUltrasonicTriggerMs = millis();
-  nextUltrasonicScanIndex =
-    (nextUltrasonicScanIndex + 1) % ULTRASONIC_SENSOR_COUNT;
+  nextUltrasonicSensor =
+    (activeUltrasonicSensor + 1) % ULTRASONIC_SENSOR_COUNT;
   pendingUltrasonicTelemetrySensor = activeUltrasonicSensor;
   ultrasonicTelemetryPending = true;
 }
@@ -310,10 +287,8 @@ void updateUltrasonicSensors() {
     return;
   }
 
-  // 한 번에 하나만 지정된 순서로 발사해 초음파 간섭을 줄인다.
-  startUltrasonicMeasurement(
-    ULTRASONIC_SCAN_ORDER[nextUltrasonicScanIndex]
-  );
+  // 한 번에 하나만 발사해 네 센서 사이의 초음파 간섭을 줄인다.
+  startUltrasonicMeasurement(nextUltrasonicSensor);
 }
 
 // ---------------- 상태 송출 ----------------
@@ -377,15 +352,15 @@ float steerRawToDeg(int raw) {
 
 // ---------------- 핸들 제어 ----------------
 
-void handleLeft(int pwm) {
+void handleLeft() {
   // A4 raw가 감소하는 방향
   analogWrite(HANDLE_IN1, 0);
-  analogWrite(HANDLE_IN2, pwm);
+  analogWrite(HANDLE_IN2, STEER_PWM);
 }
 
-void handleRight(int pwm) {
+void handleRight() {
   // A4 raw가 증가하는 방향
-  analogWrite(HANDLE_IN1, pwm);
+  analogWrite(HANDLE_IN1, STEER_PWM);
   analogWrite(HANDLE_IN2, 0);
 }
 
@@ -510,8 +485,6 @@ void parseSteerCommand(String cmd) {
     STEER_RAW_MIN,
     STEER_RAW_MAX
   );
-  // ADC 양자화와 안전 제한이 반영된 실제 목표각을 제어기에 저장한다.
-  targetSteerDeg = steerRawToDeg(targetSteerRaw);
 }
 
 // ---------------- 실제 구동 적용 ----------------
@@ -529,90 +502,21 @@ void applyDrive() {
 }
 
 void applySteer() {
-  unsigned long nowMs = millis();
-  if (
-    (unsigned long)(nowMs - lastSteerControlMs)
-      < STEER_CONTROL_INTERVAL_MS
-  ) {
-    return;
-  }
-
-  float dt = (nowMs - lastSteerControlMs) * 0.001f;
-  lastSteerControlMs = nowMs;
-  if (dt <= 0.0f || dt > 0.1f) {
-    dt = STEER_CONTROL_INTERVAL_MS * 0.001f;
-    filteredSteerRateDegS = 0.0f;
-  }
-
   currentSteerRaw = readSteerSensorRaw();
-  float measuredSteerDeg = steerRawToDeg(currentSteerRaw);
-  currentSteerDeg += STEER_SENSOR_ALPHA
-    * (measuredSteerDeg - currentSteerDeg);
+  currentSteerDeg = steerRawToDeg(currentSteerRaw);
 
-  float measuredRateDegS =
-    (currentSteerDeg - previousSteerDeg) / dt;
-  previousSteerDeg = currentSteerDeg;
-  filteredSteerRateDegS += STEER_RATE_ALPHA
-    * (measuredRateDegS - filteredSteerRateDegS);
+  int steerRawError = targetSteerRaw - currentSteerRaw;
 
-  float errorDeg = targetSteerDeg - currentSteerDeg;
-  float absErrorDeg = abs(errorDeg);
-
-  if (absErrorDeg <= STEER_STOP_TOLERANCE_DEG) {
+  if (abs(steerRawError) <= STEER_RAW_TOLERANCE) {
     handleStop();
-    steeringActive = false;
-    lastSteerDirection = 0;
-    return;
   }
-
-  // Stop/restart hysteresis prevents motor chatter around the target.
-  if (!steeringActive && absErrorDeg < STEER_RESTART_TOLERANCE_DEG) {
-    handleStop();
-    return;
+  else if (steerRawError < 0 && currentSteerRaw > STEER_RAW_MIN) {
+    handleLeft();
   }
-  steeringActive = true;
-
-  // Positive angle error means left. The raw sensor decreases to the left.
-  int direction = errorDeg > 0.0f ? 1 : -1;
-  if (
-    (direction > 0 && currentSteerRaw <= STEER_RAW_MIN)
-    || (direction < 0 && currentSteerRaw >= STEER_RAW_MAX)
-  ) {
-    handleStop();
-    steeringActive = false;
-    lastSteerDirection = 0;
-    return;
-  }
-
-  // On direction reversal, coast for one 10 ms control period before
-  // energizing the opposite H-bridge direction.
-  if (lastSteerDirection != 0 && direction != lastSteerDirection) {
-    handleStop();
-    lastSteerDirection = direction;
-    return;
-  }
-
-  float directionFloat = direction > 0 ? 1.0f : -1.0f;
-  float closingRateDegS = directionFloat * filteredSteerRateDegS;
-  int minimumPwm = direction > 0
-    ? STEER_PWM_MIN_LEFT
-    : STEER_PWM_MIN_RIGHT;
-
-  float pwmFloat = minimumPwm
-    + STEER_KP
-      * max(absErrorDeg - STEER_STOP_TOLERANCE_DEG, 0.0f)
-    - STEER_KD * max(closingRateDegS, 0.0f);
-  int pwm = constrain(
-    (int)round(pwmFloat),
-    minimumPwm,
-    STEER_PWM_MAX
-  );
-
-  if (direction > 0) {
-    handleLeft(pwm);
+  else if (steerRawError > 0 && currentSteerRaw < STEER_RAW_MAX) {
+    handleRight();
   }
   else {
-    handleRight(pwm);
+    handleStop();
   }
-  lastSteerDirection = direction;
 }
