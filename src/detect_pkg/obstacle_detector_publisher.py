@@ -13,18 +13,19 @@ from std_msgs.msg import Bool, Float32MultiArray, MultiArrayDimension
 
 
 BBox = Tuple[float, float, float, float]
+DEFAULT_MODEL_FILENAME = "dolsoi-model-v2.pt"
 
 
-def get_default_model_path() -> str:
+def get_model_path(model_filename: str) -> str:
     try:
         return os.path.join(
             get_package_share_directory("detect_pkg"),
             "config",
-            "dolsoi-model-v2.pt",
+            model_filename,
         )
     except Exception:
         return os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "dolsoi-model-v2.pt"
+            os.path.dirname(os.path.abspath(__file__)), "config", model_filename
         )
 
 
@@ -35,7 +36,8 @@ class ObstacleDetectorPublisher(Node):
     ) -> None:
         super().__init__("obstacle_detector_publisher")
 
-        self.declare_parameter("model_path", get_default_model_path())
+        self.declare_parameter("model_filename", DEFAULT_MODEL_FILENAME)
+        self.declare_parameter("model_path", "")
         self.declare_parameter("confidence_threshold", 0.5)
         self.declare_parameter("enable_topic", "/detect/obstacle/enable")
         self.declare_parameter("enabled_at_startup", False)
@@ -51,9 +53,11 @@ class ObstacleDetectorPublisher(Node):
         self.declare_parameter("detection_jpeg_quality", 80)
         self.declare_parameter("show_window", False if show_window is None else show_window)
 
-        self.model_path = (
-            self.get_parameter("model_path").get_parameter_value().string_value
-        )
+        configured_model_path = str(self.get_parameter("model_path").value).strip()
+        model_filename = str(self.get_parameter("model_filename").value).strip()
+        if not configured_model_path and not model_filename:
+            raise ValueError("model_filename must not be empty when model_path is unset")
+        self.model_path = configured_model_path or get_model_path(model_filename)
         self.confidence_threshold = (
             self.get_parameter("confidence_threshold").get_parameter_value().double_value
         )

@@ -1,5 +1,7 @@
 obstacle_detector_publisher:
   ros__parameters:
+    # detect_pkg/config 아래에서 불러올 YOLO 모델 파일명
+    model_filename: dolsoi-model-v2.pt
     confidence_threshold: 0.5
     # YOLO 감지 상태를 언제든 래치할 수 있도록 상시 추론한다.
     enable_topic: /detect/obstacle/enable
