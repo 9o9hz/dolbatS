@@ -70,26 +70,31 @@ int pendingUltrasonicTelemetrySensor = 0;
 const int STEER_SENSOR_PIN = A4;
 
 // A4 값이 STEER_CENTER_RAW일 때 조향각 0도
-const int STEER_CENTER_RAW = 465;
-// 340 ~ 580 -> 465
+const int STEER_CENTER_RAW = 577;
+// 센서/링크를 정비한 뒤에는 실차 중앙의 raw 값으로 반드시 재보정한다.
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
 // 즉 각도 = ADC 변화량 * 270 / 1024
 const float DEG_PER_ADC = 270.0f / 1024.0f;
 
-// 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-)
-// 현재 센서는 오른쪽으로 움직일 때 A4 값이 증가하므로 -1
-const int STEER_SIGN = -1;
+// 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-).
+// 실차에서는 왼쪽으로 움직일 때 A4 값이 증가한다. 이 극성이 틀리면
+// 위치 오차를 줄이지 않고 같은 방향으로 계속 구동해 기계적 끝단에 닿는다.
+const int STEER_SIGN = 1;
 const float MAX_STEER_DEG = 25.0f;
 
 // 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
-// 현재 센서는 왼쪽으로 갈수록 raw가 작아지고 오른쪽으로 갈수록 커짐
+// 현재 센서는 왼쪽으로 갈수록 raw가 커지고 오른쪽으로 갈수록 작아짐
 const int STEER_RAW_LIMIT_OFFSET =
   (int)(MAX_STEER_DEG / DEG_PER_ADC + 0.5f);
 const int STEER_RAW_MIN = STEER_CENTER_RAW - STEER_RAW_LIMIT_OFFSET;
 const int STEER_RAW_MAX = STEER_CENTER_RAW + STEER_RAW_LIMIT_OFFSET;
 const int STEER_RAW_TOLERANCE = 2;
+
+// 센서 단선/링크 이탈 시 조향 모터를 끝단까지 계속 구동하지 않는다.
+const unsigned long STEER_PROGRESS_TIMEOUT_MS = 250;
+const int STEER_MIN_PROGRESS_RAW = 2;
 
 // 조향 모터 PWM
 const int STEER_PWM = 150;
@@ -98,6 +103,10 @@ const int STEER_PWM = 150;
 float currentSteerDeg = 0.0f;
 int currentSteerRaw = STEER_CENTER_RAW;
 int targetSteerRaw = STEER_CENTER_RAW;
+int steerProgressDirection = 0;
+int steerProgressStartRaw = STEER_CENTER_RAW;
+unsigned long steerProgressStartMs = 0;
+bool steerFeedbackFault = false;
 
 int driveSpeed = 0;
 char driveDir = 'S';
@@ -353,13 +362,13 @@ float steerRawToDeg(int raw) {
 // ---------------- 핸들 제어 ----------------
 
 void handleLeft() {
-  // A4 raw가 감소하는 방향
+  // 실차에서 A4 raw가 증가하는 방향
   analogWrite(HANDLE_IN1, 0);
   analogWrite(HANDLE_IN2, STEER_PWM);
 }
 
 void handleRight() {
-  // A4 raw가 증가하는 방향
+  // 실차에서 A4 raw가 감소하는 방향
   analogWrite(HANDLE_IN1, STEER_PWM);
   analogWrite(HANDLE_IN2, 0);
 }
@@ -480,11 +489,12 @@ void parseSteerCommand(String cmd) {
   int requestedRaw = round(
     STEER_CENTER_RAW + angle / (DEG_PER_ADC * STEER_SIGN)
   );
-  targetSteerRaw = constrain(
+  int newTargetSteerRaw = constrain(
     requestedRaw,
     STEER_RAW_MIN,
     STEER_RAW_MAX
   );
+  targetSteerRaw = newTargetSteerRaw;
 }
 
 // ---------------- 실제 구동 적용 ----------------
@@ -509,14 +519,43 @@ void applySteer() {
 
   if (abs(steerRawError) <= STEER_RAW_TOLERANCE) {
     handleStop();
+    steerFeedbackFault = false;
+    steerProgressDirection = 0;
   }
-  else if (steerRawError < 0 && currentSteerRaw > STEER_RAW_MIN) {
-    handleLeft();
-  }
-  else if (steerRawError > 0 && currentSteerRaw < STEER_RAW_MAX) {
-    handleRight();
+  else if (steerFeedbackFault) {
+    handleStop();
   }
   else {
-    handleStop();
+    int requiredRawDirection = steerRawError > 0 ? 1 : -1;
+    unsigned long nowMs = millis();
+    if (requiredRawDirection != steerProgressDirection) {
+      steerProgressDirection = requiredRawDirection;
+      steerProgressStartRaw = currentSteerRaw;
+      steerProgressStartMs = nowMs;
+    }
+    else if (
+      (unsigned long)(nowMs - steerProgressStartMs)
+        >= STEER_PROGRESS_TIMEOUT_MS
+    ) {
+      int progressRaw = requiredRawDirection
+        * (currentSteerRaw - steerProgressStartRaw);
+      if (progressRaw < STEER_MIN_PROGRESS_RAW) {
+        steerFeedbackFault = true;
+        handleStop();
+        return;
+      }
+      steerProgressStartRaw = currentSteerRaw;
+      steerProgressStartMs = nowMs;
+    }
+
+    if (requiredRawDirection > 0 && currentSteerRaw < STEER_RAW_MAX) {
+      handleLeft();
+    }
+    else if (requiredRawDirection < 0 && currentSteerRaw > STEER_RAW_MIN) {
+      handleRight();
+    }
+    else {
+      handleStop();
+    }
   }
 }
