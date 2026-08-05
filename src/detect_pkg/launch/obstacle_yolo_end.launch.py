@@ -8,7 +8,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     default_config = (
         get_package_share_directory("detect_pkg")
-        + "/config/obstacle_detector.yaml"
+        + "/config/obstacle_yolo_end.yaml"
     )
     config_file = LaunchConfiguration("config_file")
 
@@ -31,8 +31,8 @@ def generate_launch_description():
             ),
             Node(
                 package="detect_pkg",
-                executable="yolo_obstacle_turn",
-                name="yolo_obstacle_turn",
+                executable="yolo_obstacle_bbox_turn",
+                name="yolo_obstacle_bbox_turn",
                 parameters=[config_file],
                 output="screen",
             ),

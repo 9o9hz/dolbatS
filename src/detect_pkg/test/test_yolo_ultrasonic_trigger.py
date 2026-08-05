@@ -1,9 +1,19 @@
 import unittest
 
-from yolo_obstacle_turn import LeftHalfDisappearanceTrigger
+from yolo_obstacle_turn import (
+    LeftHalfDisappearanceTrigger,
+    should_monitor_ultrasonic,
+)
 
 
 class LeftHalfDisappearanceTriggerTest(unittest.TestCase):
+    def test_disabled_yolo_gate_monitors_ultrasonic_immediately(self):
+        self.assertTrue(should_monitor_ultrasonic(False, False))
+
+    def test_enabled_yolo_gate_waits_until_open(self):
+        self.assertFalse(should_monitor_ultrasonic(True, False))
+        self.assertTrue(should_monitor_ultrasonic(True, True))
+
     def test_right_half_target_does_not_enable_ultrasonic(self):
         trigger = LeftHalfDisappearanceTrigger(missing_frames_required=3)
 

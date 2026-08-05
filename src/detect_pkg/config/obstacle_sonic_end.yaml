@@ -3,13 +3,17 @@ obstacle_detector_publisher:
     # detect_pkg/config 아래에서 불러올 YOLO 모델 파일명
     model_filename: dolsoi-model-v2.pt
     confidence_threshold: 0.5
+    # YOLO 감지 상태를 언제든 래치할 수 있도록 상시 추론한다.
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
     compressed_image_topic: /camera/lane/raw/compressed
     detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
+    ultrasonic_enable_topic: /detect/obstacle/ultrasonic_enabled
+    ultrasonic_event_topic: /detect/obstacle_event
+    avoidance_steer_topic: /control/candidate/obstacle/steer_angle
+    avoidance_valid_topic: /control/candidate/obstacle/valid
     detection_image_topic: /camera/lane/detection_view/compressed
-    detection_jpeg_quality: 80
     show_window: true
 
 ultrasonic_obstacle_event:
@@ -18,41 +22,38 @@ ultrasonic_obstacle_event:
     left_distance_topic: /sonic/left/rear
     right_distance_topic: /sonic/right/rear
     event_topic: /detect/obstacle_event
-    detect_threshold_cm: 45.0
-    clear_threshold_cm: 100.0
-    consecutive_frames: 3
+    detect_threshold_cm: 50.0
+    clear_threshold_cm: 70.0
+    consecutive_frames: 1
     default_avoid_direction: 1
 
-yolo_obstacle_bbox_turn:
+yolo_obstacle_turn:
   ros__parameters:
     yolo_detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
     fallback_image_width_px: 640
     left_half_boundary_ratio: 0.5
     yolo_disappear_consecutive_frames: 3
+    # false면 YOLO 감지/해제 조건을 우회하고 초음파를 처음부터 감시한다.
+    yolo_ultrasonic_trigger_enabled: false
     ultrasonic_enable_topic: /detect/obstacle/ultrasonic_enabled
-    raw_image_topic: /camera/lane/raw
     left_front_distance_topic: /sonic/left/front
     left_rear_distance_topic: /sonic/left/rear
     right_front_distance_topic: /sonic/right/front
     right_rear_distance_topic: /sonic/right/rear
-
     avoidance_active_topic: /detect/obstacle/avoidance_active
     candidate_steer_topic: /control/candidate/obstacle/steer_angle
     candidate_valid_topic: /control/candidate/obstacle/valid
     status_topic: /detect/avoidance/status
-
     detect_threshold_cm: 40.0
-    clear_threshold_cm: 100.0
-    consecutive_frames: 3
+    clear_threshold_cm: 120.0
+    consecutive_frames: 1
+    # 펌웨어의 -1.0(에코 없음)을 연속 프레임일 때 뒤 장애물 해제로 취급한다.
     rear_no_echo_is_clear: true
-    full_steer_angle_deg: 25.0
+    full_steer_angle_deg: -25.0
+    trend_epsilon_cm: 0.5
+    minimum_drop_cm: 2.0
+    rise_from_minimum_cm: 3.0
+    trend_consecutive_frames: 1
     turn_timeout_sec: 8.0
     publish_rate_hz: 30.0
-
-    # raw 화면의 세로 경계선 비율. 0.25=1/4, 0.75=3/4 지점이다.
-    bbox_left_boundary_ratio: 0.29
-    bbox_right_boundary_ratio: 0.705
-    # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
-    # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
-    bbox_exit_consecutive_frames: 3

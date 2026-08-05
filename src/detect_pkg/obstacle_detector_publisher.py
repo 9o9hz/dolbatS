@@ -9,11 +9,21 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Bool, Float32MultiArray, MultiArrayDimension
+from std_msgs.msg import (
+    Bool,
+    Float32,
+    Float32MultiArray,
+    Int8MultiArray,
+    MultiArrayDimension,
+)
 
 
 BBox = Tuple[float, float, float, float]
 DEFAULT_MODEL_FILENAME = "dolsoi-model-v2.pt"
+EVENT_DETECTED = 1
+DIRECTION_RIGHT = -1
+DIRECTION_NONE = 0
+DIRECTION_LEFT = 1
 
 
 def get_model_path(model_filename: str) -> str:
@@ -43,6 +53,21 @@ class ObstacleDetectorPublisher(Node):
         self.declare_parameter("enabled_at_startup", False)
         self.declare_parameter("detected_topic", "/detect/obstacle/detected")
         self.declare_parameter("bbox_topic", "/detect/obstacle/bbox")
+        self.declare_parameter(
+            "ultrasonic_enable_topic",
+            "/detect/obstacle/ultrasonic_enabled",
+        )
+        self.declare_parameter(
+            "ultrasonic_event_topic", "/detect/obstacle_event"
+        )
+        self.declare_parameter(
+            "avoidance_steer_topic",
+            "/control/candidate/obstacle/steer_angle",
+        )
+        self.declare_parameter(
+            "avoidance_valid_topic",
+            "/control/candidate/obstacle/valid",
+        )
         self.declare_parameter(
             "compressed_image_topic", "/image_raw/compressed"
         )
@@ -88,6 +113,18 @@ class ObstacleDetectorPublisher(Node):
             .get_parameter_value()
             .string_value
         )
+        ultrasonic_enable_topic = str(
+            self.get_parameter("ultrasonic_enable_topic").value
+        )
+        ultrasonic_event_topic = str(
+            self.get_parameter("ultrasonic_event_topic").value
+        )
+        avoidance_steer_topic = str(
+            self.get_parameter("avoidance_steer_topic").value
+        )
+        avoidance_valid_topic = str(
+            self.get_parameter("avoidance_valid_topic").value
+        )
 
         self.detected_pub = self.create_publisher(Bool, detected_topic, 10)
         self.bbox_pub = self.create_publisher(Float32MultiArray, bbox_topic, 10)
@@ -95,6 +132,12 @@ class ObstacleDetectorPublisher(Node):
             CompressedImage, detection_image_topic, 10
         )
         self.logged_first_frame = False
+        self.yolo_detected = False
+        self.ultrasonic_enabled = False
+        self.ultrasonic_detected = False
+        self.avoid_direction = DIRECTION_NONE
+        self.avoidance_steer_deg = 0.0
+        self.avoidance_valid = False
 
         self.get_logger().info(f"Loading model: {self.model_path}")
         YOLO = self.load_yolo()
@@ -108,6 +151,30 @@ class ObstacleDetectorPublisher(Node):
         )
         self.enable_subscription = self.create_subscription(
             Bool, enable_topic, self.on_enable, 10
+        )
+        self.ultrasonic_enable_subscription = self.create_subscription(
+            Bool,
+            ultrasonic_enable_topic,
+            self.on_ultrasonic_enable,
+            10,
+        )
+        self.ultrasonic_event_subscription = self.create_subscription(
+            Int8MultiArray,
+            ultrasonic_event_topic,
+            self.on_ultrasonic_event,
+            10,
+        )
+        self.avoidance_steer_subscription = self.create_subscription(
+            Float32,
+            avoidance_steer_topic,
+            self.on_avoidance_steer,
+            10,
+        )
+        self.avoidance_valid_subscription = self.create_subscription(
+            Bool,
+            avoidance_valid_topic,
+            self.on_avoidance_valid,
+            10,
         )
         self.get_logger().info(
             f"YOLO enabled by {enable_topic} (startup={self.enabled}); "
@@ -125,6 +192,31 @@ class ObstacleDetectorPublisher(Node):
         )
         if not requested:
             self.publish_detected(False)
+
+    def on_ultrasonic_enable(self, msg: Bool) -> None:
+        self.ultrasonic_enabled = bool(msg.data)
+        if not self.ultrasonic_enabled:
+            self.ultrasonic_detected = False
+            self.avoid_direction = DIRECTION_NONE
+
+    def on_ultrasonic_event(self, msg: Int8MultiArray) -> None:
+        if len(msg.data) < 2:
+            return
+        self.ultrasonic_detected = int(msg.data[0]) == EVENT_DETECTED
+        direction = int(msg.data[1])
+        self.avoid_direction = (
+            direction
+            if direction in (DIRECTION_LEFT, DIRECTION_RIGHT)
+            else DIRECTION_NONE
+        )
+
+    def on_avoidance_steer(self, msg: Float32) -> None:
+        value = float(msg.data)
+        if np.isfinite(value):
+            self.avoidance_steer_deg = value
+
+    def on_avoidance_valid(self, msg: Bool) -> None:
+        self.avoidance_valid = bool(msg.data)
 
     def load_yolo(self):
         try:
@@ -153,6 +245,7 @@ class ObstacleDetectorPublisher(Node):
 
         bbox = self.detect_best_bbox(frame)
         detected = bbox is not None
+        self.yolo_detected = detected
         self.publish_detected(detected)
 
         if detected:
@@ -241,6 +334,68 @@ class ObstacleDetectorPublisher(Node):
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.circle(frame, (int(center_x), int(center_y)), 4, (0, 0, 255), -1)
+
+        self.draw_status_panel(frame)
+
+    def draw_status_panel(self, frame) -> None:
+        if self.avoidance_valid and abs(self.avoidance_steer_deg) > 0.1:
+            direction = (
+                "LEFT" if self.avoidance_steer_deg > 0.0 else "RIGHT"
+            )
+            direction_text = f"{direction} ({self.avoidance_steer_deg:+.1f} deg)"
+            direction_active = True
+        else:
+            direction = {
+                DIRECTION_LEFT: "LEFT",
+                DIRECTION_RIGHT: "RIGHT",
+            }.get(self.avoid_direction, "NONE")
+            direction_text = direction
+            direction_active = direction != "NONE"
+
+        if not self.ultrasonic_enabled:
+            ultrasonic_text = "DISABLED"
+            ultrasonic_color = (160, 160, 160)
+        elif self.ultrasonic_detected:
+            ultrasonic_text = "DETECTED"
+            ultrasonic_color = (0, 0, 255)
+        else:
+            ultrasonic_text = "CLEAR"
+            ultrasonic_color = (0, 255, 0)
+
+        rows = (
+            (
+                f"YOLO: {'DETECTED' if self.yolo_detected else 'CLEAR'}",
+                (0, 255, 0) if self.yolo_detected else (200, 200, 200),
+            ),
+            (f"ULTRASONIC: {ultrasonic_text}", ultrasonic_color),
+            (
+                f"AVOID DIR: {direction_text}",
+                (0, 200, 255) if direction_active else (200, 200, 200),
+            ),
+        )
+
+        panel_width = min(390, max(1, frame.shape[1] - 20))
+        panel_height = 100
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay,
+            (10, 10),
+            (10 + panel_width, 10 + panel_height),
+            (0, 0, 0),
+            -1,
+        )
+        cv2.addWeighted(overlay, 0.65, frame, 0.35, 0.0, frame)
+        for index, (text, color) in enumerate(rows):
+            cv2.putText(
+                frame,
+                text,
+                (22, 38 + index * 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
 
     def draw_debug_window(self, frame) -> None:
         cv2.imshow("obstacle detector", frame)

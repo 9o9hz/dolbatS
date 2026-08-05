@@ -97,7 +97,7 @@ ULT,R,R,-1.0
 
 ## ROS2 카메라 인식 토픽 발행
 
-`traffic_light_camera_publisher`는 `/camera/traffic_light/raw`, `lane_camera_publisher`는 `/camera/lane/raw`를 발행합니다. `obstacle_detector_publisher`는 차선 카메라 토픽을 구독해 config의 `model_filename`으로 지정한 모델로 객체를 찾고 감지 여부, 박스와 하단 중심 좌표를 발행합니다. 모델 파일은 `src/detect_pkg/config`에 두고 `obstacle_detector.yaml` 또는 `obstacle_bbox_detector.yaml`에서 파일명을 설정합니다. 전체 경로가 필요한 경우 기존 `model_path` 파라미터를 지정하면 `model_filename`보다 우선합니다.
+`traffic_light_camera_publisher`는 `/camera/traffic_light/raw`, `lane_camera_publisher`는 `/camera/lane/raw`를 발행합니다. `obstacle_detector_publisher`는 차선 카메라 토픽을 구독해 config의 `model_filename`으로 지정한 모델로 객체를 찾고 감지 여부, 박스와 하단 중심 좌표를 발행합니다. 모델 파일은 `src/detect_pkg/config`에 두고 `obstacle_sonic_end.yaml` 또는 `obstacle_yolo_end.yaml`에서 파일명을 설정합니다. 전체 경로가 필요한 경우 기존 `model_path` 파라미터를 지정하면 `model_filename`보다 우선합니다.
 
 ## ROS2 차선 주행 파이프라인
 

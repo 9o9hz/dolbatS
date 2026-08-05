@@ -26,6 +26,14 @@ class RearObstacleState(Enum):
     CLEARED_AFTER_DETECTION = auto()
 
 
+def should_monitor_ultrasonic(
+    yolo_trigger_required: bool,
+    yolo_gate_open: bool,
+) -> bool:
+    """Monitor immediately when the optional YOLO gate is disabled."""
+    return not yolo_trigger_required or yolo_gate_open
+
+
 @dataclass
 class LeftHalfDisappearanceTrigger:
     """Enable ultrasonic processing after a left-half YOLO target vanishes."""
@@ -93,6 +101,7 @@ class YoloObstacleTurn(Node):
             "fallback_image_width_px": 640,
             "left_half_boundary_ratio": 0.5,
             "yolo_disappear_consecutive_frames": 3,
+            "yolo_ultrasonic_trigger_enabled": True,
             "ultrasonic_enable_topic": (
                 "/detect/obstacle/ultrasonic_enabled"
             ),
@@ -155,6 +164,9 @@ class YoloObstacleTurn(Node):
                 1,
                 int(parameter("yolo_disappear_consecutive_frames")),
             ),
+        )
+        self.yolo_ultrasonic_trigger_enabled = bool(
+            parameter("yolo_ultrasonic_trigger_enabled")
         )
         self.yolo_image_width = self.fallback_image_width_px
         self.rear_no_echo_is_clear = bool(
@@ -274,8 +286,10 @@ class YoloObstacleTurn(Node):
         self.publish_candidate()
         self.publish_status("ready")
         self.get_logger().info(
-            "Obstacle candidate ready: left-half YOLO disappearance "
-            "enables rear ultrasonic detect-then-clear processing; "
+            "Obstacle candidate ready: YOLO-to-ultrasonic trigger "
+            f"{'enabled' if self.yolo_ultrasonic_trigger_enabled else 'bypassed'}; "
+            "ultrasonic monitoring "
+            f"{'waits for YOLO clear' if self.yolo_ultrasonic_trigger_enabled else 'always on'}; "
             f"detect <= {self.detect_threshold_cm:.1f} cm, "
             f"clear > {self.clear_threshold_cm:.1f} cm"
         )
@@ -297,6 +311,9 @@ class YoloObstacleTurn(Node):
 
     def on_yolo_detected(self, msg: Bool) -> None:
         self.yolo_detected = bool(msg.data)
+
+        if not self.yolo_ultrasonic_trigger_enabled:
+            return
 
         if self.state in (AvoidanceState.REARM, AvoidanceState.FAULT):
             self.yolo_clear_frames = (
@@ -321,6 +338,8 @@ class YoloObstacleTurn(Node):
             self.try_start_turn()
 
     def on_bbox(self, msg: Float32MultiArray) -> None:
+        if not self.yolo_ultrasonic_trigger_enabled:
+            return
         if len(msg.data) < 4:
             self.get_logger().warning(
                 "Ignoring malformed obstacle bbox; expected [cx, cy, w, h]"
@@ -368,7 +387,7 @@ class YoloObstacleTurn(Node):
         right_rear: Optional[float],
     ) -> None:
         if self.state == AvoidanceState.LANE_FOLLOW:
-            if not self.yolo_trigger.enabled:
+            if not self.is_ultrasonic_monitoring_enabled():
                 return
             self.update_rear_obstacle_state(left_rear, right_rear)
             return
@@ -466,7 +485,10 @@ class YoloObstacleTurn(Node):
     def try_start_turn(self) -> None:
         if (
             self.state != AvoidanceState.LANE_FOLLOW
-            or not self.yolo_latched
+            or (
+                self.yolo_ultrasonic_trigger_enabled
+                and not self.yolo_latched
+            )
             or self.rear_obstacle_state
             != RearObstacleState.CLEARED_AFTER_DETECTION
             or self.latched_side is None
@@ -570,6 +592,12 @@ class YoloObstacleTurn(Node):
         self.publish_candidate()
         self.publish_status("rearmed")
 
+    def is_ultrasonic_monitoring_enabled(self) -> bool:
+        return should_monitor_ultrasonic(
+            self.yolo_ultrasonic_trigger_enabled,
+            self.yolo_trigger.enabled,
+        )
+
     def publish_candidate(self) -> None:
         elapsed = (
             self.get_clock().now() - self.state_started
@@ -598,7 +626,7 @@ class YoloObstacleTurn(Node):
         self.candidate_valid_pub.publish(Bool(data=valid))
         self.avoidance_active_pub.publish(Bool(data=active))
         self.ultrasonic_enable_pub.publish(
-            Bool(data=self.yolo_trigger.enabled)
+            Bool(data=self.is_ultrasonic_monitoring_enabled())
         )
 
     def enter_fault(self, reason: str) -> None:
@@ -628,7 +656,12 @@ class YoloObstacleTurn(Node):
                         "yolo_missing_frames": (
                             self.yolo_trigger.missing_frames
                         ),
-                        "ultrasonic_enabled": self.yolo_trigger.enabled,
+                        "ultrasonic_enabled": (
+                            self.is_ultrasonic_monitoring_enabled()
+                        ),
+                        "yolo_ultrasonic_trigger_enabled": (
+                            self.yolo_ultrasonic_trigger_enabled
+                        ),
                         "rear_obstacle_state": (
                             self.rear_obstacle_state.name.lower()
                         ),
