@@ -26,7 +26,7 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
 ```
 
 # T3. serial_bridge
-```
+
 ros2 launch control_pkg serial_bridge.launch.py
 ```
  
