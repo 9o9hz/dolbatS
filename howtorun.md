@@ -26,7 +26,7 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
 ```
 
 # T3. serial_bridge
-
+```
 ros2 launch control_pkg serial_bridge.launch.py
 ```
  
@@ -34,7 +34,8 @@ ros2 launch control_pkg serial_bridge.launch.py
 # T4. drive_pkg
 ```
 ros2 launch drive_pkg drive_pipeline.launch.py 
-
+```
+```
 ros2 run drive_pkg yolotl
 ```
 
@@ -56,6 +57,20 @@ ros2 launch detect_pkg obstacle_sonic_end.launch.py
 ```
 ```
 ros2 launch detect_pkg obstacle_yolo_end.launch.py
+```
+
+YOLO bbox가 화면 가운데에서 설정 크기에 도달할 때마다 왼쪽, 오른쪽을
+번갈아 시간 기반 풀조향하는 방식:
+
+```
+ros2 launch detect_pkg obstacle_yolo_only.launch.py
+```
+
+YOLO bbox 경계 또는 전방 초음파 임계값 중 하나를 먼저 만족하면 회피를
+종료하는 OR 방식:
+
+```
+ros2 launch detect_pkg obstacle_fusion_end.launch.py
 ```
 
 

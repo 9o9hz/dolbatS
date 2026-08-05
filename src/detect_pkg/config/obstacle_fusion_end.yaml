@@ -1,6 +1,5 @@
 obstacle_detector_publisher:
   ros__parameters:
-    # detect_pkg/config 아래에서 불러올 YOLO 모델 파일명
     model_filename: dolsoi-alter-v1.pt
     confidence_threshold: 0.5
     enable_topic: /detect/obstacle/enable
@@ -27,17 +26,17 @@ ultrasonic_obstacle_event:
     consecutive_frames: 1
     default_avoid_direction: 1
 
-yolo_obstacle_bbox_turn:
+yolo_obstacle_fusion_end:
   ros__parameters:
     yolo_detected_topic: /detect/obstacle/detected
     bbox_topic: /detect/obstacle/bbox
+    raw_image_topic: /camera/lane/raw
     fallback_image_width_px: 640
     left_half_boundary_ratio: 0.5
     yolo_disappear_consecutive_frames: 3
     # false면 YOLO 감지/해제 조건을 우회하고 초음파를 처음부터 감시한다.
     yolo_ultrasonic_trigger_enabled: false
     ultrasonic_enable_topic: /detect/obstacle/ultrasonic_enabled
-    raw_image_topic: /camera/lane/raw
     left_front_distance_topic: /sonic/left/front
     left_rear_distance_topic: /sonic/left/rear
     right_front_distance_topic: /sonic/right/front
@@ -56,9 +55,10 @@ yolo_obstacle_bbox_turn:
     turn_timeout_sec: 8.0
     publish_rate_hz: 30.0
 
-    # raw 화면의 세로 경계선 비율. 0.25=1/4, 0.75=3/4 지점이다.
+    # OR 종료 조건 1: 반대쪽 전방 초음파가 이 값을 초과한다.
+    turn_end_threshold_cm: 70.0
+
+    # OR 종료 조건 2: bbox 중심이 회전 방향에 대응하는 경계선을 통과한다.
     bbox_left_boundary_ratio: 0.29
     bbox_right_boundary_ratio: 0.705
-    # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
-    # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
     bbox_exit_consecutive_frames: 8

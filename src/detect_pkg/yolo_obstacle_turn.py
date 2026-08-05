@@ -34,6 +34,16 @@ def should_monitor_ultrasonic(
     return not yolo_trigger_required or yolo_gate_open
 
 
+def turn_end_threshold_reached(distance: float, threshold: float) -> bool:
+    """Return whether a valid distance strictly exceeds the turn-end limit."""
+    return (
+        math.isfinite(distance)
+        and math.isfinite(threshold)
+        and distance >= 0.0
+        and distance > threshold
+    )
+
+
 @dataclass
 class LeftHalfDisappearanceTrigger:
     """Enable ultrasonic processing after a left-half YOLO target vanishes."""
@@ -85,8 +95,8 @@ class YoloObstacleTurn(Node):
     A YOLO bbox must first appear in the left half of the image and then
     disappear for the configured number of frames. That sequence opens the
     ultrasonic gate. A rear-ultrasonic detect-then-clear event then starts
-    full steering toward the rear sensor side. Avoidance ends after the
-    opposite-side front sensor decreases and then increases.
+    full steering toward the rear sensor side. Avoidance ends as soon as the
+    opposite-side front sensor exceeds the configured threshold.
 
     candidate_valid and avoidance_active are only True in TURN. While either
     condition is still pending, mission_manager continues lane driving.
@@ -132,10 +142,7 @@ class YoloObstacleTurn(Node):
             "consecutive_frames": 3,
             "rear_no_echo_is_clear": True,
             "full_steer_angle_deg": 20.0,
-            "trend_epsilon_cm": 0.5,
-            "minimum_drop_cm": 2.0,
-            "rise_from_minimum_cm": 3.0,
-            "trend_consecutive_frames": 3,
+            "turn_end_threshold_cm": 70.0,
             "turn_timeout_sec": 8.0,
             "publish_rate_hz": 30.0,
         }
@@ -175,17 +182,8 @@ class YoloObstacleTurn(Node):
         self.full_steer_angle_deg = abs(
             float(parameter("full_steer_angle_deg"))
         )
-        self.trend_epsilon_cm = max(
-            0.0, float(parameter("trend_epsilon_cm"))
-        )
-        self.minimum_drop_cm = max(
-            0.0, float(parameter("minimum_drop_cm"))
-        )
-        self.rise_from_minimum_cm = max(
-            0.0, float(parameter("rise_from_minimum_cm"))
-        )
-        self.trend_consecutive_frames = max(
-            1, int(parameter("trend_consecutive_frames"))
+        self.turn_end_threshold_cm = float(
+            parameter("turn_end_threshold_cm")
         )
         self.turn_timeout_sec = max(
             0.0, float(parameter("turn_timeout_sec"))
@@ -202,6 +200,8 @@ class YoloObstacleTurn(Node):
             )
         if self.full_steer_angle_deg <= 0.0:
             raise ValueError("full_steer_angle_deg must be positive")
+        if self.turn_end_threshold_cm <= 0.0:
+            raise ValueError("turn_end_threshold_cm must be positive")
 
         self.state = AvoidanceState.LANE_FOLLOW
         self.state_started = self.get_clock().now()
@@ -220,13 +220,6 @@ class YoloObstacleTurn(Node):
         self.pending_side: Optional[str] = None
         self.side_frames = 0
         self.clear_frames = 0
-
-        self.turn_entry_distance: Optional[float] = None
-        self.last_turn_distance: Optional[float] = None
-        self.minimum_turn_distance: Optional[float] = None
-        self.decrease_frames = 0
-        self.increase_frames = 0
-        self.saw_decrease = False
 
         self.avoidance_active_pub = self.create_publisher(
             Bool, str(parameter("avoidance_active_topic")), 10
@@ -291,7 +284,8 @@ class YoloObstacleTurn(Node):
             "ultrasonic monitoring "
             f"{'waits for YOLO clear' if self.yolo_ultrasonic_trigger_enabled else 'always on'}; "
             f"detect <= {self.detect_threshold_cm:.1f} cm, "
-            f"clear > {self.clear_threshold_cm:.1f} cm"
+            f"clear > {self.clear_threshold_cm:.1f} cm; "
+            f"turn end: opposite-front > {self.turn_end_threshold_cm:.1f} cm"
         )
 
     @staticmethod
@@ -402,7 +396,7 @@ class YoloObstacleTurn(Node):
                 else left_front
             )
             if self.valid_distance(opposite_front):
-                self.update_turn_trend(float(opposite_front))
+                self.update_turn_end(float(opposite_front))
 
     def update_rear_obstacle_state(
         self,
@@ -503,65 +497,21 @@ class YoloObstacleTurn(Node):
         self.start_turn(opposite_front)
 
     def start_turn(self, opposite_front: Optional[float]) -> None:
+        del opposite_front
         self.state = AvoidanceState.TURN
         self.state_started = self.get_clock().now()
-        initial = (
-            float(opposite_front)
-            if self.valid_distance(opposite_front)
-            else None
-        )
-        self.turn_entry_distance = initial
-        self.last_turn_distance = initial
-        self.minimum_turn_distance = initial
-        self.decrease_frames = 0
-        self.increase_frames = 0
-        self.saw_decrease = False
         self.publish_candidate()
         self.publish_status("latched_conditions_ready_start_turn")
         self.get_logger().warning(
             "YOLO and rear detect-then-clear states ready: "
             f"full-steering {self.latched_side}; "
-            f"tracking {self.trend_sensor_side}"
+            f"tracking {self.trend_sensor_side} until > "
+            f"{self.turn_end_threshold_cm:.1f} cm"
         )
 
-    def update_turn_trend(self, distance: float) -> None:
-        if (
-            self.turn_entry_distance is None
-            or self.last_turn_distance is None
-            or self.minimum_turn_distance is None
-        ):
-            self.turn_entry_distance = distance
-            self.last_turn_distance = distance
-            self.minimum_turn_distance = distance
-            return
-
-        previous = self.last_turn_distance
-        if distance < self.minimum_turn_distance:
-            self.minimum_turn_distance = distance
-
-        if distance <= previous - self.trend_epsilon_cm:
-            self.decrease_frames += 1
-            self.increase_frames = 0
-        elif distance >= previous + self.trend_epsilon_cm:
-            self.increase_frames += 1
-            self.decrease_frames = 0
-        else:
-            self.decrease_frames = 0
-            self.increase_frames = 0
-
-        drop = self.turn_entry_distance - self.minimum_turn_distance
-        if (
-            self.decrease_frames >= self.trend_consecutive_frames
-            and drop >= self.minimum_drop_cm
-        ):
-            self.saw_decrease = True
-        rise = distance - self.minimum_turn_distance
-        self.last_turn_distance = distance
-
-        if (
-            self.saw_decrease
-            and self.increase_frames >= self.trend_consecutive_frames
-            and rise >= self.rise_from_minimum_cm
+    def update_turn_end(self, distance: float) -> None:
+        if turn_end_threshold_reached(
+            distance, self.turn_end_threshold_cm
         ):
             self.finish_turn(distance)
 
@@ -570,10 +520,10 @@ class YoloObstacleTurn(Node):
         self.state_started = self.get_clock().now()
         self.yolo_clear_frames = 0
         self.publish_candidate()
-        self.publish_status("opposite_front_distance_increased")
+        self.publish_status("opposite_front_threshold_exceeded")
         self.get_logger().warning(
-            f"{self.trend_sensor_side} increased to {distance:.1f} cm "
-            f"after minimum {self.minimum_turn_distance:.1f} cm: "
+            f"{self.trend_sensor_side}={distance:.1f} cm exceeded "
+            f"turn-end threshold {self.turn_end_threshold_cm:.1f} cm: "
             "obstacle mode off, lane mode resumed"
         )
 

@@ -134,7 +134,7 @@ class ObstacleDetectorPublisher(Node):
         self.logged_first_frame = False
         self.yolo_detected = False
         self.ultrasonic_enabled = False
-        self.ultrasonic_detected = False
+        self.ultrasonic_detected: Optional[bool] = None
         self.avoid_direction = DIRECTION_NONE
         self.avoidance_steer_deg = 0.0
         self.avoidance_valid = False
@@ -194,13 +194,15 @@ class ObstacleDetectorPublisher(Node):
             self.publish_detected(False)
 
     def on_ultrasonic_enable(self, msg: Bool) -> None:
-        self.ultrasonic_enabled = bool(msg.data)
-        if not self.ultrasonic_enabled:
-            self.ultrasonic_detected = False
+        requested = bool(msg.data)
+        if requested != self.ultrasonic_enabled:
+            self.ultrasonic_detected = None
+        self.ultrasonic_enabled = requested
+        if not requested:
             self.avoid_direction = DIRECTION_NONE
 
     def on_ultrasonic_event(self, msg: Int8MultiArray) -> None:
-        if len(msg.data) < 2:
+        if not self.ultrasonic_enabled or len(msg.data) < 2:
             return
         self.ultrasonic_detected = int(msg.data[0]) == EVENT_DETECTED
         direction = int(msg.data[1])
@@ -355,6 +357,9 @@ class ObstacleDetectorPublisher(Node):
         if not self.ultrasonic_enabled:
             ultrasonic_text = "DISABLED"
             ultrasonic_color = (160, 160, 160)
+        elif self.ultrasonic_detected is None:
+            ultrasonic_text = "WAITING"
+            ultrasonic_color = (0, 200, 255)
         elif self.ultrasonic_detected:
             ultrasonic_text = "DETECTED"
             ultrasonic_color = (0, 0, 255)

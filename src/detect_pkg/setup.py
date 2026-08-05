@@ -14,7 +14,9 @@ setup(
         "traffic_light_detection",
         "ultrasonic_obstacle_event",
         "yolo_obstacle_bbox_turn",
+        "yolo_obstacle_yolo_only",
         "yolo_obstacle_turn",
+        "yolo_obstacle_fusion_end",
     ],
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
@@ -34,7 +36,9 @@ setup(
             "traffic_light_detection = traffic_light_detection:main",
             "ultrasonic_obstacle_event = ultrasonic_obstacle_event:main",
             "yolo_obstacle_bbox_turn = yolo_obstacle_bbox_turn:main",
+            "yolo_obstacle_yolo_only = yolo_obstacle_yolo_only:main",
             "yolo_obstacle_turn = yolo_obstacle_turn:main",
+            "yolo_obstacle_fusion_end = yolo_obstacle_fusion_end:main",
         ],
     },
 )

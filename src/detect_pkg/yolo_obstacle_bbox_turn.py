@@ -123,9 +123,9 @@ class YoloObstacleBboxTurn(YoloObstacleTurn):
         if self.bbox_exit_frames >= self.bbox_exit_consecutive_frames:
             self.finish_turn_from_bbox(center_x)
 
-    def update_turn_trend(self, distance: float) -> None:
+    def update_turn_end(self, distance: float) -> None:
         # This variant intentionally does not use the opposite-front
-        # ultrasonic decrease/increase trend as its TURN exit condition.
+        # ultrasonic threshold as its TURN exit condition.
         del distance
 
     def start_turn(self, opposite_front: Optional[float]) -> None:

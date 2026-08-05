@@ -3,6 +3,7 @@ import unittest
 from yolo_obstacle_turn import (
     LeftHalfDisappearanceTrigger,
     should_monitor_ultrasonic,
+    turn_end_threshold_reached,
 )
 
 
@@ -13,6 +14,15 @@ class LeftHalfDisappearanceTriggerTest(unittest.TestCase):
     def test_enabled_yolo_gate_waits_until_open(self):
         self.assertFalse(should_monitor_ultrasonic(True, False))
         self.assertTrue(should_monitor_ultrasonic(True, True))
+
+    def test_turn_ends_only_above_threshold(self):
+        self.assertFalse(turn_end_threshold_reached(69.9, 70.0))
+        self.assertFalse(turn_end_threshold_reached(70.0, 70.0))
+        self.assertTrue(turn_end_threshold_reached(70.1, 70.0))
+
+    def test_invalid_distance_does_not_end_turn(self):
+        self.assertFalse(turn_end_threshold_reached(-1.0, 70.0))
+        self.assertFalse(turn_end_threshold_reached(float("nan"), 70.0))
 
     def test_right_half_target_does_not_enable_ultrasonic(self):
         trigger = LeftHalfDisappearanceTrigger(missing_frames_required=3)
