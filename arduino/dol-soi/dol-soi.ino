@@ -38,6 +38,11 @@ const char ULTRASONIC_SIDE_CODES[ULTRASONIC_SENSOR_COUNT] = {
 const char ULTRASONIC_POSITION_CODES[ULTRASONIC_SENSOR_COUNT] = {
   'F', 'R', 'F', 'R'
 };
+// 인접 센서의 잔향 간섭을 줄이기 위해 물리적으로 먼 순서로 측정한다.
+// LF(0) -> RR(3) -> LR(1) -> RF(2)
+const int ULTRASONIC_SCAN_ORDER[ULTRASONIC_SENSOR_COUNT] = {
+  0, 3, 1, 2
+};
 
 const unsigned long ULTRASONIC_TIMEOUT_US = 25000;
 const int ULTRASONIC_FAILURE_THRESHOLD = 3;
@@ -56,7 +61,7 @@ unsigned long ultrasonicTriggerStartUs = 0;
 unsigned long ultrasonicEchoStartUs = 0;
 unsigned long lastUltrasonicTriggerMs = 0;
 int activeUltrasonicSensor = 0;
-int nextUltrasonicSensor = 0;
+int nextUltrasonicScanIndex = 0;
 float ultrasonicDistanceCm[ULTRASONIC_SENSOR_COUNT] = {
   -1.0f, -1.0f, -1.0f, -1.0f
 };
@@ -268,8 +273,8 @@ void finishUltrasonicMeasurement(float distanceCm) {
 
   ultrasonicState = ULTRASONIC_IDLE;
   lastUltrasonicTriggerMs = millis();
-  nextUltrasonicSensor =
-    (activeUltrasonicSensor + 1) % ULTRASONIC_SENSOR_COUNT;
+  nextUltrasonicScanIndex =
+    (nextUltrasonicScanIndex + 1) % ULTRASONIC_SENSOR_COUNT;
   pendingUltrasonicTelemetrySensor = activeUltrasonicSensor;
   ultrasonicTelemetryPending = true;
 }
@@ -305,8 +310,10 @@ void updateUltrasonicSensors() {
     return;
   }
 
-  // 한 번에 하나만 발사해 네 센서 사이의 초음파 간섭을 줄인다.
-  startUltrasonicMeasurement(nextUltrasonicSensor);
+  // 한 번에 하나만 지정된 순서로 발사해 초음파 간섭을 줄인다.
+  startUltrasonicMeasurement(
+    ULTRASONIC_SCAN_ORDER[nextUltrasonicScanIndex]
+  );
 }
 
 // ---------------- 상태 송출 ----------------
