@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Alternating timed avoidance triggered by a centered, large YOLO bbox."""
+"""Alternating YOLO avoidance ending when the bbox crosses an exit line."""
 
 import json
 import math
@@ -12,50 +12,21 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 
+from yolo_bbox_utils import bbox_crossed_exit_boundary
 
-class TimedTurnState(Enum):
+
+class YoloOnlyState(Enum):
     WAIT_TRIGGER = auto()
     TURN_LEFT = auto()
     TURN_RIGHT = auto()
-    COUNTERSTEER_LEFT = auto()
-    COUNTERSTEER_RIGHT = auto()
     WAIT_CLEAR = auto()
 
 
-def next_timed_turn_state(
-    state: TimedTurnState,
-    elapsed_sec: float,
-    duration_sec: float,
-    enable_opposite_steer: bool = False,
-) -> TimedTurnState:
-    """Advance a timed turn, optionally through an equal countersteer."""
-    if elapsed_sec < duration_sec:
-        return state
-    if state == TimedTurnState.TURN_LEFT:
-        return (
-            TimedTurnState.COUNTERSTEER_RIGHT
-            if enable_opposite_steer
-            else TimedTurnState.WAIT_CLEAR
-        )
-    if state == TimedTurnState.TURN_RIGHT:
-        return (
-            TimedTurnState.COUNTERSTEER_LEFT
-            if enable_opposite_steer
-            else TimedTurnState.WAIT_CLEAR
-        )
-    if state in (
-        TimedTurnState.COUNTERSTEER_LEFT,
-        TimedTurnState.COUNTERSTEER_RIGHT,
-    ):
-        return TimedTurnState.WAIT_CLEAR
-    return state
-
-
-def opposite_turn_state(state: TimedTurnState) -> TimedTurnState:
+def opposite_turn_state(state: YoloOnlyState) -> YoloOnlyState:
     """Return the direction to use for the next obstacle."""
-    if state == TimedTurnState.TURN_LEFT:
-        return TimedTurnState.TURN_RIGHT
-    return TimedTurnState.TURN_LEFT
+    if state == YoloOnlyState.TURN_LEFT:
+        return YoloOnlyState.TURN_RIGHT
+    return YoloOnlyState.TURN_LEFT
 
 
 def centered_bbox_is_large_enough(
@@ -102,9 +73,9 @@ class YoloObstacleYoloOnly(Node):
             "middle_right_ratio": 2.0 / 3.0,
             "min_bbox_area_ratio": 0.08,
             "full_steer_angle_deg": 25.0,
-            "left_steer_duration_sec": 1.0,
-            "right_steer_duration_sec": 1.0,
-            "enable_opposite_steer": False,
+            "bbox_left_boundary_ratio": 0.25,
+            "bbox_right_boundary_ratio": 0.75,
+            "bbox_exit_consecutive_frames": 3,
             "rearm_clear_frames": 3,
             "avoidance_active_topic": "/detect/obstacle/avoidance_active",
             "candidate_steer_topic": (
@@ -130,14 +101,14 @@ class YoloObstacleYoloOnly(Node):
         self.full_steer_angle_deg = abs(
             float(parameter("full_steer_angle_deg"))
         )
-        self.left_steer_duration_sec = float(
-            parameter("left_steer_duration_sec")
+        self.bbox_left_boundary_ratio = float(
+            parameter("bbox_left_boundary_ratio")
         )
-        self.right_steer_duration_sec = float(
-            parameter("right_steer_duration_sec")
+        self.bbox_right_boundary_ratio = float(
+            parameter("bbox_right_boundary_ratio")
         )
-        self.enable_opposite_steer = bool(
-            parameter("enable_opposite_steer")
+        self.bbox_exit_consecutive_frames = max(
+            1, int(parameter("bbox_exit_consecutive_frames"))
         )
         self.rearm_clear_frames = max(
             1, int(parameter("rearm_clear_frames"))
@@ -156,16 +127,22 @@ class YoloObstacleYoloOnly(Node):
             raise ValueError("min_bbox_area_ratio must be in (0, 1]")
         if self.full_steer_angle_deg <= 0.0:
             raise ValueError("full_steer_angle_deg must be positive")
-        if self.left_steer_duration_sec <= 0.0:
-            raise ValueError("left_steer_duration_sec must be positive")
-        if self.right_steer_duration_sec <= 0.0:
-            raise ValueError("right_steer_duration_sec must be positive")
+        if not (
+            0.0 <= self.bbox_left_boundary_ratio
+            < self.bbox_right_boundary_ratio
+            <= 1.0
+        ):
+            raise ValueError(
+                "bbox boundary ratios must satisfy "
+                "0 <= left < right <= 1"
+            )
 
-        self.state = TimedTurnState.WAIT_TRIGGER
-        self.state_started = self.get_clock().now()
-        self.next_turn_state = TimedTurnState.TURN_LEFT
+        self.state = YoloOnlyState.WAIT_TRIGGER
+        self.next_turn_state = YoloOnlyState.TURN_LEFT
         self.yolo_detected = False
         self.clear_frames = 0
+        self.bbox_exit_frames = 0
+        self.last_bbox_center_x: Optional[float] = None
 
         self.avoidance_active_pub = self.create_publisher(
             Bool, str(parameter("avoidance_active_topic")), 10
@@ -204,18 +181,15 @@ class YoloObstacleYoloOnly(Node):
 
         self.publish_candidate()
         self.publish_status("ready")
-        opposite_steer_status = (
-            "on" if self.enable_opposite_steer else "off"
-        )
         self.get_logger().info(
-            "Centered-bbox timed avoidance ready: "
+            "Centered-bbox avoidance ready: "
             f"middle={self.middle_left_ratio:.3f}W.."
             f"{self.middle_right_ratio:.3f}W, "
             f"min area={self.min_bbox_area_ratio:.3f}, "
-            f"alternating turn={self.full_steer_angle_deg:.1f} deg for "
-            f"left={self.left_steer_duration_sec:.2f} sec / "
-            f"right={self.right_steer_duration_sec:.2f} sec per obstacle; "
-            f"equal opposite steer={opposite_steer_status}; "
+            f"alternating turn={self.full_steer_angle_deg:.1f} deg; "
+            f"exit lines={self.bbox_left_boundary_ratio:.3f}W/"
+            f"{self.bbox_right_boundary_ratio:.3f}W, "
+            f"debounce={self.bbox_exit_consecutive_frames} frames; "
             "first direction=left"
         )
 
@@ -226,20 +200,19 @@ class YoloObstacleYoloOnly(Node):
 
     def on_yolo_detected(self, msg: Bool) -> None:
         self.yolo_detected = bool(msg.data)
-        if self.state != TimedTurnState.WAIT_CLEAR:
+        if self.state != YoloOnlyState.WAIT_CLEAR:
             return
         self.clear_frames = (
             0 if self.yolo_detected else self.clear_frames + 1
         )
         if self.clear_frames >= self.rearm_clear_frames:
-            self.state = TimedTurnState.WAIT_TRIGGER
-            self.state_started = self.get_clock().now()
+            self.state = YoloOnlyState.WAIT_TRIGGER
             self.clear_frames = 0
+            self.bbox_exit_frames = 0
+            self.last_bbox_center_x = None
             self.publish_status("rearmed_after_yolo_clear")
 
     def on_bbox(self, msg: Float32MultiArray) -> None:
-        if self.state != TimedTurnState.WAIT_TRIGGER:
-            return
         if len(msg.data) < 4:
             self.get_logger().warning(
                 "Ignoring malformed bbox; expected [cx, cy, w, h]"
@@ -249,6 +222,31 @@ class YoloObstacleYoloOnly(Node):
         center_x, _, bbox_width, bbox_height = (
             float(value) for value in msg.data[:4]
         )
+        if not math.isfinite(center_x):
+            return
+        self.last_bbox_center_x = center_x
+
+        if self.state in (YoloOnlyState.TURN_LEFT, YoloOnlyState.TURN_RIGHT):
+            direction = (
+                "left" if self.state == YoloOnlyState.TURN_LEFT else "right"
+            )
+            crossed = bbox_crossed_exit_boundary(
+                center_x,
+                self.image_width,
+                direction,
+                self.bbox_left_boundary_ratio,
+                self.bbox_right_boundary_ratio,
+            )
+            self.bbox_exit_frames = (
+                self.bbox_exit_frames + 1 if crossed else 0
+            )
+            if self.bbox_exit_frames >= self.bbox_exit_consecutive_frames:
+                self.finish_turn_from_bbox(center_x, direction)
+            return
+
+        if self.state != YoloOnlyState.WAIT_TRIGGER:
+            return
+
         if not centered_bbox_is_large_enough(
             center_x,
             bbox_width,
@@ -262,10 +260,10 @@ class YoloObstacleYoloOnly(Node):
             return
 
         self.state = self.next_turn_state
-        self.state_started = self.get_clock().now()
+        self.bbox_exit_frames = 0
         self.publish_candidate()
         direction = (
-            "left" if self.state == TimedTurnState.TURN_LEFT else "right"
+            "left" if self.state == YoloOnlyState.TURN_LEFT else "right"
         )
         self.publish_status(f"centered_bbox_triggered_{direction}_turn")
         self.get_logger().warning(
@@ -273,102 +271,38 @@ class YoloObstacleYoloOnly(Node):
             f"full-{direction} turn"
         )
 
-    def duration_for_state(self, state: TimedTurnState) -> float:
-        if state in (
-            TimedTurnState.TURN_LEFT,
-            TimedTurnState.COUNTERSTEER_LEFT,
-        ):
-            return self.left_steer_duration_sec
-        if state in (
-            TimedTurnState.TURN_RIGHT,
-            TimedTurnState.COUNTERSTEER_RIGHT,
-        ):
-            return self.right_steer_duration_sec
-        return self.left_steer_duration_sec
+    def finish_turn_from_bbox(self, center_x: float, direction: str) -> None:
+        boundary_ratio = (
+            self.bbox_right_boundary_ratio
+            if direction == "left"
+            else self.bbox_left_boundary_ratio
+        )
+        boundary_x = self.image_width * boundary_ratio
+        crossed_side = "right" if direction == "left" else "left"
+
+        completed_turn = self.state
+        self.next_turn_state = opposite_turn_state(completed_turn)
+        self.state = YoloOnlyState.WAIT_CLEAR
+        self.clear_frames = 0
+        self.publish_candidate()
+        self.publish_status(f"bbox_crossed_{crossed_side}_boundary")
+        self.get_logger().warning(
+            f"BBox center x={center_x:.1f}px crossed {crossed_side} "
+            f"boundary x={boundary_x:.1f}px: obstacle mode off, "
+            "lane mode resumed"
+        )
 
     def on_publish_timer(self) -> None:
-        elapsed = (
-            self.get_clock().now() - self.state_started
-        ).nanoseconds / 1e9
-        next_state = next_timed_turn_state(
-            self.state,
-            elapsed,
-            self.duration_for_state(self.state),
-            self.enable_opposite_steer,
-        )
-        if next_state != self.state and self.state in (
-            TimedTurnState.TURN_LEFT,
-            TimedTurnState.TURN_RIGHT,
-        ):
-            completed_turn = self.state
-            completed_direction = (
-                "left"
-                if completed_turn == TimedTurnState.TURN_LEFT
-                else "right"
-            )
-            self.next_turn_state = opposite_turn_state(completed_turn)
-            self.state = next_state
-            self.state_started = self.get_clock().now()
-            self.clear_frames = 0
-            if next_state == TimedTurnState.WAIT_CLEAR:
-                self.publish_status(
-                    f"timed_{completed_direction}_turn_complete_lane_resumed"
-                )
-                self.get_logger().warning(
-                    f"Full-{completed_direction} duration complete: "
-                    "obstacle mode off, lane mode resumed"
-                )
-            else:
-                opposite_direction = (
-                    "left"
-                    if next_state == TimedTurnState.COUNTERSTEER_LEFT
-                    else "right"
-                )
-                self.publish_status(
-                    f"timed_{completed_direction}_turn_complete_"
-                    f"countersteer_{opposite_direction}_started"
-                )
-                self.get_logger().warning(
-                    f"Full-{completed_direction} duration complete: "
-                    f"starting equal full-{opposite_direction} countersteer"
-                )
-        elif next_state != self.state and self.state in (
-            TimedTurnState.COUNTERSTEER_LEFT,
-            TimedTurnState.COUNTERSTEER_RIGHT,
-        ):
-            completed_direction = (
-                "left"
-                if self.state == TimedTurnState.COUNTERSTEER_LEFT
-                else "right"
-            )
-            self.state = next_state
-            self.state_started = self.get_clock().now()
-            self.clear_frames = 0
-            self.publish_status(
-                f"countersteer_{completed_direction}_complete_lane_resumed"
-            )
-            self.get_logger().warning(
-                f"Full-{completed_direction} countersteer complete: "
-                "obstacle mode off, lane mode resumed"
-            )
         self.publish_candidate()
 
     def publish_candidate(self) -> None:
         active = self.state in (
-            TimedTurnState.TURN_LEFT,
-            TimedTurnState.TURN_RIGHT,
-            TimedTurnState.COUNTERSTEER_LEFT,
-            TimedTurnState.COUNTERSTEER_RIGHT,
+            YoloOnlyState.TURN_LEFT,
+            YoloOnlyState.TURN_RIGHT,
         )
-        if self.state in (
-            TimedTurnState.TURN_LEFT,
-            TimedTurnState.COUNTERSTEER_LEFT,
-        ):
+        if self.state == YoloOnlyState.TURN_LEFT:
             steer = self.full_steer_angle_deg
-        elif self.state in (
-            TimedTurnState.TURN_RIGHT,
-            TimedTurnState.COUNTERSTEER_RIGHT,
-        ):
+        elif self.state == YoloOnlyState.TURN_RIGHT:
             steer = -self.full_steer_angle_deg
         else:
             steer = 0.0
@@ -390,15 +324,15 @@ class YoloObstacleYoloOnly(Node):
                         "next_turn_direction": (
                             "left"
                             if self.next_turn_state
-                            == TimedTurnState.TURN_LEFT
+                            == YoloOnlyState.TURN_LEFT
                             else "right"
                         ),
+                        "bbox_center_x": self.last_bbox_center_x,
+                        "bbox_exit_frames": self.bbox_exit_frames,
                         "avoidance_active": self.state
                         in (
-                            TimedTurnState.TURN_LEFT,
-                            TimedTurnState.TURN_RIGHT,
-                            TimedTurnState.COUNTERSTEER_LEFT,
-                            TimedTurnState.COUNTERSTEER_RIGHT,
+                            YoloOnlyState.TURN_LEFT,
+                            YoloOnlyState.TURN_RIGHT,
                         ),
                     },
                     ensure_ascii=False,
@@ -408,7 +342,7 @@ class YoloObstacleYoloOnly(Node):
 
     def destroy_node(self) -> bool:
         if rclpy.ok() and hasattr(self, "candidate_valid_pub"):
-            self.state = TimedTurnState.WAIT_CLEAR
+            self.state = YoloOnlyState.WAIT_CLEAR
             self.publish_candidate()
         return super().destroy_node()
 

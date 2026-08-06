@@ -13,6 +13,7 @@ setup(
         "obstacle_detector_publisher",
         "traffic_light_detection",
         "ultrasonic_obstacle_event",
+        "yolo_bbox_utils",
         "yolo_obstacle_bbox_turn",
         "yolo_obstacle_yolo_only",
         "yolo_obstacle_turn",

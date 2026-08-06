@@ -60,7 +60,7 @@ ros2 launch detect_pkg obstacle_yolo_end.launch.py
 ```
 
 YOLO bbox가 화면 가운데에서 설정 크기에 도달할 때마다 왼쪽, 오른쪽을
-번갈아 시간 기반 풀조향하는 방식:
+번갈아 풀조향하고, `yolo_end`와 같은 bbox 경계 통과 조건으로 종료하는 방식:
 
 ```
 ros2 launch detect_pkg obstacle_yolo_only.launch.py

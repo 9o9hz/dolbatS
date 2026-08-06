@@ -1,53 +1,91 @@
 import unittest
+from types import SimpleNamespace
 
+from std_msgs.msg import Float32MultiArray
+
+from yolo_bbox_utils import bbox_crossed_exit_boundary
 from yolo_obstacle_yolo_only import (
-    TimedTurnState,
+    YoloObstacleYoloOnly,
+    YoloOnlyState,
     centered_bbox_is_large_enough,
-    next_timed_turn_state,
     opposite_turn_state,
 )
 
 
 class CenteredBboxTriggerTest(unittest.TestCase):
-    def test_each_timed_turn_returns_to_lane(self):
-        state = TimedTurnState.TURN_LEFT
-        self.assertEqual(
-            next_timed_turn_state(state, 0.9, 1.0),
-            TimedTurnState.TURN_LEFT,
-        )
-        state = next_timed_turn_state(state, 1.0, 1.0)
-        self.assertEqual(state, TimedTurnState.WAIT_CLEAR)
-
-        self.assertEqual(
-            next_timed_turn_state(TimedTurnState.TURN_RIGHT, 1.0, 1.0),
-            TimedTurnState.WAIT_CLEAR,
-        )
-
-    def test_each_timed_turn_can_countersteer_for_equal_duration(self):
-        state = next_timed_turn_state(
-            TimedTurnState.TURN_LEFT, 1.0, 1.0, True
-        )
-        self.assertEqual(state, TimedTurnState.COUNTERSTEER_RIGHT)
-        self.assertEqual(
-            next_timed_turn_state(state, 0.9, 1.0, True),
-            TimedTurnState.COUNTERSTEER_RIGHT,
-        )
-        self.assertEqual(
-            next_timed_turn_state(state, 1.0, 1.0, True),
-            TimedTurnState.WAIT_CLEAR,
-        )
-
-        state = next_timed_turn_state(
-            TimedTurnState.TURN_RIGHT, 1.0, 1.0, True
-        )
-        self.assertEqual(state, TimedTurnState.COUNTERSTEER_LEFT)
-
     def test_avoidance_direction_alternates_left_and_right(self):
-        state = TimedTurnState.TURN_LEFT
+        state = YoloOnlyState.TURN_LEFT
         state = opposite_turn_state(state)
-        self.assertEqual(state, TimedTurnState.TURN_RIGHT)
+        self.assertEqual(state, YoloOnlyState.TURN_RIGHT)
         state = opposite_turn_state(state)
-        self.assertEqual(state, TimedTurnState.TURN_LEFT)
+        self.assertEqual(state, YoloOnlyState.TURN_LEFT)
+
+    def test_left_turn_ends_at_same_right_boundary_as_yolo_end(self):
+        self.assertTrue(
+            bbox_crossed_exit_boundary(
+                451.2, 640, "left", 0.29, 0.705
+            )
+        )
+        self.assertFalse(
+            bbox_crossed_exit_boundary(
+                451.1, 640, "left", 0.29, 0.705
+            )
+        )
+
+    def test_right_turn_ends_at_same_left_boundary_as_yolo_end(self):
+        self.assertTrue(
+            bbox_crossed_exit_boundary(
+                185.6, 640, "right", 0.29, 0.705
+            )
+        )
+        self.assertFalse(
+            bbox_crossed_exit_boundary(
+                185.7, 640, "right", 0.29, 0.705
+            )
+        )
+
+    def test_turn_ends_after_configured_consecutive_exit_frames(self):
+        finished = []
+        fake_node = SimpleNamespace(
+            state=YoloOnlyState.TURN_LEFT,
+            image_width=640,
+            bbox_left_boundary_ratio=0.29,
+            bbox_right_boundary_ratio=0.705,
+            bbox_exit_consecutive_frames=8,
+            bbox_exit_frames=0,
+            last_bbox_center_x=None,
+            finish_turn_from_bbox=lambda center_x, direction: finished.append(
+                (center_x, direction)
+            ),
+        )
+        crossed = Float32MultiArray(data=[500.0, 240.0, 100.0, 100.0])
+
+        for _ in range(7):
+            YoloObstacleYoloOnly.on_bbox(fake_node, crossed)
+        self.assertEqual(finished, [])
+
+        YoloObstacleYoloOnly.on_bbox(fake_node, crossed)
+        self.assertEqual(finished, [(500.0, "left")])
+
+    def test_exit_frame_count_resets_before_consecutive_limit(self):
+        fake_node = SimpleNamespace(
+            state=YoloOnlyState.TURN_RIGHT,
+            image_width=640,
+            bbox_left_boundary_ratio=0.29,
+            bbox_right_boundary_ratio=0.705,
+            bbox_exit_consecutive_frames=3,
+            bbox_exit_frames=2,
+            last_bbox_center_x=None,
+            finish_turn_from_bbox=lambda center_x, direction: self.fail(
+                "non-consecutive bbox exits must not finish the turn"
+            ),
+        )
+        not_crossed = Float32MultiArray(
+            data=[300.0, 240.0, 100.0, 100.0]
+        )
+
+        YoloObstacleYoloOnly.on_bbox(fake_node, not_crossed)
+        self.assertEqual(fake_node.bbox_exit_frames, 0)
 
     def test_centered_bbox_at_minimum_area_triggers(self):
         self.assertTrue(

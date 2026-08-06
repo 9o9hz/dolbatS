@@ -32,13 +32,15 @@ yolo_obstacle_yolo_only:
     # 장애물마다 왼쪽/오른쪽을 번갈아 풀조향한다.
     # 첫 번째 장애물은 왼쪽부터 시작한다.
     full_steer_angle_deg: 35.0
-    # 좌로 회피(TURN_LEFT/COUNTERSTEER_LEFT) 시 풀조향을 유지하는 시간
-    left_steer_duration_sec: 2.0
-    # 우로 회피(TURN_RIGHT/COUNTERSTEER_RIGHT) 시 풀조향을 유지하는 시간
-    right_steer_duration_sec: 3.0
-    # true이면 첫 풀조향 후 같은 시간 동안 반대 방향으로 풀조향한다.
-    enable_opposite_steer: false
-    # 시퀀스 종료 후 YOLO 미감지가 이 프레임 수만큼 이어져야 재무장한다.
+
+    # yolo_end와 동일한 bbox 기반 회피 종료 조건
+    # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
+    # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
+    bbox_left_boundary_ratio: 0.29
+    bbox_right_boundary_ratio: 0.705
+    bbox_exit_consecutive_frames: 8
+
+    # 회피 종료 후 YOLO 미감지가 이 프레임 수만큼 이어져야 재무장한다.
     rearm_clear_frames: 1
 
     avoidance_active_topic: /detect/obstacle/avoidance_active
