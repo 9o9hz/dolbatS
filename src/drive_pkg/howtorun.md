@@ -77,7 +77,103 @@ ros2 launch drive_pkg drive_pipeline.launch.py
 
 ```bash
 ros2 launch drive_pkg drive_pipeline.launch.py \
-  params_file:=/home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+## 개선된 Pure Pursuit 적용 및 확인
+
+현재 개선판은 기존 `pure_pursuit` 노드 안에 구현되어 있다. 새 노드나 launch,
+토픽을 추가하지 않았으므로 실행 명령은 그대로이며, 반드시 실행 중인 기존
+launch를 `Ctrl+C`로 종료한 뒤 다시 시작해야 새 파라미터와 Python 코드가
+로드된다. 현재 워크스페이스는 소스가 install 영역에 연결된 개발 설치이므로
+이 변경을 적용하기 위한 별도 패키지 빌드는 하지 않는다.
+
+개선판의 핵심 기본값은
+`src/drive_pkg/config/drive_pipeline.yaml`의 `pure_pursuit.ros__parameters`
+블록에 있다.
+
+```yaml
+minimum_path_preview_m: 0.30
+lookahead_search_mode: "continuous_arc_length"
+
+curvature_tracking_enabled: true
+curvature_tracking_gain: 0.20
+curvature_tracking_sample_gap_m: 0.15
+curvature_tracking_preview_m: 0.45
+curvature_tracking_min_samples: 3
+curvature_tracking_max_mad_1pm: 0.25
+curvature_tracking_max_correction_1pm: 0.20
+curvature_tracking_sign_guard_1pm: 0.05
+curvature_tracking_min_deficit_1pm: 0.01
+```
+
+실차/카메라 입력에 적용:
+
+```bash
+cd /home/tak/dolbatS
+source /opt/ros/humble/setup.bash
+source /home/tak/dolbatS/install/setup.bash
+ros2 launch drive_pkg drive_pipeline.launch.py \
+  params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+```
+
+0803 bag에 안전하게 적용(최종 조향 토픽 대신 `/debug/control/...` 사용):
+
+```bash
+cd /home/tak/dolbatS
+source /opt/ros/humble/setup.bash
+source /home/tak/dolbatS/install/setup.bash
+ros2 launch drive_pkg drive_rosbag.launch.py \
+  bag_path:=/home/tak/Desktop/bags/rosbag2_2026_08_03-14_53_47 \
+  params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml \
+  show_visualizer:=true
+```
+
+적용된 파라미터 확인:
+
+```bash
+ros2 param get /pure_pursuit minimum_path_preview_m
+ros2 param get /pure_pursuit curvature_tracking_preview_m
+ros2 param get /pure_pursuit curvature_tracking_max_mad_1pm
+ros2 param get /pure_pursuit curvature_tracking_min_deficit_1pm
+```
+
+각각 `0.3`, `0.45`, `0.25`, `0.01`이 나와야 한다. 제어 상태 확인:
+
+```bash
+ros2 topic echo /lane/control/status
+```
+
+상태 JSON의 주요 항목은 다음과 같다.
+
+- `lookahead_m`: 속도·곡률·필터로 결정한 기존 동적 Ld
+- `target_search_lookahead_m`: 최소 가시 경로 preview를 반영한 실제 목표점 탐색 거리
+- `target_path_preview_m`: 경로 첫 점부터 목표점까지 확보된 실제 호길이
+- `target_path_curvature_samples`: 곡률 중앙값에 사용한 표본 수
+- `target_path_curvature_mad_1pm`: 표본 곡률의 MAD(작을수록 일관됨)
+- `curvature_tracking_deficit_1pm`: PP에 부족한 REF 곡률의 절댓값 차이
+- `curvature_tracking_reason`: `applied`, `unstable_preview_curvature`,
+  `fallback_path`, `opposite_direction_guard`, `pp_already_sufficient`,
+  `curvature_deficit_below_guard` 등 보정 적용/차단 이유
+
+시각화 중간 패널에서도 `LOOK-AHEAD/SEARCH/TARGET`, `VISIBLE PATH PREVIEW`,
+`CURVATURE QUALITY: N=... MAD=...`를 확인할 수 있다.
+
+튜닝은 다음 순서를 권장한다.
+
+1. 기본값으로 bag과 저속 실차에서 `target_path_preview_m`, MAD, raw 조향을 저장한다.
+2. 커브 진입 목표점이 여전히 지나치게 가깝다면
+   `minimum_path_preview_m`만 `0.30 -> 0.35`로 소폭 올린다.
+3. 곡률 품질이 안정적인데도 보정량이 부족한 경우에만
+   `curvature_tracking_gain`을 `0.20 -> 0.25`로 올린다.
+4. `steering_gain`을 먼저 크게 올리거나 MAD 한계를 무작정 넓히지 않는다.
+
+코드를 지우지 않고 기존 Pure Pursuit에 가깝게 롤백하려면 다음 두 값만
+변경하고 노드를 재시작한다.
+
+```yaml
+minimum_path_preview_m: 0.0
+curvature_tracking_enabled: false
 ```
 
 기존 명령과의 호환을 위해 아래 명령도 세 노드를 한 프로세스에서
@@ -85,7 +181,7 @@ ros2 launch drive_pkg drive_pipeline.launch.py \
 
 ```bash
 ros2 run drive_pkg yolo_lane_driver --ros-args \
-  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
 ## 노드별 실행
@@ -94,17 +190,17 @@ ros2 run drive_pkg yolo_lane_driver --ros-args \
 
 ```bash
 ros2 run drive_pkg lane_detect --ros-args \
-  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
 ```bash
 ros2 run drive_pkg path_plan --ros-args \
-  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
 ```bash
 ros2 run drive_pkg pure_pursuit --ros-args \
-  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+  --params-file /home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
 ```
 
 `pure_pursuit`는 `local_display: true`(기본값)일 때 segmentation | BEV

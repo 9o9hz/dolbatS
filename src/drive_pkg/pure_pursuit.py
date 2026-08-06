@@ -33,6 +33,7 @@ PARAMETER_DEFAULTS = {
     "lookahead_min_m": 1.10,
     "lookahead_max_m": 2.00,
     "lookahead_m": 1.50,
+    "minimum_path_preview_m": 0.30,
     "max_steer_deg": 25.0,
     "steering_gain": 1.80,
     "steering_ema_alpha": 0.30,
@@ -42,6 +43,15 @@ PARAMETER_DEFAULTS = {
     "curvature_full_scale_1pm": 0.50,
     "curvature_reduction_max_m": 0.15,
     "curvature_sample_gap_m": 0.15,
+    "curvature_tracking_enabled": True,
+    "curvature_tracking_gain": 0.20,
+    "curvature_tracking_sample_gap_m": 0.15,
+    "curvature_tracking_preview_m": 0.45,
+    "curvature_tracking_min_samples": 3,
+    "curvature_tracking_max_mad_1pm": 0.25,
+    "curvature_tracking_max_correction_1pm": 0.20,
+    "curvature_tracking_sign_guard_1pm": 0.05,
+    "curvature_tracking_min_deficit_1pm": 0.01,
     "lookahead_filter_tau_sec": 0.25,
     "time_based_steering_limit_enabled": True,
     "nominal_control_rate_hz": 30.0,
@@ -88,7 +98,17 @@ class SteeringCommand:
     steering_rate_deg_s: float
     lookahead_m: float
     lookahead_reference_m: float
+    target_search_lookahead_m: float
+    target_path_preview_m: float
     path_curvature_1pm: float
+    pure_pursuit_curvature_1pm: float
+    target_path_curvature_1pm: float
+    target_path_curvature_samples: int
+    target_path_curvature_mad_1pm: float
+    curvature_tracking_error_1pm: float
+    curvature_tracking_correction_1pm: float
+    curvature_tracking_applied: bool
+    curvature_tracking_reason: str
     target_distance_m: float
     target_index: int
     target_upper_index: int
@@ -145,6 +165,16 @@ class PurePursuitController:
         max_control_dt_sec: float = 0.20,
         max_steering_rate_deg_s: float = 75.0,
         max_steering_accel_deg_s2: float = 300.0,
+        minimum_path_preview_m: float = 0.30,
+        curvature_tracking_enabled: bool = True,
+        curvature_tracking_gain: float = 0.20,
+        curvature_tracking_sample_gap_m: float = 0.15,
+        curvature_tracking_preview_m: float = 0.45,
+        curvature_tracking_min_samples: int = 3,
+        curvature_tracking_max_mad_1pm: float = 0.25,
+        curvature_tracking_max_correction_1pm: float = 0.20,
+        curvature_tracking_sign_guard_1pm: float = 0.05,
+        curvature_tracking_min_deficit_1pm: float = 0.01,
     ) -> None:
         self.wheelbase_m = float(wheelbase_m)
         self.ld_throttle_min = float(ld_throttle_min)
@@ -198,6 +228,32 @@ class PurePursuitController:
         )
         self.max_steering_accel_deg_s2 = float(
             max_steering_accel_deg_s2
+        )
+        self.minimum_path_preview_m = float(minimum_path_preview_m)
+        self.curvature_tracking_enabled = bool(
+            curvature_tracking_enabled
+        )
+        self.curvature_tracking_gain = float(curvature_tracking_gain)
+        self.curvature_tracking_sample_gap_m = float(
+            curvature_tracking_sample_gap_m
+        )
+        self.curvature_tracking_preview_m = float(
+            curvature_tracking_preview_m
+        )
+        self.curvature_tracking_min_samples = int(
+            curvature_tracking_min_samples
+        )
+        self.curvature_tracking_max_mad_1pm = float(
+            curvature_tracking_max_mad_1pm
+        )
+        self.curvature_tracking_max_correction_1pm = float(
+            curvature_tracking_max_correction_1pm
+        )
+        self.curvature_tracking_sign_guard_1pm = float(
+            curvature_tracking_sign_guard_1pm
+        )
+        self.curvature_tracking_min_deficit_1pm = float(
+            curvature_tracking_min_deficit_1pm
         )
         self._validate_parameters()
 
@@ -262,6 +318,44 @@ class PurePursuitController:
             raise ValueError("max_steering_rate_deg_s must be positive")
         if self.max_steering_accel_deg_s2 <= 0.0:
             raise ValueError("max_steering_accel_deg_s2 must be positive")
+        if self.minimum_path_preview_m < 0.0:
+            raise ValueError("minimum_path_preview_m cannot be negative")
+        if not 0.0 <= self.curvature_tracking_gain <= 1.0:
+            raise ValueError(
+                "curvature_tracking_gain must be between 0 and 1"
+            )
+        if self.curvature_tracking_sample_gap_m <= 0.0:
+            raise ValueError(
+                "curvature_tracking_sample_gap_m must be positive"
+            )
+        if (
+            self.curvature_tracking_preview_m
+            < 2.0 * self.curvature_tracking_sample_gap_m
+        ):
+            raise ValueError(
+                "curvature_tracking_preview_m must be at least twice "
+                "curvature_tracking_sample_gap_m"
+            )
+        if self.curvature_tracking_min_samples < 1:
+            raise ValueError(
+                "curvature_tracking_min_samples must be positive"
+            )
+        if self.curvature_tracking_max_mad_1pm < 0.0:
+            raise ValueError(
+                "curvature_tracking_max_mad_1pm cannot be negative"
+            )
+        if self.curvature_tracking_max_correction_1pm < 0.0:
+            raise ValueError(
+                "curvature_tracking_max_correction_1pm cannot be negative"
+            )
+        if self.curvature_tracking_sign_guard_1pm < 0.0:
+            raise ValueError(
+                "curvature_tracking_sign_guard_1pm cannot be negative"
+            )
+        if self.curvature_tracking_min_deficit_1pm < 0.0:
+            raise ValueError(
+                "curvature_tracking_min_deficit_1pm cannot be negative"
+            )
 
     def set_path_fallback(self, fallback: bool) -> None:
         self.path_fallback = bool(fallback)
@@ -308,18 +402,22 @@ class PurePursuitController:
             lookahead_target_m,
             control_dt,
         )
+        target_search_lookahead_m = self._target_search_lookahead(
+            points,
+            lookahead_m,
+        )
 
         if self.lookahead_search_mode == "continuous_arc_length":
             target = self.interpolate_lookahead_point(
                 points,
-                lookahead_m,
+                target_search_lookahead_m,
             )
         else:
             distances = np.linalg.norm(points, axis=1)
             target_index = self._find_lookahead_index(
                 points,
                 distances,
-                lookahead_m,
+                target_search_lookahead_m,
             )
             target_point = np.asarray(
                 points[target_index], dtype=np.float64
@@ -336,14 +434,43 @@ class PurePursuitController:
         target_distance = max(
             float(np.linalg.norm(target.point)), 1e-3
         )
+        target_path_preview_m = self._path_arc_to_point(
+            points,
+            target.point,
+        )
         heading_error = math.atan2(
             float(left),
             max(float(forward), 1e-3),
         )
+        pure_pursuit_curvature = float(
+            2.0 * math.sin(heading_error) / target_distance
+        )
+        (
+            target_path_curvature,
+            target_curvature_valid,
+            target_curvature_reason,
+            target_curvature_samples,
+            target_curvature_mad,
+        ) = self.estimate_target_path_curvature(
+            points,
+            target.point,
+        )
+        (
+            commanded_curvature,
+            curvature_tracking_error,
+            curvature_tracking_correction,
+            curvature_tracking_applied,
+            curvature_tracking_reason,
+        ) = self._apply_curvature_tracking(
+            pure_pursuit_curvature,
+            target_path_curvature,
+            target_curvature_valid,
+            target_curvature_reason,
+        )
         raw_steering_deg = math.degrees(
             math.atan2(
-                2.0 * self.wheelbase_m * math.sin(heading_error),
-                target_distance,
+                self.wheelbase_m * commanded_curvature,
+                1.0,
             )
         )
         raw_steering_deg = float(
@@ -374,7 +501,19 @@ class PurePursuitController:
             steering_rate_deg_s=self.last_steering_rate_deg_s,
             lookahead_m=lookahead_m,
             lookahead_reference_m=lookahead_reference_m,
+            target_search_lookahead_m=target_search_lookahead_m,
+            target_path_preview_m=target_path_preview_m,
             path_curvature_1pm=path_curvature,
+            pure_pursuit_curvature_1pm=pure_pursuit_curvature,
+            target_path_curvature_1pm=target_path_curvature,
+            target_path_curvature_samples=target_curvature_samples,
+            target_path_curvature_mad_1pm=target_curvature_mad,
+            curvature_tracking_error_1pm=curvature_tracking_error,
+            curvature_tracking_correction_1pm=(
+                curvature_tracking_correction
+            ),
+            curvature_tracking_applied=curvature_tracking_applied,
+            curvature_tracking_reason=curvature_tracking_reason,
             target_distance_m=target_distance,
             target_index=target.lower_index,
             target_upper_index=target.upper_index,
@@ -496,7 +635,17 @@ class PurePursuitController:
             steering_rate_deg_s=self.last_steering_rate_deg_s,
             lookahead_m=lookahead_m,
             lookahead_reference_m=self._dynamic_lookahead(),
+            target_search_lookahead_m=lookahead_m,
+            target_path_preview_m=0.0,
             path_curvature_1pm=0.0,
+            pure_pursuit_curvature_1pm=0.0,
+            target_path_curvature_1pm=0.0,
+            target_path_curvature_samples=0,
+            target_path_curvature_mad_1pm=0.0,
+            curvature_tracking_error_1pm=0.0,
+            curvature_tracking_correction_1pm=0.0,
+            curvature_tracking_applied=False,
+            curvature_tracking_reason="invalid_path",
             target_distance_m=0.0,
             target_index=-1,
             target_upper_index=-1,
@@ -598,6 +747,34 @@ class PurePursuitController:
             clamped_to_endpoint=False,
         )
 
+    def _target_search_lookahead(
+        self,
+        points: np.ndarray,
+        filtered_lookahead_m: float,
+    ) -> float:
+        """Keep the target a usable arc distance into the visible path.
+
+        The BEV path can begin more than one metre in front of the rear
+        axle.  In that case a nominal Ld only slightly larger than the first
+        point would make PP react to roughly the first 20 cm of observed
+        path.  This guard preserves the vehicle-relative Ld whenever it is
+        already long enough and only extends the target search when the
+        visible-path preview would otherwise be too short.
+        """
+
+        path, _ = self._prepare_path(points)
+        first_distance = float(np.linalg.norm(path[0]))
+        preview_guard = min(
+            first_distance + self.minimum_path_preview_m,
+            self.lookahead_max_m,
+        )
+        return float(
+            max(
+                filtered_lookahead_m,
+                preview_guard,
+            )
+        )
+
     @staticmethod
     def _point_at_arc_length(
         path: np.ndarray,
@@ -632,6 +809,264 @@ class PurePursuitController:
             return 0.0
         cross = ab[0] * ac[1] - ab[1] * ac[0]
         return float(2.0 * cross / denominator)
+
+    @staticmethod
+    def _closest_path_arc_length(
+        path: np.ndarray,
+        cumulative: np.ndarray,
+        point: np.ndarray,
+    ) -> float:
+        """Project a point onto the path and return its path arc length."""
+
+        segments = np.diff(path, axis=0)
+        length_squared = np.sum(segments * segments, axis=1)
+        valid = length_squared > 1e-12
+        if not np.any(valid):
+            return 0.0
+
+        ratios = np.zeros(len(segments), dtype=np.float64)
+        offsets = np.asarray(point, dtype=np.float64) - path[:-1]
+        ratios[valid] = np.sum(
+            offsets[valid] * segments[valid], axis=1
+        ) / length_squared[valid]
+        ratios = np.clip(ratios, 0.0, 1.0)
+        projections = path[:-1] + ratios[:, None] * segments
+        distances_squared = np.sum(
+            (projections - point) ** 2,
+            axis=1,
+        )
+        distances_squared[~valid] = np.inf
+        index = int(np.argmin(distances_squared))
+        segment_length = math.sqrt(float(length_squared[index]))
+        return float(
+            cumulative[index] + ratios[index] * segment_length
+        )
+
+    def _path_arc_to_point(
+        self,
+        points: np.ndarray,
+        point: np.ndarray,
+    ) -> float:
+        """Return visible-path arc length from its first point to point."""
+
+        path, _ = self._prepare_path(points)
+        if len(path) < 2:
+            return 0.0
+        cumulative = np.zeros(len(path), dtype=np.float64)
+        cumulative[1:] = np.cumsum(
+            np.linalg.norm(np.diff(path, axis=0), axis=1)
+        )
+        return self._closest_path_arc_length(
+            path,
+            cumulative,
+            np.asarray(point, dtype=np.float64),
+        )
+
+    def estimate_target_path_curvature(
+        self,
+        points: np.ndarray,
+        target_point: np.ndarray,
+    ) -> tuple[float, bool, str, int, float]:
+        """Robustly measure curvature around and ahead of the PP target.
+
+        Multiple overlapping three-point curvatures are sampled over a
+        forward preview window.  Their median rejects a single local kink;
+        MAD rejects a window whose curvature is too inconsistent to be a
+        trustworthy feed-forward reference.  This is deliberately stricter
+        than the curvature used only to schedule Ld.
+        """
+
+        path, _ = self._prepare_path(points)
+        if len(path) < 3:
+            return 0.0, False, "insufficient_path_points", 0, 0.0
+
+        cumulative = np.zeros(len(path), dtype=np.float64)
+        cumulative[1:] = np.cumsum(
+            np.linalg.norm(np.diff(path, axis=0), axis=1)
+        )
+        target_arc = self._closest_path_arc_length(
+            path,
+            cumulative,
+            np.asarray(target_point, dtype=np.float64),
+        )
+        gap = self.curvature_tracking_sample_gap_m
+        preview_end = min(
+            float(cumulative[-1]),
+            target_arc + self.curvature_tracking_preview_m,
+        )
+        first_start = max(0.0, target_arc - gap)
+        last_start = preview_end - 2.0 * gap
+        if last_start + 1e-6 < first_start:
+            return 0.0, False, "insufficient_target_coverage", 0, 0.0
+
+        sample_step = 0.5 * gap
+        starts = np.arange(
+            first_start,
+            last_start + 0.25 * sample_step,
+            sample_step,
+            dtype=np.float64,
+        )
+        if starts.size == 0 or last_start - starts[-1] > 1e-6:
+            starts = np.append(starts, last_start)
+
+        curvatures = []
+        for start in starts:
+            point_a = self._point_at_arc_length(
+                path, cumulative, float(start)
+            )
+            point_b = self._point_at_arc_length(
+                path, cumulative, float(start + gap)
+            )
+            point_c = self._point_at_arc_length(
+                path, cumulative, float(start + 2.0 * gap)
+            )
+            curvature = self._three_point_curvature(
+                point_a,
+                point_b,
+                point_c,
+            )
+            if math.isfinite(curvature):
+                curvatures.append(curvature)
+
+        sample_count = len(curvatures)
+        if sample_count < self.curvature_tracking_min_samples:
+            return (
+                0.0,
+                False,
+                "insufficient_curvature_samples",
+                sample_count,
+                0.0,
+            )
+
+        values = np.asarray(curvatures, dtype=np.float64)
+        curvature = float(np.median(values))
+        mad = float(np.median(np.abs(values - curvature)))
+        if mad > self.curvature_tracking_max_mad_1pm:
+            return (
+                curvature,
+                False,
+                "unstable_preview_curvature",
+                sample_count,
+                mad,
+            )
+        return curvature, True, "ok", sample_count, mad
+
+    def _apply_curvature_tracking(
+        self,
+        pure_pursuit_curvature_1pm: float,
+        target_path_curvature_1pm: float,
+        target_curvature_valid: bool,
+        invalid_reason: str,
+    ) -> tuple[float, float, float, bool, str]:
+        """Add only a bounded, quality-gated PP curvature deficit.
+
+        Reference curvature may fill missing PP curvature, but it never
+        reduces a stronger same-direction PP command because that command
+        can contain the feedback needed to return the vehicle to the path.
+        """
+
+        if not self.curvature_tracking_enabled:
+            return (
+                pure_pursuit_curvature_1pm,
+                0.0,
+                0.0,
+                False,
+                "disabled",
+            )
+        if self.path_fallback:
+            return (
+                pure_pursuit_curvature_1pm,
+                0.0,
+                0.0,
+                False,
+                "fallback_path",
+            )
+        if not target_curvature_valid:
+            return (
+                pure_pursuit_curvature_1pm,
+                0.0,
+                0.0,
+                False,
+                invalid_reason,
+            )
+
+        tracking_error = (
+            target_path_curvature_1pm
+            - pure_pursuit_curvature_1pm
+        )
+        sign_guard = self.curvature_tracking_sign_guard_1pm
+        if abs(target_path_curvature_1pm) < sign_guard:
+            return (
+                pure_pursuit_curvature_1pm,
+                tracking_error,
+                0.0,
+                False,
+                "reference_curvature_below_guard",
+            )
+        if (
+            abs(pure_pursuit_curvature_1pm) >= sign_guard
+            and pure_pursuit_curvature_1pm
+            * target_path_curvature_1pm
+            < 0.0
+        ):
+            return (
+                pure_pursuit_curvature_1pm,
+                tracking_error,
+                0.0,
+                False,
+                "opposite_direction_guard",
+            )
+
+        same_direction = (
+            pure_pursuit_curvature_1pm
+            * target_path_curvature_1pm
+            > 0.0
+        )
+        if (
+            same_direction
+            and abs(pure_pursuit_curvature_1pm)
+            >= abs(target_path_curvature_1pm)
+        ):
+            return (
+                pure_pursuit_curvature_1pm,
+                tracking_error,
+                0.0,
+                False,
+                "pp_already_sufficient",
+            )
+
+        curvature_deficit = max(
+            abs(target_path_curvature_1pm)
+            - abs(pure_pursuit_curvature_1pm),
+            0.0,
+        )
+        if (
+            curvature_deficit
+            <= self.curvature_tracking_min_deficit_1pm
+        ):
+            return (
+                pure_pursuit_curvature_1pm,
+                tracking_error,
+                0.0,
+                False,
+                "curvature_deficit_below_guard",
+            )
+
+        bounded_deficit = min(
+            curvature_deficit,
+            self.curvature_tracking_max_correction_1pm,
+        )
+        correction = math.copysign(
+            self.curvature_tracking_gain * bounded_deficit,
+            target_path_curvature_1pm,
+        )
+        return (
+            pure_pursuit_curvature_1pm + correction,
+            tracking_error,
+            correction,
+            abs(correction) > 1e-9,
+            "applied" if abs(correction) > 1e-9 else "no_error",
+        )
 
     def estimate_path_curvature(
         self,
@@ -865,6 +1300,24 @@ class PurePursuitNode(Node):
             curvature_sample_gap_m=float(
                 parameter("curvature_sample_gap_m")
             ),
+            curvature_tracking_enabled=bool(
+                parameter("curvature_tracking_enabled")
+            ),
+            curvature_tracking_gain=float(
+                parameter("curvature_tracking_gain")
+            ),
+            curvature_tracking_sample_gap_m=float(
+                parameter("curvature_tracking_sample_gap_m")
+            ),
+            curvature_tracking_max_correction_1pm=float(
+                parameter("curvature_tracking_max_correction_1pm")
+            ),
+            curvature_tracking_sign_guard_1pm=float(
+                parameter("curvature_tracking_sign_guard_1pm")
+            ),
+            curvature_tracking_min_deficit_1pm=float(
+                parameter("curvature_tracking_min_deficit_1pm")
+            ),
             lookahead_filter_tau_sec=float(
                 parameter("lookahead_filter_tau_sec")
             ),
@@ -885,6 +1338,18 @@ class PurePursuitNode(Node):
             ),
             max_steering_accel_deg_s2=float(
                 parameter("max_steering_accel_deg_s2")
+            ),
+            minimum_path_preview_m=float(
+                parameter("minimum_path_preview_m")
+            ),
+            curvature_tracking_preview_m=float(
+                parameter("curvature_tracking_preview_m")
+            ),
+            curvature_tracking_min_samples=int(
+                parameter("curvature_tracking_min_samples")
+            ),
+            curvature_tracking_max_mad_1pm=float(
+                parameter("curvature_tracking_max_mad_1pm")
             ),
         )
         self.last_control_time_ns: Optional[int] = None
@@ -1039,8 +1504,46 @@ class PurePursuitNode(Node):
             "lookahead_reference_m": round(
                 command.lookahead_reference_m, 3
             ),
+            "target_search_lookahead_m": round(
+                command.target_search_lookahead_m, 3
+            ),
+            "target_path_preview_m": round(
+                command.target_path_preview_m, 3
+            ),
             "path_curvature_1pm": round(
                 command.path_curvature_1pm, 4
+            ),
+            "pure_pursuit_curvature_1pm": round(
+                command.pure_pursuit_curvature_1pm, 4
+            ),
+            "target_path_curvature_1pm": round(
+                command.target_path_curvature_1pm, 4
+            ),
+            "target_path_curvature_samples": int(
+                command.target_path_curvature_samples
+            ),
+            "target_path_curvature_mad_1pm": round(
+                command.target_path_curvature_mad_1pm, 4
+            ),
+            "curvature_tracking_error_1pm": round(
+                command.curvature_tracking_error_1pm, 4
+            ),
+            "curvature_tracking_deficit_1pm": round(
+                max(
+                    abs(command.target_path_curvature_1pm)
+                    - abs(command.pure_pursuit_curvature_1pm),
+                    0.0,
+                ),
+                4,
+            ),
+            "curvature_tracking_correction_1pm": round(
+                command.curvature_tracking_correction_1pm, 4
+            ),
+            "curvature_tracking_applied": (
+                command.curvature_tracking_applied
+            ),
+            "curvature_tracking_reason": (
+                command.curvature_tracking_reason
             ),
             "lookahead_target_m": round(
                 command.target_distance_m, 3

@@ -890,7 +890,7 @@ class DrivingVisualizer:
         cv2.rectangle(
             info_overlay,
             (0, 0),
-            (detail.shape[1] - 1, 152),
+            (detail.shape[1] - 1, 220),
             (0, 0, 0),
             -1,
         )
@@ -906,6 +906,33 @@ class DrivingVisualizer:
         target_m = float(
             control_status.get("lookahead_target_m", 0.0)
         )
+        target_search_m = float(
+            control_status.get("target_search_lookahead_m", lookahead_m)
+        )
+        path_preview_m = float(
+            control_status.get("target_path_preview_m", 0.0)
+        )
+        pp_curvature = float(
+            control_status.get("pure_pursuit_curvature_1pm", 0.0)
+        )
+        target_curvature = float(
+            control_status.get("target_path_curvature_1pm", 0.0)
+        )
+        curvature_correction = float(
+            control_status.get(
+                "curvature_tracking_correction_1pm",
+                0.0,
+            )
+        )
+        curvature_state = str(
+            control_status.get("curvature_tracking_reason", "unknown")
+        )
+        curvature_samples = int(
+            control_status.get("target_path_curvature_samples", 0)
+        )
+        curvature_mad = float(
+            control_status.get("target_path_curvature_mad_1pm", 0.0)
+        )
         lookahead_mode = (
             "DYNAMIC"
             if bool(
@@ -919,8 +946,10 @@ class DrivingVisualizer:
             f"STEERING: {steering_deg:+.2f} deg",
             (
                 f"{lookahead_mode} LOOK-AHEAD: {lookahead_m:.2f} m  "
+                f"SEARCH: {target_search_m:.2f} m  "
                 f"TARGET: {target_m:.2f} m"
             ),
+            f"VISIBLE PATH PREVIEW TO TARGET: {path_preview_m:.2f} m",
             (
                 "BLUE: LEFT  YELLOW: RIGHT  "
                 f"RED: PATH{' (HOLD)' if path_is_held else ''}  "
@@ -930,18 +959,30 @@ class DrivingVisualizer:
                 "YOLO ORIGINAL CONFIDENCE: "
                 f"{yolo_aggregation.upper()} per matched line"
             ),
+            (
+                f"CURVATURE PP/REF: {pp_curvature:+.3f}/"
+                f"{target_curvature:+.3f}  CORR: "
+                f"{curvature_correction:+.3f}"
+            ),
+            (
+                f"CURVATURE QUALITY: N={curvature_samples}  "
+                f"MAD={curvature_mad:.3f} ({curvature_state})"
+            ),
         )
         colors = (
             (255, 255, 255),
             (255, 255, 255),
+            (255, 255, 255),
             (0, 255, 255),
             (0, 255, 0),
+            (255, 255, 0),
+            (255, 255, 0),
         )
         for index, (text, color) in enumerate(zip(info_lines, colors)):
             cv2.putText(
                 detail,
                 text,
-                (14, 30 + index * 34),
+                (14, 27 + index * 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.62,
                 color,

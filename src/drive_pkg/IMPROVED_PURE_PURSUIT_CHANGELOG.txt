@@ -1,0 +1,196 @@
+개선된 Pure Pursuit 적용 변경 보고서
+작성일: 2026-08-06
+대상: /home/tak/dolbatS/src/drive_pkg
+
+1. 적용 목적
+
+- BEV 경로 첫 점이 후륜축에서 약 1.09m 앞에 생성되는 현재 환경에서
+  Ld=1.30m 목표점이 보이는 경로의 약 0.20m 지점에 머무는 문제를 완화한다.
+- 한 번의 3점 곡률이 경계 융합 이음부나 국소 노이즈를 실제 급곡선으로
+  오인하여 보정에 들어가는 문제를 줄인다.
+- 새 노드, launch, 토픽, 메시지 타입 없이 기존 drive_main -> /lane/path ->
+  pure_pursuit -> /control/candidate/lane/* 흐름을 그대로 유지한다.
+
+2. 변경 파일
+
+- pure_pursuit.py
+  목표점 preview 하한, 다중 표본 곡률 중앙값/MAD 판정, fallback 보정 차단,
+  상태 진단값 발행을 추가했다.
+
+- config/drive_pipeline.yaml
+  새 기능의 파라미터와 설명을 pure_pursuit 블록에 추가했다.
+
+- visualizer.py
+  기존 두 번째 패널에 실제 탐색 Ld, 가시 경로 preview, 곡률 표본 수와 MAD를
+  표시한다. 창이나 노드는 추가하지 않았다.
+
+- test/test_dynamic_lookahead.py
+  목표점 preview, 정상 원호 다중 표본, 불안정 곡률 거부, fallback 차단 시험을
+  추가했다.
+
+- howtorun.md
+  개선판 적용, bag 검증, 파라미터 확인, 튜닝 및 롤백 절차를 추가했다.
+
+3. 알고리즘 변경
+
+3.1 목표점 최소 가시 경로 preview
+
+기존:
+  target_search_Ld = filtered_Ld
+
+개선:
+  preview_guard = min(
+      첫 경로점의 차량 원점 거리 + minimum_path_preview_m,
+      lookahead_max_m
+  )
+  target_search_Ld = max(filtered_Ld, preview_guard)
+
+기본 minimum_path_preview_m은 0.30m다. 동적 Ld 계산식은 바꾸지 않으며,
+경로 첫 점 때문에 실질 preview가 지나치게 짧아질 때 목표점 탐색 거리만
+안전하게 늘린다. lookahead_max_m 상한을 적용해 비정상적으로 먼 첫 점이
+목표점을 무제한 밀어내지 못하게 했다.
+
+3.2 목표점 인덱스 스냅 방지 유지
+
+lookahead_search_mode=continuous_arc_length를 그대로 사용한다. 목표점은 배열
+인덱스가 아니라 target_search_Ld가 통과하는 경로 선분 내부에 선형 보간된다.
+
+3.3 다중 표본 preview 곡률
+
+기존 보정용 곡률:
+  목표점 전/후 0.15m의 한 개 3점 조합
+
+개선 보정용 곡률:
+  - 목표점 주변부터 전방 0.45m를 조사한다.
+  - 0.15m 간격의 3점 곡률을 0.075m 간격으로 반복 측정한다.
+  - 유효 표본 3개 이상을 요구한다.
+  - 표본 중앙값을 레퍼런스 곡률로 사용한다.
+  - MAD가 0.25 1/m보다 크면 곡률이 일관되지 않은 것으로 판단하여
+    곡률 추가 보정을 적용하지 않는다.
+
+효과:
+  정상적인 연속 원호는 여러 표본이 비슷하므로 보정에 사용된다. 반대로
+  좌우 경계 융합 지점, B-spline 국소 꺾임, 순간 마스크 노이즈처럼 위치마다
+  곡률이 크게 달라지는 구간은 unstable_preview_curvature로 차단된다.
+
+3.4 fallback 안전 차단
+
+/lane/path/status의 fallback=true 동안에는 기본 Pure Pursuit 목표점 조향은
+유지하지만, 오래된/대체 경로 곡률을 근거로 한 추가 보정은 적용하지 않는다.
+상태 이유는 fallback_path로 발행된다.
+
+3.5 기존 안전 제한 유지
+
+- steering_gain과 max_steer_deg 적용
+- steering_deadband_deg 적용
+- 실제 dt 기반 최대 조향 속도/가속도 제한
+- PP 곡률과 레퍼런스 곡률의 방향이 반대일 때 보정 차단
+- curvature_tracking_max_correction_1pm에 의한 보정 오차 제한
+
+위 제한은 삭제하거나 우회하지 않았다.
+
+4. 추가 파라미터와 현재 기본값
+
+minimum_path_preview_m: 0.30
+curvature_tracking_preview_m: 0.45
+curvature_tracking_min_samples: 3
+curvature_tracking_max_mad_1pm: 0.25
+
+기존 관련 기본값:
+
+lookahead_search_mode: continuous_arc_length
+curvature_tracking_enabled: true
+curvature_tracking_gain: 0.20
+curvature_tracking_sample_gap_m: 0.15
+curvature_tracking_max_correction_1pm: 0.20
+curvature_tracking_sign_guard_1pm: 0.05
+curvature_tracking_min_deficit_1pm: 0.01
+
+추가 안전 동작:
+  REF는 PP보다 부족한 같은 방향 곡률만 보충한다. 같은 방향에서 PP가 이미
+  REF 이상이면 경로 복귀 피드백일 수 있으므로 PP를 감소시키지 않는다.
+  부족분이 0.01 1/m 이하이면 프레임 노이즈로 보고 보정하지 않는다.
+
+5. 기존 /lane/control/status JSON에 추가된 필드
+
+target_search_lookahead_m
+target_path_preview_m
+target_path_curvature_samples
+target_path_curvature_mad_1pm
+curvature_tracking_deficit_1pm
+
+기존 토픽 이름과 std_msgs/String 타입은 그대로다. 기존 구독자가 모르는 JSON
+필드를 무시하는 구조이므로 토픽 호환성에 영향을 주지 않는다.
+
+6. 기존 bag 경로를 이용한 오프라인 비교
+
+입력 경로:
+  /home/tak/Desktop/bags/rosbag2_2026_08_03-14_53_47를 현재 파이프라인으로
+  생성해 저장해 둔 /lane/path 749개 메시지
+
+결과(절댓값):
+  raw 조향 median   기존 6.29deg  -> 개선 6.33deg
+  raw 조향 p90      기존 11.32deg -> 개선 12.37deg
+  raw 조향 p95      기존 12.10deg -> 개선 13.05deg
+  raw 조향 max      기존 18.54deg -> 개선 19.01deg
+  target lateral p90 기존 0.133m  -> 개선 0.172m
+  목표점 path preview median       -> 0.300m 확보
+
+곡률 품질 차단:
+  unstable_preview_curvature 64프레임
+  fallback_path              28프레임
+
+해석:
+  급격한 전체 gain 증폭 없이 커브 구간 상위 조향량이 완만하게 증가했다.
+  동시에 곡률 표본이 불안정한 경로 이음부는 추가 보정 대상에서 제외됐다.
+  rosbag은 open-loop이므로 이 수치는 실차 횡오차 개선을 보장하지 않는다.
+  최종 판단은 저속 실차에서 raw/final 조향, 실제 조향각, 횡오차를 함께 저장해
+  비교해야 한다.
+
+7. 실행 및 적용
+
+실행 중인 launch를 Ctrl+C로 종료한 후 다음과 같이 다시 실행한다.
+
+  cd /home/tak/dolbatS
+  source /opt/ros/humble/setup.bash
+  source /home/tak/dolbatS/install/setup.bash
+  ros2 launch drive_pkg drive_pipeline.launch.py \
+    params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml
+
+bag 검증:
+
+  ros2 launch drive_pkg drive_rosbag.launch.py \
+    bag_path:=/home/tak/Desktop/bags/rosbag2_2026_08_03-14_53_47 \
+    params_file:=/home/tak/dolbatS/src/drive_pkg/config/drive_pipeline.yaml \
+    show_visualizer:=true
+
+현재 워크스페이스는 소스 연결형 설치이므로 이번 적용을 위해 패키지 빌드를
+수행하지 않는다. 상세 확인 명령과 튜닝 순서는 howtorun.md를 따른다.
+
+8. 검증 결과
+
+- Python 구문 검사: 통과
+- git diff --check: 통과
+- drive_pkg 단위 테스트: 43개 전부 통과
+- 패키지 빌드: 수행하지 않음
+
+ROS Python 바인딩이 없는 테스트 셸에서는 /tmp의 테스트 전용 메시지 stub을
+사용해 제어 수학과 경로 처리 단위 테스트를 수행했다. 실제 ROS launch를 통한
+GPU/카메라/실차 통합 시험은 이번 수정 범위에서 수행하지 않았다.
+
+9. 삭제된 내용
+
+- 삭제된 노드: 없음
+- 삭제된 launch: 없음
+- 삭제된 토픽: 없음
+- 삭제된 기존 파라미터: 없음
+- 삭제된 조향 안전 제한: 없음
+
+10. 롤백
+
+코드를 되돌리지 않고 기존 Pure Pursuit에 가깝게 동작시키려면 YAML에서:
+
+  minimum_path_preview_m: 0.0
+  curvature_tracking_enabled: false
+
+로 변경한 뒤 pure_pursuit 노드를 재시작한다.
