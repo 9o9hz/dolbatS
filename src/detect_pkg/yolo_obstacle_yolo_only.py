@@ -102,7 +102,8 @@ class YoloObstacleYoloOnly(Node):
             "middle_right_ratio": 2.0 / 3.0,
             "min_bbox_area_ratio": 0.08,
             "full_steer_angle_deg": 25.0,
-            "full_steer_duration_sec": 1.0,
+            "left_steer_duration_sec": 1.0,
+            "right_steer_duration_sec": 1.0,
             "enable_opposite_steer": False,
             "rearm_clear_frames": 3,
             "avoidance_active_topic": "/detect/obstacle/avoidance_active",
@@ -129,8 +130,11 @@ class YoloObstacleYoloOnly(Node):
         self.full_steer_angle_deg = abs(
             float(parameter("full_steer_angle_deg"))
         )
-        self.full_steer_duration_sec = float(
-            parameter("full_steer_duration_sec")
+        self.left_steer_duration_sec = float(
+            parameter("left_steer_duration_sec")
+        )
+        self.right_steer_duration_sec = float(
+            parameter("right_steer_duration_sec")
         )
         self.enable_opposite_steer = bool(
             parameter("enable_opposite_steer")
@@ -152,8 +156,10 @@ class YoloObstacleYoloOnly(Node):
             raise ValueError("min_bbox_area_ratio must be in (0, 1]")
         if self.full_steer_angle_deg <= 0.0:
             raise ValueError("full_steer_angle_deg must be positive")
-        if self.full_steer_duration_sec <= 0.0:
-            raise ValueError("full_steer_duration_sec must be positive")
+        if self.left_steer_duration_sec <= 0.0:
+            raise ValueError("left_steer_duration_sec must be positive")
+        if self.right_steer_duration_sec <= 0.0:
+            raise ValueError("right_steer_duration_sec must be positive")
 
         self.state = TimedTurnState.WAIT_TRIGGER
         self.state_started = self.get_clock().now()
@@ -207,7 +213,8 @@ class YoloObstacleYoloOnly(Node):
             f"{self.middle_right_ratio:.3f}W, "
             f"min area={self.min_bbox_area_ratio:.3f}, "
             f"alternating turn={self.full_steer_angle_deg:.1f} deg for "
-            f"{self.full_steer_duration_sec:.2f} sec per obstacle; "
+            f"left={self.left_steer_duration_sec:.2f} sec / "
+            f"right={self.right_steer_duration_sec:.2f} sec per obstacle; "
             f"equal opposite steer={opposite_steer_status}; "
             "first direction=left"
         )
@@ -266,6 +273,19 @@ class YoloObstacleYoloOnly(Node):
             f"full-{direction} turn"
         )
 
+    def duration_for_state(self, state: TimedTurnState) -> float:
+        if state in (
+            TimedTurnState.TURN_LEFT,
+            TimedTurnState.COUNTERSTEER_LEFT,
+        ):
+            return self.left_steer_duration_sec
+        if state in (
+            TimedTurnState.TURN_RIGHT,
+            TimedTurnState.COUNTERSTEER_RIGHT,
+        ):
+            return self.right_steer_duration_sec
+        return self.left_steer_duration_sec
+
     def on_publish_timer(self) -> None:
         elapsed = (
             self.get_clock().now() - self.state_started
@@ -273,7 +293,7 @@ class YoloObstacleYoloOnly(Node):
         next_state = next_timed_turn_state(
             self.state,
             elapsed,
-            self.full_steer_duration_sec,
+            self.duration_for_state(self.state),
             self.enable_opposite_steer,
         )
         if next_state != self.state and self.state in (

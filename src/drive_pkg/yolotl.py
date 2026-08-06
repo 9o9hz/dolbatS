@@ -411,7 +411,7 @@ class LaneFollowerNode(Node):
 
         self.MIN_LOOKAHEAD_DISTANCE = 1.2
         self.MAX_LOOKAHEAD_DISTANCE = 1.4
-        self.MAX_STEER_DEG = 25.0
+        self.MAX_STEER_DEG = 35.0
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0
         # pure_pursuit.py(drive_pipeline.yaml steering_gain=5.00)와 동일한

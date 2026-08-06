@@ -24,14 +24,14 @@ mission_manager:
     mission_state_topic: "/mission_state"
     status_topic: "/mission_manager/status"
 
-    auto_steer_angle_abs_max: 25.0
+    auto_steer_angle_abs_max: 35.0
     auto_throttle_max: 1.0
     throttle_curve_k: 0.0
 
     lane_throttle_min: 0.8
     lane_throttle_max: 0.95
-    obstacle_throttle_min: 0.4
-    obstacle_throttle_max: 0.8
+    obstacle_throttle_min: 0.8
+    obstacle_throttle_max: 0.95
 
     yellow_deceleration_sec: 3.0
     green_forward_duration_sec: 3.0

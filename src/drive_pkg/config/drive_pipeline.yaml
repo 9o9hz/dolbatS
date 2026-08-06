@@ -71,16 +71,6 @@ drive_main:
     prefer_solid_when_dashed: true
     initial_lane: "lane_2"
     lane_state_confirm_frames: 3
-    # 중앙 점선 주변에서는 어느 차로에도 확정하지 않는다. false이면
-    # 경계 통과 즉시 반대 차로 관측을 허용하되 완료 확인 조건은 유지한다.
-    lane_dead_zone_enabled: true
-    lane_dead_zone_m: 0.06
-    # 목표 차로의 두 경계 안에서 중심·방향 조건이 연속으로 만족돼야 전환 완료.
-    lane_change_confirm_frames: 3
-    lane_change_center_tolerance_m: 0.20
-    lane_change_angle_tolerance_deg: 10.0
-    # 토폴로지 관측이 장시간 사라지면 고정값을 버리고 unknown으로 복귀.
-    lane_state_max_missing_frames: 10
     # 순간 오검출은 곡선 연속성으로 거르고, 사라진 경계는 2프레임 뒤 폐기한다.
     lane_track_max_age_frames: 2
     # S자에서 같은 물리 차선의 프레임 간 곡률 이동을 허용한다.
@@ -132,22 +122,18 @@ pure_pursuit:
     status_topic: "/lane/control/status"
 
     wheelbase_m: 0.545
-    max_steer_deg: 25.0
+    max_steer_deg: 35.0
     # Pure Pursuit 기하 조향을 실제 목표각으로 과도하게 증폭하지 않는다.
-    steering_gain: 2.00
+    steering_gain: 2.50
     # true: /auto_throttle 절댓값을 속도 명령의 대용값으로 사용해
     # 저속에서는 짧게, 고속에서는 길게 min~max 사이에서 목표점 이동.
     # false: lookahead_m 거리의 고정 목표점 사용.
     dynamic_lookahead_enabled: true
     lookahead_m: 1.45
-    ld_throttle_min: 0.9
-    ld_throttle_max: 0.99
+    ld_throttle_min: 0.5
+    ld_throttle_max: 0.8
     lookahead_min_m: 1.45
     lookahead_max_m: 1.6
-    # BEV 경로 첫 점이 후륜축보다 약 1.09m 앞에서 시작하므로, 목표점이
-    # 보이는 경로의 첫 점에서 최소 30cm 앞에 놓이도록 target 탐색만 보강.
-    # 동적 Ld 자체와 토픽 구조는 바꾸지 않는다.
-    minimum_path_preview_m: 0.30
     # 기존 simple/arc_length는 롤백용이다. continuous_arc_length는 Ld가
     # 통과하는 경로 선분 안을 보간해 목표점의 인덱스 스냅을 없앤다.
     lookahead_search_mode: "continuous_arc_length"
@@ -160,23 +146,6 @@ pure_pursuit:
     curvature_sample_gap_m: 0.15
     # throttle/곡률 변화가 Ld에 즉시 반영되지 않도록 실제 dt 기반으로 필터.
     lookahead_filter_tau_sec: 0.25
-
-    # 목표점 주변~전방 45cm에서 15cm 간격 3점 곡률을 여러 번 측정하고
-    # 중앙값을 사용한다. MAD가 0.25 1/m를 넘으면 경로 결합부/노이즈로
-    # 보고 곡률 보정을 끈다. fallback 경로에서도 PP만 유지하고 보정은 끈다.
-    # REF가 PP보다 큰 같은 방향 곡률 부족분만 보충하며, PP가 이미 더
-    # 강하면 경로 복귀 피드백일 수 있으므로 절대 감소시키지 않는다.
-    curvature_tracking_enabled: true
-    curvature_tracking_gain: 0.20
-    curvature_tracking_sample_gap_m: 0.15
-    curvature_tracking_preview_m: 0.45
-    curvature_tracking_min_samples: 3
-    curvature_tracking_max_mad_1pm: 0.25
-    curvature_tracking_max_correction_1pm: 0.20
-    curvature_tracking_sign_guard_1pm: 0.05
-    # PP가 REF보다 부족한 차이가 이 값 이하이면 프레임 노이즈로 보고 무시.
-    # 같은 방향에서 PP가 이미 REF 이상이면 PP를 절대 감소시키지 않는다.
-    curvature_tracking_min_deficit_1pm: 0.01
 
     # 새 limiter가 켜지면 아래 EMA/프레임당 제한은 롤백용으로만 남고
     # 실제 조향 제한에는 사용되지 않는다.

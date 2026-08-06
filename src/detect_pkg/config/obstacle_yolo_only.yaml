@@ -29,12 +29,15 @@ yolo_obstacle_yolo_only:
     # bbox 면적 / 전체 화면 면적. 0.025는 화면 면적의 2.5%이다.
     min_bbox_area_ratio: 0.015
 
-    # 장애물마다 왼쪽/오른쪽을 번갈아 이 시간 동안 풀조향한다.
+    # 장애물마다 왼쪽/오른쪽을 번갈아 풀조향한다.
     # 첫 번째 장애물은 왼쪽부터 시작한다.
-    full_steer_angle_deg: 25.0
-    full_steer_duration_sec: 2.5
+    full_steer_angle_deg: 35.0
+    # 좌로 회피(TURN_LEFT/COUNTERSTEER_LEFT) 시 풀조향을 유지하는 시간
+    left_steer_duration_sec: 2.0
+    # 우로 회피(TURN_RIGHT/COUNTERSTEER_RIGHT) 시 풀조향을 유지하는 시간
+    right_steer_duration_sec: 3.0
     # true이면 첫 풀조향 후 같은 시간 동안 반대 방향으로 풀조향한다.
-    enable_opposite_steer: true
+    enable_opposite_steer: false
     # 시퀀스 종료 후 YOLO 미감지가 이 프레임 수만큼 이어져야 재무장한다.
     rearm_clear_frames: 1
 

@@ -70,7 +70,7 @@ int pendingUltrasonicTelemetrySensor = 0;
 const int STEER_SENSOR_PIN = A4;
 
 // A4 값이 STEER_CENTER_RAW일 때 조향각 0도
-const int STEER_CENTER_RAW = 577;
+const int STEER_CENTER_RAW = 572;
 // 센서/링크를 정비한 뒤에는 실차 중앙의 raw 값으로 반드시 재보정한다.
 
 // 1 ADC count당 각도
@@ -82,7 +82,7 @@ const float DEG_PER_ADC = 270.0f / 1024.0f;
 // 실차에서는 왼쪽으로 움직일 때 A4 값이 증가한다. 이 극성이 틀리면
 // 위치 오차를 줄이지 않고 같은 방향으로 계속 구동해 기계적 끝단에 닿는다.
 const int STEER_SIGN = 1;
-const float MAX_STEER_DEG = 25.0f;
+const float MAX_STEER_DEG = 35.0f;
 
 // 조향 센서의 안전 동작 범위와 목표값 허용 오차 (ADC raw)
 // 현재 센서는 왼쪽으로 갈수록 raw가 커지고 오른쪽으로 갈수록 작아짐
