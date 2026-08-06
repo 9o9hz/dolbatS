@@ -22,6 +22,23 @@ def group(x_ref: float, dashed: bool) -> dict:
 
 
 class LaneTopologyTest(unittest.TestCase):
+    @staticmethod
+    def topology(left_x: float, dashed_x: float, right_x: float):
+        left = group(left_x, False)
+        dashed = group(dashed_x, True)
+        right = group(right_x, False)
+        left["pieces"][0].update(
+            semantic_type="SOLID", semantic_confidence=0.95
+        )
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED", semantic_confidence=0.95
+            )
+        right["pieces"][0].update(
+            semantic_type="SOLID", semantic_confidence=0.95
+        )
+        return [left, dashed, right]
+
     def test_component_points_use_zhang_suen_skeleton(self):
         component = np.zeros((20, 20), dtype=np.uint8)
         component[2:18, 6:14] = 1
@@ -362,6 +379,62 @@ class LaneTopologyTest(unittest.TestCase):
         self.assertIs(selected_left, dashed)
         self.assertIs(selected_right, right)
         self.assertEqual(mode, "lane2_dashed_solid_hold")
+
+    def test_confirmed_lane_can_change_with_stable_target_topology(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=500,
+                pixels_per_meter_x=200.0,
+                initial_lane="lane_2",
+                lane_change_confirm_frames=2,
+                lane_change_center_tolerance_m=0.15,
+            ),
+        )
+        target_lane_1 = self.topology(160.0, 340.0, 520.0)
+
+        self.assertIsNone(processor._classify_which_lane(target_lane_1))
+        self.assertEqual(
+            processor._lane_transition_state, "lane_2_to_lane_1"
+        )
+        self.assertEqual(
+            processor._classify_which_lane(target_lane_1), "lane_1"
+        )
+        self.assertEqual(processor._current_lane, "lane_1")
+        self.assertIsNone(processor._lane_transition_state)
+
+    def test_center_line_dead_zone_can_be_enabled_or_disabled(self):
+        topology = self.topology(80.0, 260.0, 440.0)
+        enabled = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=500,
+                pixels_per_meter_x=200.0,
+                initial_lane="lane_2",
+                lane_dead_zone_enabled=True,
+                lane_dead_zone_m=0.12,
+                lane_change_confirm_frames=1,
+                lane_change_center_tolerance_m=0.5,
+            ),
+        )
+        disabled = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=500,
+                pixels_per_meter_x=200.0,
+                initial_lane="lane_2",
+                lane_dead_zone_enabled=False,
+                lane_dead_zone_m=0.12,
+                lane_change_confirm_frames=1,
+                lane_change_center_tolerance_m=0.5,
+            ),
+        )
+
+        self.assertIsNone(enabled._classify_which_lane(topology))
+        self.assertEqual(enabled._current_lane, "lane_2")
+        self.assertEqual(
+            disabled._classify_which_lane(topology), "lane_1"
+        )
 
     def test_current_boundary_is_not_mixed_with_stale_boundary(self):
         processor = SegmentationLaneProcessor(

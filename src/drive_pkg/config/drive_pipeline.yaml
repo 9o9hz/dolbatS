@@ -71,6 +71,16 @@ drive_main:
     prefer_solid_when_dashed: true
     initial_lane: "lane_2"
     lane_state_confirm_frames: 3
+    # 중앙 점선 주변에서는 어느 차로에도 확정하지 않는다. false이면
+    # 경계 통과 즉시 반대 차로 관측을 허용하되 완료 확인 조건은 유지한다.
+    lane_dead_zone_enabled: true
+    lane_dead_zone_m: 0.06
+    # 목표 차로의 두 경계 안에서 중심·방향 조건이 연속으로 만족돼야 전환 완료.
+    lane_change_confirm_frames: 3
+    lane_change_center_tolerance_m: 0.20
+    lane_change_angle_tolerance_deg: 10.0
+    # 토폴로지 관측이 장시간 사라지면 고정값을 버리고 unknown으로 복귀.
+    lane_state_max_missing_frames: 10
     # 순간 오검출은 곡선 연속성으로 거르고, 사라진 경계는 2프레임 뒤 폐기한다.
     lane_track_max_age_frames: 2
     # S자에서 같은 물리 차선의 프레임 간 곡률 이동을 허용한다.

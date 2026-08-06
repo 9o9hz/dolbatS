@@ -141,6 +141,12 @@ class LaneConfig:
     prefer_solid_when_dashed: bool = True
     initial_lane: str = "auto"
     lane_state_confirm_frames: int = 3
+    lane_dead_zone_enabled: bool = True
+    lane_dead_zone_m: float = 0.12
+    lane_change_confirm_frames: int = 5
+    lane_change_center_tolerance_m: float = 0.15
+    lane_change_angle_tolerance_deg: float = 8.0
+    lane_state_max_missing_frames: int = 10
     lane_track_max_age_frames: int = 2
     lane_track_match_threshold_px: float = 65.0
     solid_enter_frames: int = 4
@@ -413,6 +419,8 @@ class SegmentationLaneProcessor:
         )
         self._lane_candidate: Optional[str] = None
         self._lane_candidate_streak = 0
+        self._lane_transition_state: Optional[str] = None
+        self._lane_observation_missing_frames = 0
 
     def _validate_config(self) -> None:
         cfg = self.config
@@ -498,6 +506,26 @@ class SegmentationLaneProcessor:
             raise ValueError(
                 "lane_state_confirm_frames must be positive"
             )
+        if not math.isfinite(cfg.lane_dead_zone_m) or cfg.lane_dead_zone_m < 0.0:
+            raise ValueError("lane_dead_zone_m must be finite and non-negative")
+        if cfg.lane_change_confirm_frames <= 0:
+            raise ValueError("lane_change_confirm_frames must be positive")
+        if (
+            not math.isfinite(cfg.lane_change_center_tolerance_m)
+            or cfg.lane_change_center_tolerance_m < 0.0
+        ):
+            raise ValueError(
+                "lane_change_center_tolerance_m must be finite and non-negative"
+            )
+        if (
+            not math.isfinite(cfg.lane_change_angle_tolerance_deg)
+            or cfg.lane_change_angle_tolerance_deg < 0.0
+        ):
+            raise ValueError(
+                "lane_change_angle_tolerance_deg must be finite and non-negative"
+            )
+        if cfg.lane_state_max_missing_frames < 0:
+            raise ValueError("lane_state_max_missing_frames cannot be negative")
         if cfg.lane_track_max_age_frames < 0:
             raise ValueError(
                 "lane_track_max_age_frames cannot be negative"
@@ -1331,29 +1359,153 @@ class SegmentationLaneProcessor:
             return "lane_2"
         return None
 
+    def _observe_lane_from_topology(
+        self, groups: List[LaneGroup]
+    ) -> Dict[str, Any]:
+        """Observe the ego lane without committing a temporal state change."""
+        solid_left, dashed, solid_right = (
+            self._solid_dashed_solid_topology(groups)
+        )
+        observation: Dict[str, Any] = {
+            "lane": None,
+            "topology_valid": False,
+            "in_dead_zone": False,
+            "centered": False,
+            "aligned": False,
+        }
+        if dashed is None:
+            return observation
+
+        vehicle_x = self.config.warp_width * 0.5
+        dashed_x = float(dashed["x_ref"])
+        lateral_to_dashed_m = abs(dashed_x - vehicle_x) / (
+            self.config.pixels_per_meter_x
+        )
+        observation["in_dead_zone"] = bool(
+            self.config.lane_dead_zone_enabled
+            and lateral_to_dashed_m <= self.config.lane_dead_zone_m
+        )
+        if observation["in_dead_zone"]:
+            observation["topology_valid"] = bool(
+                solid_left is not None and solid_right is not None
+            )
+            return observation
+
+        if vehicle_x < dashed_x and solid_left is not None:
+            lane = "lane_1"
+            left_boundary = solid_left
+            right_boundary = dashed
+        elif vehicle_x > dashed_x and solid_right is not None:
+            lane = "lane_2"
+            left_boundary = dashed
+            right_boundary = solid_right
+        else:
+            return observation
+
+        left_x = float(left_boundary["x_ref"])
+        right_x = float(right_boundary["x_ref"])
+        if not left_x < vehicle_x < right_x:
+            return observation
+
+        reference_y = self.config.warp_height * 0.88
+        left_curve = np.asarray(left_boundary["curve"], dtype=np.float64)
+        right_curve = np.asarray(right_boundary["curve"], dtype=np.float64)
+        center_slope_px = 0.5 * (
+            2.0 * left_curve[0] * reference_y
+            + left_curve[1]
+            + 2.0 * right_curve[0] * reference_y
+            + right_curve[1]
+        )
+        center_slope_metric = (
+            center_slope_px
+            * self.config.pixels_per_meter_y
+            / self.config.pixels_per_meter_x
+        )
+        angle_deg = abs(math.degrees(math.atan(center_slope_metric)))
+        center_offset_m = abs(vehicle_x - 0.5 * (left_x + right_x)) / (
+            self.config.pixels_per_meter_x
+        )
+        observation.update(
+            lane=lane,
+            topology_valid=True,
+            centered=(
+                center_offset_m
+                <= self.config.lane_change_center_tolerance_m
+            ),
+            aligned=(
+                angle_deg <= self.config.lane_change_angle_tolerance_deg
+            ),
+        )
+        return observation
+
     def _classify_which_lane(
         self, groups: List[LaneGroup]
     ) -> Optional[str]:
-        """Latch the starting lane; never switch without an explicit command."""
-        if self._current_lane is not None:
-            return self._current_lane
+        """Track a dynamic ego-lane state from robust lane topology."""
+        observation = self._observe_lane_from_topology(groups)
+        inferred = observation["lane"]
 
-        inferred = self._infer_lane_from_groups(groups)
         if inferred is None:
             self._lane_candidate = None
             self._lane_candidate_streak = 0
-            return None
+            if observation["in_dead_zone"] and self._current_lane is not None:
+                target = "lane_2" if self._current_lane == "lane_1" else "lane_1"
+                self._lane_transition_state = (
+                    f"{self._current_lane}_to_{target}"
+                )
+                self._lane_observation_missing_frames = 0
+                return None
+
+            self._lane_observation_missing_frames += 1
+            if (
+                self._lane_observation_missing_frames
+                > self.config.lane_state_max_missing_frames
+            ):
+                self._current_lane = None
+                self._lane_transition_state = None
+            return (
+                None
+                if self._lane_transition_state is not None
+                else self._current_lane
+            )
+
+        self._lane_observation_missing_frames = 0
+        if inferred == self._current_lane:
+            self._lane_candidate = None
+            self._lane_candidate_streak = 0
+            self._lane_transition_state = None
+            return self._current_lane
+
+        if self._current_lane is not None:
+            self._lane_transition_state = (
+                f"{self._current_lane}_to_{inferred}"
+            )
+
+        if not observation["centered"] or not observation["aligned"]:
+            self._lane_candidate = inferred
+            self._lane_candidate_streak = 0
+            return None if self._current_lane is not None else self._current_lane
+
         if inferred == self._lane_candidate:
             self._lane_candidate_streak += 1
         else:
             self._lane_candidate = inferred
             self._lane_candidate_streak = 1
-        if (
-            self._lane_candidate_streak
-            >= self.config.lane_state_confirm_frames
-        ):
+        required_frames = (
+            self.config.lane_state_confirm_frames
+            if self._current_lane is None
+            else self.config.lane_change_confirm_frames
+        )
+        if self._lane_candidate_streak >= required_frames:
             self._current_lane = inferred
-        return self._current_lane
+            self._lane_candidate = None
+            self._lane_candidate_streak = 0
+            self._lane_transition_state = None
+        return (
+            None
+            if self._lane_transition_state is not None
+            else self._current_lane
+        )
 
     def _group_has_path_overlap(self, group: LaneGroup) -> bool:
         overlap_min = max(
@@ -1704,7 +1856,7 @@ class SegmentationLaneProcessor:
         solid_left, dashed, solid_right = (
             self._solid_dashed_solid_topology(groups)
         )
-        if dashed is not None:
+        if dashed is not None and self._lane_transition_state is None:
             lane_state = (
                 self._current_lane
                 or self._infer_lane_from_groups(groups)
@@ -1750,7 +1902,12 @@ class SegmentationLaneProcessor:
             and self._group_has_path_overlap(group)
         ]
         lane_state = self._current_lane or self._infer_lane_from_groups(groups)
-        if semantic_dashed and semantic_solid and lane_state is not None:
+        if (
+            semantic_dashed
+            and semantic_solid
+            and lane_state is not None
+            and self._lane_transition_state is None
+        ):
             strongest = max(
                 semantic_dashed + semantic_solid,
                 key=self._group_reliability,

@@ -156,6 +156,12 @@ class LaneDriveNode(Node):
             "prefer_solid_when_dashed": True,
             "initial_lane": "lane_2",
             "lane_state_confirm_frames": 3,
+            "lane_dead_zone_enabled": True,
+            "lane_dead_zone_m": 0.12,
+            "lane_change_confirm_frames": 5,
+            "lane_change_center_tolerance_m": 0.15,
+            "lane_change_angle_tolerance_deg": 8.0,
+            "lane_state_max_missing_frames": 10,
             "lane_track_max_age_frames": 2,
             "lane_track_match_threshold_px": 65.0,
             "solid_enter_frames": 4,
@@ -266,6 +272,22 @@ class LaneDriveNode(Node):
             initial_lane=str(parameter("initial_lane")),
             lane_state_confirm_frames=int(
                 parameter("lane_state_confirm_frames")
+            ),
+            lane_dead_zone_enabled=bool(
+                parameter("lane_dead_zone_enabled")
+            ),
+            lane_dead_zone_m=float(parameter("lane_dead_zone_m")),
+            lane_change_confirm_frames=int(
+                parameter("lane_change_confirm_frames")
+            ),
+            lane_change_center_tolerance_m=float(
+                parameter("lane_change_center_tolerance_m")
+            ),
+            lane_change_angle_tolerance_deg=float(
+                parameter("lane_change_angle_tolerance_deg")
+            ),
+            lane_state_max_missing_frames=int(
+                parameter("lane_state_max_missing_frames")
             ),
             lane_track_max_age_frames=int(
                 parameter("lane_track_max_age_frames")
