@@ -132,7 +132,7 @@ pure_pursuit:
     lookahead_m: 1.45
     ld_throttle_min: 0.9
     ld_throttle_max: 0.99
-    lookahead_min_m: 1.3
+    lookahead_min_m: 1.45
     lookahead_max_m: 1.6
     # BEV 경로 첫 점이 후륜축보다 약 1.09m 앞에서 시작하므로, 목표점이
     # 보이는 경로의 첫 점에서 최소 30cm 앞에 놓이도록 target 탐색만 보강.
