@@ -16,7 +16,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, String
 
 
-DEFAULT_MODEL_FILENAME = "traffic_light_best.pt"
+DEFAULT_MODEL_FILENAME = "traffic-lightv2.pt"
 COLOR_LABELS = ("red", "yellow", "green")
 
 
@@ -54,6 +54,7 @@ class TrafficLightDetectorPublisher(Node):
 
         self.declare_parameter("model_path", get_default_model_path())
         self.declare_parameter("confidence_threshold", 0.3)
+        self.declare_parameter("min_red_area_px", 13805.0)
         self.declare_parameter("detected_topic", "/detect/traffic_light/detected")
         self.declare_parameter("color_topic", "/detect/traffic_light/color")
         self.declare_parameter(
@@ -70,6 +71,9 @@ class TrafficLightDetectorPublisher(Node):
         )
         self.confidence_threshold = (
             self.get_parameter("confidence_threshold").get_parameter_value().double_value
+        )
+        self.min_red_area_px = (
+            self.get_parameter("min_red_area_px").get_parameter_value().double_value
         )
         self.show_window = (
             self.get_parameter("show_window").get_parameter_value().bool_value
@@ -117,6 +121,10 @@ class TrafficLightDetectorPublisher(Node):
             f"{confidence_topic}=Float32, "
             f"{detection_image_topic}=Image"
         )
+        self.get_logger().info(
+            "Red light minimum area filter enabled: "
+            f"min_red_area_px={self.min_red_area_px}"
+        )
 
     def load_yolo(self):
         try:
@@ -144,7 +152,18 @@ class TrafficLightDetectorPublisher(Node):
             self.logged_first_frame = True
 
         color, bbox, confidence = self.detect_best_color(frame)
-        detected = color is not None
+
+        # 빨간불일 때 bbox 크기 검사
+        if color == "red" and bbox is not None:
+            _x, _y, width, height = bbox
+            area = width * height
+            if area < self.min_red_area_px:
+                # 면적이 너무 작으면 감지되지 않은 것으로 처리
+                color = None
+                bbox = None
+                confidence = 0.0
+
+        detected = color is not None and bbox is not None
         self.publish_detected(detected)
         self.publish_color(color)
         self.publish_confidence(confidence)
@@ -186,9 +205,10 @@ class TrafficLightDetectorPublisher(Node):
                     continue
 
                 x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+                width, height = x2 - x1, y2 - y1
                 best_conf = conf
                 best_color = color
-                best_bbox = (x1, y1, x2 - x1, y2 - y1)
+                best_bbox = (x1, y1, width, height)
 
         return best_color, best_bbox, max(0.0, best_conf)
 
@@ -250,8 +270,8 @@ class TrafficLightDetectorPublisher(Node):
         }.get(color or "", (255, 255, 255))
         cv2.rectangle(frame, (x1, y1), (x2, y2), overlay_color, 2)
         cv2.putText(
-            frame,
-            f"{color or 'unknown'} {confidence:.2f}",
+            frame, # Display color, confidence, and bbox size (width x height)
+            f"{color or 'unknown'} {confidence:.2f} (W:{int(width)}, H:{int(height)})",
             (x1, max(20, y1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
