@@ -97,7 +97,7 @@ const unsigned long STEER_PROGRESS_TIMEOUT_MS = 250;
 const int STEER_MIN_PROGRESS_RAW = 2;
 
 // 조향 모터 PWM
-const int STEER_PWM = 150;
+const int STEER_PWM = 160;
 
 // ---------------- State Variables ----------------
 float currentSteerDeg = 0.0f;

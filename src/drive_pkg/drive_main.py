@@ -156,7 +156,7 @@ class LaneDriveNode(Node):
             "prefer_solid_when_dashed": True,
             "initial_lane": "lane_2",
             "lane_state_confirm_frames": 3,
-            "lane_dead_zone_enabled": True,
+            "lane_dead_zone_enabled": False,
             "lane_dead_zone_m": 0.12,
             "lane_change_confirm_frames": 5,
             "lane_change_center_tolerance_m": 0.15,
