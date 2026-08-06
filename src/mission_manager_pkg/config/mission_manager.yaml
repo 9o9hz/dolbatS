@@ -28,8 +28,8 @@ mission_manager:
     auto_throttle_max: 1.0
     throttle_curve_k: 0.0
 
-    lane_throttle_min: 0.9
-    lane_throttle_max: 0.95
+    lane_throttle_min: 0.95
+    lane_throttle_max: 0.99
     obstacle_throttle_min: 0.8
     obstacle_throttle_max: 0.95
 
