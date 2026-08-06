@@ -23,6 +23,25 @@ class CenteredBboxTriggerTest(unittest.TestCase):
             TimedTurnState.WAIT_CLEAR,
         )
 
+    def test_each_timed_turn_can_countersteer_for_equal_duration(self):
+        state = next_timed_turn_state(
+            TimedTurnState.TURN_LEFT, 1.0, 1.0, True
+        )
+        self.assertEqual(state, TimedTurnState.COUNTERSTEER_RIGHT)
+        self.assertEqual(
+            next_timed_turn_state(state, 0.9, 1.0, True),
+            TimedTurnState.COUNTERSTEER_RIGHT,
+        )
+        self.assertEqual(
+            next_timed_turn_state(state, 1.0, 1.0, True),
+            TimedTurnState.WAIT_CLEAR,
+        )
+
+        state = next_timed_turn_state(
+            TimedTurnState.TURN_RIGHT, 1.0, 1.0, True
+        )
+        self.assertEqual(state, TimedTurnState.COUNTERSTEER_LEFT)
+
     def test_avoidance_direction_alternates_left_and_right(self):
         state = TimedTurnState.TURN_LEFT
         state = opposite_turn_state(state)

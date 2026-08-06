@@ -23,8 +23,8 @@ ultrasonic_obstacle_event:
     right_distance_topic: /sonic/right/rear
     event_topic: /detect/obstacle_event
     detect_threshold_cm: 50.0
-    clear_threshold_cm: 70.0
-    consecutive_frames: 1
+    clear_threshold_cm: 100.0
+    consecutive_frames: 3
     default_avoid_direction: 1
 
 yolo_obstacle_bbox_turn:
@@ -49,8 +49,8 @@ yolo_obstacle_bbox_turn:
     status_topic: /detect/avoidance/status
 
     detect_threshold_cm: 50.0
-    clear_threshold_cm: 70.0
-    consecutive_frames: 1
+    clear_threshold_cm: 100.0
+    consecutive_frames: 3
     rear_no_echo_is_clear: true
     full_steer_angle_deg: 25.0
     turn_timeout_sec: 8.0

@@ -3,7 +3,7 @@ mission_manager:
     publish_rate_hz: 30.0
     log_rate_hz: 1.0
     drive_enable_topic: "/drive/enabled"
-    drive_enabled_default: true
+    drive_enabled_default: false
 
     lane_steer_topic: "/control/candidate/lane/steer_angle"
     lane_valid_topic: "/control/candidate/lane/valid"
