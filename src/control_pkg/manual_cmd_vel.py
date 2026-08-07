@@ -20,7 +20,7 @@ class ManualCmdVel(Node):
         self.declare_parameter("throttle_topic", "/auto_throttle")
         self.declare_parameter("throttle", 0.9)
         self.declare_parameter("steer_step_deg", 10.0)
-        self.declare_parameter("max_steer_deg", 20.0)
+        self.declare_parameter("max_steer_deg", 26.5)
         self.declare_parameter("key_timeout", 0.25)
         self.declare_parameter("publish_rate", 20.0)
 

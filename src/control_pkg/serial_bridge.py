@@ -38,7 +38,7 @@ class SerialBridge(Node):
         self.declare_parameter("reconnect_log_interval_sec", 5.0)
         self.declare_parameter("control_output_rate_hz", 20.0)
         self.declare_parameter("max_drive_pwm", 255)
-        self.declare_parameter("max_steer_angle", 20.0)
+        self.declare_parameter("max_steer_angle", 26.5)
         self.declare_parameter("throttle_deadband", 0.02)
         self.declare_parameter("max_throttle", 1.0)
         self.declare_parameter("command_timeout_sec", 0.3)
