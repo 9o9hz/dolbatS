@@ -54,7 +54,7 @@ drive_main:
     boundary_spacing_max_mad_m: 0.05
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
     # BEV 설정시마다 변경
-    bev_reference_forward_offset_m: 0.96
+    bev_reference_forward_offset_m: 0.94
 
     # 차선 조각 결합 및 좌/우 경계 선택.
     # bbox_close_ksize: 검출(bbox) 단위로 최대 성분을 뽑기 전 적용하는
@@ -63,7 +63,7 @@ drive_main:
     # Zhang-Suen skeleton 점을 곡선 피팅에 전달할 때의 y축 샘플 간격.
     # 기존처럼 각 행의 마스크 중간값을 계산하는 용도가 아니다.
     center_sample_step: 5
-    bbox_close_ksize: 594
+    bbox_close_ksize: 5
     same_line_threshold_px: 75.0
     min_group_span_px: 80.0
     min_group_area: 500
@@ -132,7 +132,7 @@ pure_pursuit:
     status_topic: "/lane/control/status"
 
     wheelbase_m: 0.545
-    max_steer_deg: 25.0
+    max_steer_deg: 35.0
     # Pure Pursuit 기하 조향을 실제 목표각으로 과도하게 증폭하지 않는다.
     steering_gain: 2.000
     # true: /auto_throttle 절댓값을 속도 명령의 대용값으로 사용해
@@ -142,8 +142,8 @@ pure_pursuit:
     lookahead_m: 1.45
     ld_throttle_min: 0.9
     ld_throttle_max: 0.99
-    lookahead_min_m: 1.5
-    lookahead_max_m: 1.8
+    lookahead_min_m: 1.0
+    lookahead_max_m: 1.4
     # BEV 경로 첫 점이 후륜축보다 약 1.09m 앞에서 시작하므로, 목표점이
     # 보이는 경로의 첫 점에서 최소 30cm 앞에 놓이도록 target 탐색만 보강.
     # 동적 Ld 자체와 토픽 구조는 바꾸지 않는다.
