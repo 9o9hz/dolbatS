@@ -11,10 +11,16 @@ def generate_launch_description():
         + "/config/obstacle_yolo_only.yaml"
     )
     config_file = LaunchConfiguration("config_file")
+    avoid_direction = LaunchConfiguration("avoid_direction")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("config_file", default_value=default_config),
+            DeclareLaunchArgument(
+                "avoid_direction",
+                default_value="L",
+                description="Fixed avoidance direction: L or R",
+            ),
             Node(
                 package="detect_pkg",
                 executable="obstacle_detector_publisher",
@@ -26,7 +32,10 @@ def generate_launch_description():
                 package="detect_pkg",
                 executable="yolo_obstacle_yolo_only",
                 name="yolo_obstacle_yolo_only",
-                parameters=[config_file],
+                parameters=[
+                    config_file,
+                    {"avoid_direction": avoid_direction},
+                ],
                 output="screen",
             ),
         ]

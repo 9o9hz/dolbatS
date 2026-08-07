@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Alternating YOLO avoidance ending when the bbox crosses an exit line."""
+"""Direction-selectable YOLO avoidance ending at a bbox exit line."""
 
 import json
 import math
@@ -22,11 +22,14 @@ class YoloOnlyState(Enum):
     WAIT_CLEAR = auto()
 
 
-def opposite_turn_state(state: YoloOnlyState) -> YoloOnlyState:
-    """Return the direction to use for the next obstacle."""
-    if state == YoloOnlyState.TURN_LEFT:
+def turn_state_from_direction(direction: str) -> YoloOnlyState:
+    """Convert an L/R direction parameter into its turn state."""
+    normalized = direction.strip().upper()
+    if normalized == "L":
+        return YoloOnlyState.TURN_LEFT
+    if normalized == "R":
         return YoloOnlyState.TURN_RIGHT
-    return YoloOnlyState.TURN_LEFT
+    raise ValueError("avoid_direction must be 'L' or 'R'")
 
 
 def centered_bbox_is_large_enough(
@@ -73,6 +76,7 @@ class YoloObstacleYoloOnly(Node):
             "middle_right_ratio": 2.0 / 3.0,
             "min_bbox_area_ratio": 0.08,
             "full_steer_angle_deg": 25.0,
+            "avoid_direction": "L",
             "bbox_left_boundary_ratio": 0.25,
             "bbox_right_boundary_ratio": 0.75,
             "bbox_exit_consecutive_frames": 3,
@@ -100,6 +104,12 @@ class YoloObstacleYoloOnly(Node):
         self.min_bbox_area_ratio = float(parameter("min_bbox_area_ratio"))
         self.full_steer_angle_deg = abs(
             float(parameter("full_steer_angle_deg"))
+        )
+        self.avoid_direction = str(
+            parameter("avoid_direction")
+        ).strip().upper()
+        self.configured_turn_state = turn_state_from_direction(
+            self.avoid_direction
         )
         self.bbox_left_boundary_ratio = float(
             parameter("bbox_left_boundary_ratio")
@@ -138,7 +148,6 @@ class YoloObstacleYoloOnly(Node):
             )
 
         self.state = YoloOnlyState.WAIT_TRIGGER
-        self.next_turn_state = YoloOnlyState.TURN_LEFT
         self.yolo_detected = False
         self.clear_frames = 0
         self.bbox_exit_frames = 0
@@ -186,11 +195,11 @@ class YoloObstacleYoloOnly(Node):
             f"middle={self.middle_left_ratio:.3f}W.."
             f"{self.middle_right_ratio:.3f}W, "
             f"min area={self.min_bbox_area_ratio:.3f}, "
-            f"alternating turn={self.full_steer_angle_deg:.1f} deg; "
+            f"turn={self.avoid_direction} "
+            f"({self.full_steer_angle_deg:.1f} deg); "
             f"exit lines={self.bbox_left_boundary_ratio:.3f}W/"
             f"{self.bbox_right_boundary_ratio:.3f}W, "
-            f"debounce={self.bbox_exit_consecutive_frames} frames; "
-            "first direction=left"
+            f"debounce={self.bbox_exit_consecutive_frames} frames"
         )
 
     def on_raw_image(self, msg: Image) -> None:
@@ -259,7 +268,7 @@ class YoloObstacleYoloOnly(Node):
         ):
             return
 
-        self.state = self.next_turn_state
+        self.state = self.configured_turn_state
         self.bbox_exit_frames = 0
         self.publish_candidate()
         direction = (
@@ -280,8 +289,6 @@ class YoloObstacleYoloOnly(Node):
         boundary_x = self.image_width * boundary_ratio
         crossed_side = "right" if direction == "left" else "left"
 
-        completed_turn = self.state
-        self.next_turn_state = opposite_turn_state(completed_turn)
         self.state = YoloOnlyState.WAIT_CLEAR
         self.clear_frames = 0
         self.publish_candidate()
@@ -321,12 +328,7 @@ class YoloObstacleYoloOnly(Node):
                         "image_width": self.image_width,
                         "image_height": self.image_height,
                         "min_bbox_area_ratio": self.min_bbox_area_ratio,
-                        "next_turn_direction": (
-                            "left"
-                            if self.next_turn_state
-                            == YoloOnlyState.TURN_LEFT
-                            else "right"
-                        ),
+                        "avoid_direction": self.avoid_direction,
                         "bbox_center_x": self.last_bbox_center_x,
                         "bbox_exit_frames": self.bbox_exit_frames,
                         "avoidance_active": self.state

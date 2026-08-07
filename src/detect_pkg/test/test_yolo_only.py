@@ -8,17 +8,29 @@ from yolo_obstacle_yolo_only import (
     YoloObstacleYoloOnly,
     YoloOnlyState,
     centered_bbox_is_large_enough,
-    opposite_turn_state,
+    turn_state_from_direction,
 )
 
 
 class CenteredBboxTriggerTest(unittest.TestCase):
-    def test_avoidance_direction_alternates_left_and_right(self):
-        state = YoloOnlyState.TURN_LEFT
-        state = opposite_turn_state(state)
-        self.assertEqual(state, YoloOnlyState.TURN_RIGHT)
-        state = opposite_turn_state(state)
-        self.assertEqual(state, YoloOnlyState.TURN_LEFT)
+    def test_l_argument_selects_left_turn(self):
+        self.assertEqual(
+            turn_state_from_direction("L"), YoloOnlyState.TURN_LEFT
+        )
+
+    def test_r_argument_selects_right_turn(self):
+        self.assertEqual(
+            turn_state_from_direction("R"), YoloOnlyState.TURN_RIGHT
+        )
+
+    def test_direction_argument_is_case_insensitive(self):
+        self.assertEqual(
+            turn_state_from_direction(" r "), YoloOnlyState.TURN_RIGHT
+        )
+
+    def test_invalid_direction_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "L.*R"):
+            turn_state_from_direction("forward")
 
     def test_left_turn_ends_at_same_right_boundary_as_yolo_end(self):
         self.assertTrue(

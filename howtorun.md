@@ -50,9 +50,11 @@ ros2 run control_pkg keyboard_drive_toggle
 ```
 
 # T7. obstacle
+L: 2차선, R: 1차선
 
 ```
-ros2 launch detect_pkg obstacle_yolo_only.launch.py
+ros2 launch detect_pkg obstacle_yolo_only.launch.py avoid_direction:=L
+ros2 launch detect_pkg obstacle_yolo_only.launch.py avoid_direction:=R
 ```
 
 # T8. traffic_light

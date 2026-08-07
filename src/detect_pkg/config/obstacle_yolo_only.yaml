@@ -29,8 +29,8 @@ yolo_obstacle_yolo_only:
     # bbox 면적 / 전체 화면 면적. 0.025는 화면 면적의 2.5%이다.
     min_bbox_area_ratio: 0.015
 
-    # 장애물마다 왼쪽/오른쪽을 번갈아 풀조향한다.
-    # 첫 번째 장애물은 왼쪽부터 시작한다.
+    # 회피 방향. launch의 avoid_direction:=L 또는 R 인자가 이 값을 덮어쓴다.
+    avoid_direction: L
     full_steer_angle_deg: 35.0
 
     # yolo_end와 동일한 bbox 기반 회피 종료 조건
