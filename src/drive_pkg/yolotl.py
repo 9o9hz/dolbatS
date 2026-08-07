@@ -4,6 +4,7 @@
 import sys
 import os
 import pickle
+from pathlib import Path as FilePath
 
 import numpy as np
 import cv2
@@ -42,6 +43,44 @@ def _default_resource_path(filename: str) -> str:
         )
     except Exception:
         return source_path
+
+
+def _default_calibration_path() -> str:
+    """Use the workspace calibration when available, else legacy PKL."""
+    workspace_calibration = (
+        FilePath(__file__).resolve().parents[2] / "camera_calibration.npz"
+    )
+    if workspace_calibration.is_file():
+        return str(workspace_calibration)
+    return _default_resource_path("camera_calibration.pkl")
+
+
+def _load_camera_calibration(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load current NPZ or legacy PKL camera calibration data."""
+    if FilePath(path).suffix.lower() == ".npz":
+        with np.load(path, allow_pickle=False) as calibration:
+            camera_matrix = np.asarray(
+                calibration["camera_matrix"], dtype=np.float64
+            )
+            distortion_key = (
+                "distortion_coefficients"
+                if "distortion_coefficients" in calibration.files
+                else "dist_coeffs"
+            )
+            dist_coeffs = np.asarray(
+                calibration[distortion_key], dtype=np.float64
+            )
+        return camera_matrix, dist_coeffs
+
+    with open(path, "rb") as calibration_file:
+        calibration = pickle.load(calibration_file)
+    camera_matrix = np.asarray(
+        calibration["camera_matrix"], dtype=np.float64
+    )
+    dist_coeffs = np.asarray(
+        calibration["dist_coeffs"], dtype=np.float64
+    )
+    return camera_matrix, dist_coeffs
 
 
 # ==============================================================================
@@ -372,14 +411,12 @@ class LaneFollowerNode(Node):
             self.get_logger().error(f"Check file path: {opt.param_file}")
             sys.exit(1)
 
-        # 2-1. 카메라 캘리브레이션(pkl) 로드
+        # 2-1. 카메라 캘리브레이션(NPZ/legacy PKL) 로드
         self.get_logger().info(f"Loading camera calibration from: {opt.calib_file}")
         try:
-            with open(opt.calib_file, 'rb') as f:
-                calib = pickle.load(f)
-
-            self.camera_matrix = calib['camera_matrix']
-            self.dist_coeffs = calib['dist_coeffs']
+            self.camera_matrix, self.dist_coeffs = (
+                _load_camera_calibration(opt.calib_file)
+            )
             self.use_undistort = True
             self.get_logger().info("[SUCCESS] Loaded camera calibration data")
         except Exception as e:
@@ -393,7 +430,6 @@ class LaneFollowerNode(Node):
         # BEV 640x640px 기준: x/y 방향 각각 1.20m (0803).
         self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = (
             0.001875,
-            0.94,
             0.94,
             0.001875,
         )
@@ -410,15 +446,15 @@ class LaneFollowerNode(Node):
         self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.95,0.99
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
-        self.MIN_LOOKAHEAD_DISTANCE = 1.5
-        self.MAX_LOOKAHEAD_DISTANCE = 1.7
-        self.MAX_STEER_DEG = 35.0
+        self.MIN_LOOKAHEAD_DISTANCE = 1.3
+        self.MAX_LOOKAHEAD_DISTANCE = 1.6
+        self.MAX_STEER_DEG = 26.5
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0
         # pure_pursuit.py(drive_pipeline.yaml steering_gain=5.00)와 동일한
         # 캘리브레이션. 순수 기하학적 pure-pursuit 각도는 작아서 이 게인
         # 없이는 아두이노 폐루프가 정지마찰을 못 넘기고 거의 안 움직인다.
-        self.STEERING_GAIN = 1.0
+        self.STEERING_GAIN = 2.5
 
         self.last_valid_ld = float(self.MAX_LOOKAHEAD_DISTANCE)
 
@@ -1105,7 +1141,7 @@ def main(args=None):
 
     default_weights = _default_resource_path('best_ver2.pt')
     default_params = _default_resource_path('bev_params_0803.npz')
-    default_calib = _default_resource_path('camera_calibration.pkl')
+    default_calib = _default_calibration_path()
 
     parser.add_argument('--weights', default=default_weights, help='Path to model weights')
     parser.add_argument('--param-file', default=default_params, help='Path to BEV parameters file')

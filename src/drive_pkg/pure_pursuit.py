@@ -34,7 +34,7 @@ PARAMETER_DEFAULTS = {
     "lookahead_max_m": 2.00,
     "lookahead_m": 1.50,
     "minimum_path_preview_m": 0.30,
-    "max_steer_deg": 25.0,
+    "max_steer_deg": 26.5,
     "steering_gain": 1.80,
     "steering_ema_alpha": 0.30,
     "steering_deadband_deg": 0.8,

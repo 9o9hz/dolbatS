@@ -8,6 +8,7 @@ this node's published path -- see howtorun.md for the two-node pipeline.
 
 Input:
     /image_raw/compressed (sensor_msgs/CompressedImage)
+    /detect/obstacle/avoidance_active (std_msgs/Bool)
 
 Outputs:
     /lane/detection/bev/compressed
@@ -38,7 +39,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from lane_detect import LaneDetectorCore, DetectionOutput
 from lane_processing import (
@@ -182,6 +183,7 @@ class LaneDriveNode(Node):
             "debug_topic": "/lane/path/debug/compressed",
             "path_status_topic": "/lane/path/status",
             "which_lane_topic": "/which/lane",
+            "avoidance_active_topic": "/detect/obstacle/avoidance_active",
             "path_frame_id": "base_link",
             "debug_jpeg_quality": 80,
             "local_display": bool(cli_args.display),
@@ -387,6 +389,13 @@ class LaneDriveNode(Node):
         self.which_lane_publisher = self.create_publisher(
             String, str(parameter("which_lane_topic")), 10
         )
+        self.avoidance_active = False
+        self.avoidance_subscription = self.create_subscription(
+            Bool,
+            str(parameter("avoidance_active_topic")),
+            self.on_avoidance_active,
+            10,
+        )
         self.image_subscription = self.create_subscription(
             CompressedImage,
             image_topic,
@@ -400,6 +409,26 @@ class LaneDriveNode(Node):
             f"bev={bev_path}, device={self.detector.device}, "
             f"undistort={self.use_undistort}"
         )
+
+    def on_avoidance_active(self, message: Bool) -> None:
+        """Latch exactly one lane switch for each avoidance activation."""
+        active = bool(message.data)
+        rising_edge = active and not self.avoidance_active
+        self.avoidance_active = active
+        switched = self.processor.set_avoidance_active(active)
+
+        if switched is not None:
+            source_lane, target_lane = switched
+            self.get_logger().warning(
+                "Obstacle avoidance activated: driving lane switched "
+                f"from {source_lane} to {target_lane}"
+            )
+        elif rising_edge:
+            self.get_logger().warning(
+                "Obstacle avoidance activated before the driving lane was "
+                "known; lane switch will apply after the next valid lane "
+                "observation"
+            )
 
     # ------------------------------------------------------------------
     # Mission hooks (structure only; no mission logic implemented yet).

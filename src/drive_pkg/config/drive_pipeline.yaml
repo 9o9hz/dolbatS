@@ -78,6 +78,7 @@ drive_main:
     # 중앙 점선 주변에서는 어느 차로에도 확정하지 않는다. false이면
     # 경계 통과 즉시 반대 차로 관측을 허용하되 완료 확인 조건은 유지한다.
     lane_dead_zone_enabled: False # [사용] ON=중앙 점선 부근 차로 미확정
+    lane_dead_zone_enabled: False # [사용] ON=중앙 점선 부근 차로 미확정
     lane_dead_zone_m: 0.06  # [조건부/현재OFF] ↑중립구간↑(enabled=true)
     # 목표 차로의 두 경계 안에서 중심·방향 조건이 연속으로 만족돼야 전환 완료.
     lane_change_confirm_frames: 1  # [사용] ↑변경완료 안정/지연↑
@@ -108,12 +109,14 @@ drive_main:
     path_transition_blend_frames: 1  # [사용] ↑전환부드러움/지연↑, 1=즉시
     max_path_lateral_step_m: 0.15  # [사용] ↑급커브반응/점프↑, ↓안정/지연↑
     # 검출 누락 시 오래된 경로를 과도하게 유지하지 않는다.
-    max_missing_frames: 2  # [사용] ↑fallback지속/오래된경로 위험↑
+    max_missing_frames: 0  # [사용] ↑fallback지속/오래된경로 위험↑
 
     path_topic: "/lane/path"  # [토픽/사용] 경로 출력; PP 입력과 일치 필수
     debug_topic: "/lane/path/debug/compressed"  # [토픽] 경로 디버그 영상
     path_status_topic: "/lane/path/status"  # [토픽/사용] valid/fallback 상태
     which_lane_topic: "/which/lane"  # [토픽] 차로 상태 출력
+    # detect_pkg 회피 활성화의 상승 에지마다 lane_1 <-> lane_2를 한 번 전환한다.
+    avoidance_active_topic: "/detect/obstacle/avoidance_active"
     path_frame_id: "base_link"  # [사용] Path 좌표프레임; 실제 좌표계와 일치
 
     debug_jpeg_quality: 80  # [표시] ↑화질/대역폭↑, ↓압축강화 (1~100)

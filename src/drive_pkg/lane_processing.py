@@ -423,6 +423,48 @@ class SegmentationLaneProcessor:
         self._lane_candidate_streak = 0
         self._lane_transition_state: Optional[str] = None
         self._lane_observation_missing_frames = 0
+        self._avoidance_active = False
+        self._avoidance_lane_switch_pending = False
+
+    def _reset_lane_transition_tracking(self) -> None:
+        self._lane_candidate = None
+        self._lane_candidate_streak = 0
+        self._lane_transition_state = None
+        self._lane_observation_missing_frames = 0
+
+    def _switch_current_lane(
+        self, source_lane: str
+    ) -> Tuple[str, str]:
+        target_lane = "lane_2" if source_lane == "lane_1" else "lane_1"
+        self._current_lane = target_lane
+        self._avoidance_lane_switch_pending = False
+        self._reset_lane_transition_tracking()
+        return source_lane, target_lane
+
+    def set_avoidance_active(
+        self, active: bool
+    ) -> Optional[Tuple[str, str]]:
+        """Switch lanes once on an obstacle-avoidance rising edge.
+
+        While avoidance is active, the switched lane is held so camera
+        observations made before the physical lane change finishes cannot
+        immediately change it back. If the initial lane is still unknown,
+        the switch is deferred until a valid lane observation is available.
+        """
+        requested = bool(active)
+        if requested == self._avoidance_active:
+            return None
+
+        self._avoidance_active = requested
+        if not requested:
+            self._avoidance_lane_switch_pending = False
+            return None
+
+        if self._current_lane not in ("lane_1", "lane_2"):
+            self._avoidance_lane_switch_pending = True
+            self._reset_lane_transition_tracking()
+            return None
+        return self._switch_current_lane(self._current_lane)
 
     def _validate_config(self) -> None:
         cfg = self.config
@@ -1477,6 +1519,16 @@ class SegmentationLaneProcessor:
         self, groups: List[LaneGroup]
     ) -> Optional[str]:
         """Track a dynamic ego-lane state from robust lane topology."""
+        if self._avoidance_active:
+            if self._avoidance_lane_switch_pending:
+                observed_lane = self._observe_lane_from_topology(groups)[
+                    "lane"
+                ]
+                if observed_lane in ("lane_1", "lane_2"):
+                    self._switch_current_lane(observed_lane)
+            self._reset_lane_transition_tracking()
+            return self._current_lane
+
         observation = self._observe_lane_from_topology(groups)
         inferred = observation["lane"]
 

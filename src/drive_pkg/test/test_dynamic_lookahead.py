@@ -15,7 +15,7 @@ def make_controller(dynamic=True, fixed=1.5, **overrides):
         "lookahead_max_m": 2.0,
         "fixed_lookahead_m": fixed,
         "dynamic_lookahead_enabled": dynamic,
-        "max_steer_deg": 18.0,
+        "max_steer_deg": 26.5,
         "steering_gain": 1.8,
         "steering_ema_alpha": 0.35,
         "steering_deadband_deg": 0.8,
