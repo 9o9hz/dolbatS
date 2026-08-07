@@ -1,215 +1,214 @@
 drive_main:
   ros__parameters:
+    # 인라인 표기: [사용]=실제 검출/제어, [조건부]=앞의 ON 조건에서만 사용,
+    # [표시]=시각화 전용, [토픽]=통신 경로. ↑/↓는 값을 높이거나 낮췄을 때의 경향.
     # 현재 차량에서 실측한 YOLO 모델과 0803 BEV 보정값.
-    model_path: "src/drive_pkg/resource/best.pt"
-    bev_params: "src/drive_pkg/resource/bev_params_0803.npz"
-    calibration_width: 640
-    calibration_height: 480
+    model_path: "src/drive_pkg/resource/best.pt"  # [사용] 변경→YOLO 모델 자체 교체
+    bev_params: "src/drive_pkg/resource/bev_params_0803.npz"  # [사용] 변경→BEV 사상/실측좌표 전체 변경
+    calibration_width: 640  # [사용/보정] 보정 원본 폭; 불일치→x 사상 왜곡
+    calibration_height: 480  # [사용/보정] 보정 원본 높이; 불일치→y 사상 왜곡
 
     # 카메라 undistort. calib_file이 빈 문자열이거나 로드에 실패하면
     # 경고만 남기고 undistort 없이 진행한다.
-    calib_file: "camera_calibration.npz"
-    use_undistort: true
+    calib_file: "camera_calibration.npz"  # [조건부] 왜곡보정 파일(use_undistort=true)
+    use_undistort: true  # [사용] ON=렌즈왜곡 보정, OFF=원본 사용
 
-    confidence: 0.25
-    image_size: 640
-    device: "auto"
-    process_every_nth_frame: 1
+    confidence: 0.25  # [사용] ↑오검출↓·미검출↑, ↓검출↑·오검출↑ (0~1)
+    image_size: 640  # [사용] ↑세부검출/부하/지연↑, ↓반대
+    device: "auto"  # [사용] auto=GPU 우선; cpu/0 등으로 장치 지정
+    process_every_nth_frame: 1  # [사용] 1=전부, 2=절반; ↑부하↓·갱신률↓
 
-    image_topic: "/camera/lane/raw/compressed"
-    bev_topic: "/lane/detection/bev/compressed"
-    mask_topic: "/lane/detection/mask/compressed"
-    segmentation_topic: "/lane/detection/segmentation/compressed"
-    detection_status_topic: "/lane/detection/status"
-    instances_topic: "/lane/detection/instances"
+    image_topic: "/camera/lane/raw/compressed"  # [토픽/사용] 카메라 입력
+    bev_topic: "/lane/detection/bev/compressed"  # [토픽] BEV 영상 출력
+    mask_topic: "/lane/detection/mask/compressed"  # [토픽] 결합 마스크 출력
+    segmentation_topic: "/lane/detection/segmentation/compressed"  # [토픽] YOLO 결과 영상
+    detection_status_topic: "/lane/detection/status"  # [토픽] 검출 상태 출력
+    instances_topic: "/lane/detection/instances"  # [토픽] 개별 검출 메타 출력
 
     # BEV 640x640px 기준: x/y 방향 각각 1.20m (0803).
     # x/y = 1.20m / 640px = 0.001875m/px.
-    pixels_per_meter_x: 533.3333333333
-    pixels_per_meter_y: 533.3333333333
-    line_width_target_m: 0.050
-    line_width_tolerance_m: 0.015
-    line_width_recovery_tolerance_m: 0.020
-    line_width_recovery_aspect_ratio: 1.20
-    line_width_measurement_scale: 0.80
+    pixels_per_meter_x: 533.3333333333  # [사용/보정] ↑같은 x픽셀을 더 짧은 m로 환산
+    pixels_per_meter_y: 533.3333333333  # [사용/보정] ↑같은 y픽셀을 더 짧은 m로 환산
+    line_width_target_m: 0.050  # [사용] 목표 페인트폭; 변경→허용폭 중심 이동
+    line_width_tolerance_m: 0.015  # [사용] 정상폭 ±값; ↑회수/오검출↑, ↓엄격
+    line_width_recovery_tolerance_m: 0.020  # [사용] 세로형상 복구폭 ±값; ↑복구/오검출↑
+    line_width_recovery_aspect_ratio: 1.20  # [사용] 복구 높이/폭; ↑엄격·복구↓, ↓반대
+    line_width_measurement_scale: 0.80  # [사용/보정] ↑모든 측정 차선폭↑
     # 횡단보도 흰 줄 오탐 방지: BEV상 가로(진행방향에 수직)가 세로보다
     # 이 배율 이상 넓으면 차선 후보에서 제외한다. 모델에 crosswalk
     # 클래스가 없어 흰 페인트를 dashed/solid로 오분류하는 걸 기하학적으로 거른다.
-    crosswalk_max_aspect_ratio: 1.50
+    crosswalk_max_aspect_ratio: 1.50  # [사용] 가로/세로≥값 제거; ↑제거완화, ↓제거강화
     # 종류와 무관하게 차선처럼 보이는 그룹이 좌우로 일정 간격을 두고 3개 이상
     # 반복되면 횡단보도 오검출로 보고 군집의 가장 오른쪽 그룹 하나만 사용한다.
     # 각 간격은 전체 간격 중앙값에서 25% 이내여야 한다.
-    crosswalk_regular_min_groups: 3
-    crosswalk_spacing_tolerance_ratio: 0.25
-    lane_width_m: 0.85
+    crosswalk_regular_min_groups: 3  # [사용] ↑오제거↓·횡단보도 누락↑, ↓반대
+    crosswalk_spacing_tolerance_ratio: 0.25  # [사용] ↑규칙군집 판정 완화·오제거↑
+    lane_width_m: 0.85  # [사용] 중심 offset=절반(0.425m); ↑경계에서 더 멀리
     # 둘 이상의 경계를 함께 사용할 때 허용하는 최소 중심 간격.
-    min_boundary_spacing_m: 0.80
+    min_boundary_spacing_m: 0.80  # [사용] ↑좁은 쌍 탈락↑, ↓오쌍 허용↑
     # 850mm 기준 ±50mm 범위 밖이면 confidence 높은 한 선만 사용.
-    max_boundary_spacing_m: 0.90
+    max_boundary_spacing_m: 0.90  # [사용] ↑넓은 쌍 허용↑, ↓엄격
     # 두 경계가 함께 보이는 Y 구간에서 법선 방향 차선 폭을 반복 측정한다.
     # 중앙값은 국소 마스크 노이즈에 강하고, MAD가 크면 평행 경계가 아닌
     # 불안정한 쌍으로 판단하여 기존 confidence 기반 단일 경계로 복귀한다.
-    boundary_spacing_sample_step_px: 10.0
-    boundary_spacing_min_samples: 5
-    boundary_spacing_max_mad_m: 0.05
+    boundary_spacing_sample_step_px: 10.0  # [사용] ↑표본/연산/강건성↓, ↓반대
+    boundary_spacing_min_samples: 5  # [사용] ↑더 엄격·짧은 경계 탈락↑
+    boundary_spacing_max_mad_m: 0.05  # [사용] ↑불안정 쌍 허용↑, ↓엄격
     # 후륜축 중심에서 BEV 하단 기준점까지의 전방 거리.
     # BEV 설정시마다 변경
-    bev_reference_forward_offset_m: 0.96
+    bev_reference_forward_offset_m: 0.94  # [사용/보정] ↑모든 전방거리 동일량 증가
 
     # 차선 조각 결합 및 좌/우 경계 선택.
     # bbox_close_ksize: 검출(bbox) 단위로 최대 성분을 뽑기 전 적용하는
     # morphological close 커널 크기.
-    min_component_area: 250
+    min_component_area: 250  # [사용] ↑작은노이즈↓·짧은차선 손실↑, ↓반대
     # Zhang-Suen skeleton 점을 곡선 피팅에 전달할 때의 y축 샘플 간격.
     # 기존처럼 각 행의 마스크 중간값을 계산하는 용도가 아니다.
-    center_sample_step: 5
-    bbox_close_ksize: 594
-    same_line_threshold_px: 75.0
-    min_group_span_px: 80.0
-    min_group_area: 500
-    dashed_piece_threshold: 2
-    prefer_solid_when_dashed: true
-    initial_lane: "lane_2"
-    lane_state_confirm_frames: 3
+    center_sample_step: 5  # [사용] ↑피팅점/연산/정밀도↓, ↓반대
+    bbox_close_ksize: 5  # [사용] ↑틈결합/이웃 오결합↑ (양의 홀수 권장)
+    same_line_threshold_px: 75.0  # [사용] ↑조각병합/오병합↑, ↓분절↑
+    min_group_span_px: 80.0  # [사용] ↑짧은노이즈↓·차선손실↑
+    min_group_area: 500  # [사용] ↑노이즈↓·검출손실↑
+    dashed_piece_threshold: 2  # [사용] ↑SOLID 선호 진입 어려움
+    prefer_solid_when_dashed: true  # [사용] ON=점선 다수 시 SOLID 우선
+    initial_lane: "lane_2"  # [사용] 시작 차로 가정(lane_1/lane_2)
+    lane_state_confirm_frames: 3  # [사용] ↑초기확정 안정/지연↑, ↓반대
     # 중앙 점선 주변에서는 어느 차로에도 확정하지 않는다. false이면
     # 경계 통과 즉시 반대 차로 관측을 허용하되 완료 확인 조건은 유지한다.
-    lane_dead_zone_enabled: false
-    lane_dead_zone_m: 0.06
+    lane_dead_zone_enabled: false  # [사용] ON=중앙 점선 부근 차로 미확정
+    lane_dead_zone_m: 0.06  # [조건부/현재OFF] ↑중립구간↑(enabled=true)
     # 목표 차로의 두 경계 안에서 중심·방향 조건이 연속으로 만족돼야 전환 완료.
-    lane_change_confirm_frames: 3
-    lane_change_center_tolerance_m: 0.20
-    lane_change_angle_tolerance_deg: 10.0
+    lane_change_confirm_frames: 3  # [사용] ↑변경완료 안정/지연↑
+    lane_change_center_tolerance_m: 0.20  # [사용] ↑완료판정 쉬움·오판↑, ↓엄격
+    lane_change_angle_tolerance_deg: 10.0  # [사용] ↑완료판정 쉬움·오판↑
     # 토폴로지 관측이 장시간 사라지면 고정값을 버리고 unknown으로 복귀.
-    lane_state_max_missing_frames: 10
+    lane_state_max_missing_frames: 10  # [사용] ↑누락강건/오래된 상태유지↑
     # 순간 오검출은 곡선 연속성으로 거르고, 사라진 경계는 2프레임 뒤 폐기한다.
-    lane_track_max_age_frames: 2
+    lane_track_max_age_frames: 2  # [사용] ↑재연결/오매칭/폐기지연↑
     # S자에서 같은 물리 차선의 프레임 간 곡률 이동을 허용한다.
-    lane_track_match_threshold_px: 65.0
-    solid_enter_frames: 4
-    solid_exit_frames: 6
+    lane_track_match_threshold_px: 65.0  # [사용] ↑추적관대·오매칭↑, ↓끊김↑
+    solid_enter_frames: 4  # [사용] ↑SOLID선호 안정/진입지연↑
+    solid_exit_frames: 6  # [사용] ↑SOLID선호 유지/복귀지연↑
 
     # 기존 로컬의 다항식 경로 생성 및 시간축 평활화.
-    path_top_y: 180
-    path_bottom_margin: 30
-    path_step_px: 10
-    path_resample_step_px: 5
+    path_top_y: 180  # [사용] ↓더 먼 경로 포함, ↑경로 짧아짐
+    path_bottom_margin: 30  # [사용] ↑근거리 경로 더 제외, ↓더 포함
+    path_step_px: 10  # [부분사용] 점간격 아님; 최소겹침=2×값, ↑짧은그룹 탈락↑
+    path_resample_step_px: 5  # [사용] 최종 y간격; ↑점/연산/해상도↓, ↓반대
     # 중심 경로는 cubic B-spline으로 생성한다. smooth_factor가 클수록
     # 검출점의 잔떨림을 더 강하게 평활화한다.
-    path_spline_smooth_factor: 5.0
-    path_spline_points: 100
+    path_spline_smooth_factor: 5.0  # [사용] ↑평활/커브둔화↑, ↓원점추종/떨림↑
+    path_spline_points: 100  # [사용] spline 중간표본; ↑근사/연산↑(최종점수 아님)
     # 시간축 응답성 튜닝: 새 검출 경로를 75% 반영하고, 경로 소스가
     # 바뀌면 즉시 전환한다. 급커브 추종을 막지 않도록
     # 횡방향 변화 제한은 프레임당 10 cm로 완화한다.
-    path_ema_alpha: 0.75
-    path_transition_blend_frames: 1
-    max_path_lateral_step_m: 0.15
+    path_ema_alpha: 0.75  # [사용] ↑반응/떨림↑, ↓평활/지연↑ (0~1)
+    path_transition_blend_frames: 1  # [사용] ↑전환부드러움/지연↑, 1=즉시
+    max_path_lateral_step_m: 0.15  # [사용] ↑급커브반응/점프↑, ↓안정/지연↑
     # 검출 누락 시 오래된 경로를 과도하게 유지하지 않는다.
-    max_missing_frames: 2
+    max_missing_frames: 2  # [사용] ↑fallback지속/오래된경로 위험↑
 
-    path_topic: "/lane/path"
-    debug_topic: "/lane/path/debug/compressed"
-    path_status_topic: "/lane/path/status"
-    which_lane_topic: "/which/lane"
-    path_frame_id: "base_link"
+    path_topic: "/lane/path"  # [토픽/사용] 경로 출력; PP 입력과 일치 필수
+    debug_topic: "/lane/path/debug/compressed"  # [토픽] 경로 디버그 영상
+    path_status_topic: "/lane/path/status"  # [토픽/사용] valid/fallback 상태
+    which_lane_topic: "/which/lane"  # [토픽] 차로 상태 출력
+    path_frame_id: "base_link"  # [사용] Path 좌표프레임; 실제 좌표계와 일치
 
-    debug_jpeg_quality: 80
+    debug_jpeg_quality: 80  # [표시] ↑화질/대역폭↑, ↓압축강화 (1~100)
     # drive_main 자체 프로세스에서 segmentation/경로 미리보기만 보고 싶을 때
     # 켜는 간단한 디버그 창(제어 오버레이 없음). 통합 시각화는
     # pure_pursuit의 local_display를 쓴다.
-    local_display: false
-    display_scale: 1.0
+    local_display: false  # [표시] ON=drive_main 로컬창; 현재 OFF
+    display_scale: 1.0  # [조건부/현재OFF] ↑창 확대(local_display=true)
 
 
 pure_pursuit:
   ros__parameters:
-    path_topic: "/lane/path"
-    path_status_topic: "/lane/path/status"
+    path_topic: "/lane/path"  # [토픽/사용] 추종경로 입력
+    path_status_topic: "/lane/path/status"  # [토픽/사용] fallback 상태 입력
     # 통합 구성: pure_pursuit는 최종 /auto_*가 아닌 lane 후보만 발행한다.
     # mission_manager는 valid일 때 받은 마지막 조향 후보를 유지한다.
-    steer_angle_topic: "/control/candidate/lane/steer_angle"
-    candidate_valid_topic: "/control/candidate/lane/valid"
-    throttle_feedback_topic: "/auto_throttle"
-    status_topic: "/lane/control/status"
+    steer_angle_topic: "/control/candidate/lane/steer_angle"  # [토픽] 조향후보 출력
+    candidate_valid_topic: "/control/candidate/lane/valid"  # [토픽] 후보 유효여부
+    throttle_feedback_topic: "/auto_throttle"  # [토픽/사용] 동적Ld 입력(실측속도 아님)
+    status_topic: "/lane/control/status"  # [토픽] Ld/곡률/조향 상태
 
-    wheelbase_m: 0.545
-    max_steer_deg: 25.0
+    wheelbase_m: 0.545  # [사용/실측] ↑같은곡률의 조향각↑; 실제 축거와 일치
+    max_steer_deg: 25.0  # [사용] ↑급조향 허용↑, ↓안전/추종한계↓
     # Pure Pursuit 기하 조향을 실제 목표각으로 과도하게 증폭하지 않는다.
-    steering_gain: 2.000
+    steering_gain: 2.50  # [사용] ↑민감/진동/포화↑, ↓완만/언더스티어↑
     # true: /auto_throttle 절댓값을 속도 명령의 대용값으로 사용해
     # 저속에서는 짧게, 고속에서는 길게 min~max 사이에서 목표점 이동.
     # false: lookahead_m 거리의 고정 목표점 사용.
-    dynamic_lookahead_enabled: true
-    lookahead_m: 1.45
-    ld_throttle_min: 0.9
-    ld_throttle_max: 0.99
-    lookahead_min_m: 1.5
-    lookahead_max_m: 1.8
-    # BEV 경로 첫 점이 후륜축보다 약 1.09m 앞에서 시작하므로, 목표점이
-    # 보이는 경로의 첫 점에서 최소 30cm 앞에 놓이도록 target 탐색만 보강.
-    # 동적 Ld 자체와 토픽 구조는 바꾸지 않는다.
-    minimum_path_preview_m: 0.30
+    dynamic_lookahead_enabled: true  # [사용] ON=스로틀Ld, OFF=고정 lookahead_m
+    lookahead_m: 1.45  # [조건부/현재OFF] ↑완만, ↓민감(dynamic=false)
+    ld_throttle_min: 0.95  # [사용] 이 값 이하=Ld최소; ↑최소Ld 적용구간↑
+    ld_throttle_max: 0.99  # [사용] 이 값 이상=Ld최대; ↑Ld증가가 늦어짐
+    lookahead_min_m: 1.5  # [사용] ↑전체조향 완만, ↓근거리반응↑
+    lookahead_max_m: 1.8  # [사용] ↑고속안정/커브반응↓, ↓반대
+    minimum_path_preview_m: 0.30  # [사용] 목표점을 경로 첫 점보다 최소 이 거리 앞에서 탐색
     # 기존 simple/arc_length는 롤백용이다. continuous_arc_length는 Ld가
     # 통과하는 경로 선분 안을 보간해 목표점의 인덱스 스냅을 없앤다.
-    lookahead_search_mode: "continuous_arc_length"
+    lookahead_search_mode: "continuous_arc_length"  # [사용] continuous=선분보간 권장
 
     # 속도 명령 기반 Ld를 유지하되 커브에서는 곡률에 비례해 최대 15cm
     # 줄인다. 곡률은 경로 위 15cm 간격의 세 점 원곡률 중앙값을 사용한다.
-    curvature_lookahead_enabled: true
-    curvature_full_scale_1pm: 0.50
-    curvature_reduction_max_m: 0.15
-    curvature_sample_gap_m: 0.15
+    curvature_lookahead_enabled: true  # [사용] ON=커브에서 Ld단축
+    curvature_full_scale_1pm: 0.50  # [조건부] ↑최대단축 도달 늦음, ↓민감
+    curvature_reduction_max_m: 0.15  # [조건부] ↑커브 Ld단축/민감도↑
+    curvature_sample_gap_m: 0.15  # [조건부] ↑광역형상, ↓국소/노이즈민감
     # throttle/곡률 변화가 Ld에 즉시 반영되지 않도록 실제 dt 기반으로 필터.
-    lookahead_filter_tau_sec: 0.25
+    lookahead_filter_tau_sec: 0.25  # [사용] ↑평활/지연↑, ↓즉응/떨림↑, 0=필터없음
 
     # 목표점 주변~전방 45cm에서 15cm 간격 3점 곡률을 여러 번 측정하고
     # 중앙값을 사용한다. MAD가 0.25 1/m를 넘으면 경로 결합부/노이즈로
     # 보고 곡률 보정을 끈다. fallback 경로에서도 PP만 유지하고 보정은 끈다.
     # REF가 PP보다 큰 같은 방향 곡률 부족분만 보충하며, PP가 이미 더
     # 강하면 경로 복귀 피드백일 수 있으므로 절대 감소시키지 않는다.
-    curvature_tracking_enabled: true
-    curvature_tracking_gain: 0.20
-    curvature_tracking_sample_gap_m: 0.15
-    curvature_tracking_preview_m: 0.45
-    curvature_tracking_min_samples: 3
-    curvature_tracking_max_mad_1pm: 0.25
-    curvature_tracking_max_correction_1pm: 0.20
-    curvature_tracking_sign_guard_1pm: 0.05
+    curvature_tracking_enabled: true  # [사용] ON=PP 곡률부족분만 보충
+    curvature_tracking_gain: 0.20  # [조건부] ↑보정/커브추종/진동↑, ↓약화
+    curvature_tracking_sample_gap_m: 0.15  # [조건부] ↑광역곡률, ↓국소/노이즈민감
+    curvature_tracking_preview_m: 0.45  # [조건부] ↑먼커브 선행반영/이질구간 혼합↑
+    curvature_tracking_min_samples: 3  # [조건부] ↑신뢰/보정거부↑, ↓반대
+    curvature_tracking_max_mad_1pm: 0.25  # [조건부] ↑불안정경로도 보정, ↓보수적
+    curvature_tracking_max_correction_1pm: 0.20  # [조건부] ↑최대보정/조향↑
+    curvature_tracking_sign_guard_1pm: 0.05  # [조건부] ↑작은커브 보정차단↑
     # PP가 REF보다 부족한 차이가 이 값 이하이면 프레임 노이즈로 보고 무시.
     # 같은 방향에서 PP가 이미 REF 이상이면 PP를 절대 감소시키지 않는다.
-    curvature_tracking_min_deficit_1pm: 0.01
+    curvature_tracking_min_deficit_1pm: 0.01  # [조건부] ↑작은보정 무시/안정↑
 
     # 새 limiter가 켜지면 아래 EMA/프레임당 제한은 롤백용으로만 남고
     # 실제 조향 제한에는 사용되지 않는다.
-    steering_ema_alpha: 0.35
-    steering_deadband_deg: 0.3
-    max_steering_change_deg: 4.0
-    time_based_steering_limit_enabled: true
-    nominal_control_rate_hz: 30.0
-    min_control_dt_sec: 0.005
-    max_control_dt_sec: 0.20
-    max_steering_rate_deg_s: 75.0
-    max_steering_accel_deg_s2: 300.0
+    steering_ema_alpha: 0.35  # [조건부/현재OFF] ↑즉응/떨림↑(time limiter OFF)
+    steering_deadband_deg: 0.3  # [사용] ↑직진안정/미세추종↓, ↓반대
+    max_steering_change_deg: 4.0  # [조건부/현재OFF] ↑빠름(time limiter OFF)
+    time_based_steering_limit_enabled: true  # [사용] ON=deg/s·deg/s² 제한
+    nominal_control_rate_hz: 30.0  # [사용] 비정상 dt의 대체주기; ↑대체dt↓
+    min_control_dt_sec: 0.005  # [사용] dt하한; ↑최소 적분량↑
+    max_control_dt_sec: 0.20  # [사용] 초과시 nominal dt; ↑긴공백 허용↑
+    max_steering_rate_deg_s: 75.0  # [조건부/현재ON] ↑반응/충격↑, ↓완만/지연↑
+    max_steering_accel_deg_s2: 300.0  # [조건부/현재ON] ↑반응/충격↑, ↓부드러움
 
     # main5.py 스타일 통합 cv2 창(segmentation | BEV 제어 | 검출선+경로).
     # path_visualizer 별도 노드를 없애고 이 프로세스에 흡수한 것 — 헤드리스
     # 환경에서는 false로 끈다.
-    local_display: true
-    segmentation_topic: "/lane/detection/segmentation/compressed"
-    bev_topic: "/lane/detection/bev/compressed"
-    debug_topic: "/lane/path/debug/compressed"
-    instances_topic: "/lane/detection/instances"
-    window_name: "drive visualizer: segmentation | BEV control | lines + path"
-    window_x: 20
-    window_y: 60
-    display_scale: 0.90
+    local_display: true  # [표시] OFF=아래 시각화 설정 전부 비활성
+    segmentation_topic: "/lane/detection/segmentation/compressed"  # [표시/토픽] 좌측 영상
+    bev_topic: "/lane/detection/bev/compressed"  # [표시/토픽] 중앙 BEV
+    debug_topic: "/lane/path/debug/compressed"  # [표시/토픽] 우측 경로
+    instances_topic: "/lane/detection/instances"  # [표시/토픽] 박스 메타
+    window_name: "drive visualizer: segmentation | BEV control | lines + path"  # [표시] 창 제목
+    window_x: 20  # [표시] ↑창 오른쪽 이동
+    window_y: 60  # [표시] ↑창 아래 이동
+    display_scale: 0.90  # [표시] ↑확대/화면·연산량↑, ↓축소
     # 박스 위치 평활화와 DASHED/SOLID 전환 히스테리시스.
-    box_ema_alpha: 0.15
-    type_switch_frames: 5
-    track_max_missed_frames: 12
-    track_match_distance_px: 140.0
-    confidence_full_hits: 5
+    box_ema_alpha: 0.15  # [표시] ↑빠름/떨림↑, ↓평활/지연↑
+    type_switch_frames: 5  # [표시] ↑종류전환 안정/지연↑
+    track_max_missed_frames: 12  # [표시] ↑누락박스 오래유지
+    track_match_distance_px: 140.0  # [표시] ↑재연결/오매칭↑, ↓끊김↑
+    confidence_full_hits: 5  # [표시] ↑신뢰도 완전누적 느림
     # 같은 선과 겹치는 여러 YOLO 마스크 confidence 집계 방식: mean/max.
-    yolo_confidence_aggregation: "mean"
+    yolo_confidence_aggregation: "mean"  # [표시] mean=평균, max=최댓값
     # 토픽 한두 프레임 누락 시에만 표시를 유지하고 이후 자동 제거.
-    lookahead_target_hold_sec: 0.45
-    reference_path_hold_sec: 0.45
+    lookahead_target_hold_sec: 0.45  # [표시] ↑목표점 잔상 오래유지
+    reference_path_hold_sec: 0.45  # [표시] ↑기준경로 잔상 오래유지
