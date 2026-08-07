@@ -141,7 +141,7 @@ class YoloObstacleTurn(Node):
             "clear_threshold_cm": 45.0,
             "consecutive_frames": 3,
             "rear_no_echo_is_clear": True,
-            "full_steer_angle_deg": 20.0,
+            "full_steer_angle_deg": 26.5,
             "turn_end_threshold_cm": 70.0,
             "turn_timeout_sec": 8.0,
             "publish_rate_hz": 30.0,

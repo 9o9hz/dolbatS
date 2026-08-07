@@ -50,7 +50,7 @@ yolo_obstacle_turn:
     consecutive_frames: 1
     # 펌웨어의 -1.0(에코 없음)을 연속 프레임일 때 뒤 장애물 해제로 취급한다.
     rear_no_echo_is_clear: true
-    full_steer_angle_deg: -35.0
+    full_steer_angle_deg: 26.5
     # 회전 반대쪽 전방 초음파가 이 값을 초과하면 즉시 차선 주행으로 복귀한다.
     turn_end_threshold_cm: 70.0
     turn_timeout_sec: 8.0

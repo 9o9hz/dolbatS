@@ -1,6 +1,6 @@
 obstacle_detector_publisher:
   ros__parameters:
-    model_filename: dolsoi-alter-v1.pt
+    model_filename: dolsoi-model-v2.pt
     confidence_threshold: 0.7
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
@@ -36,9 +36,9 @@ yolo_obstacle_yolo_only:
     # yolo_end와 동일한 bbox 기반 회피 종료 조건
     # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
     # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
-    bbox_left_boundary_ratio: 0.29
-    bbox_right_boundary_ratio: 0.705
-    bbox_exit_consecutive_frames: 8
+    bbox_left_boundary_ratio: 0.20
+    bbox_right_boundary_ratio: 0.80
+    bbox_exit_consecutive_frames: 2
 
     # 회피 종료 후 YOLO 미감지가 이 프레임 수만큼 이어져야 재무장한다.
     rearm_clear_frames: 1

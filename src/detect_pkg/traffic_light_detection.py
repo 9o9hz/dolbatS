@@ -12,7 +12,7 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32, String
 
 
@@ -45,6 +45,14 @@ def normalize_color_label(class_name: str) -> Optional[str]:
     return None
 
 
+def red_bbox_is_tall_enough(
+    bbox: Tuple[float, float, float, float],
+    min_height_px: float,
+) -> bool:
+    """Return whether a Red detection reaches the minimum bbox height."""
+    return float(bbox[3]) >= max(0.0, float(min_height_px))
+
+
 class TrafficLightDetectorPublisher(Node):
     def __init__(
         self,
@@ -54,16 +62,20 @@ class TrafficLightDetectorPublisher(Node):
 
         self.declare_parameter("model_path", get_default_model_path())
         self.declare_parameter("confidence_threshold", 0.3)
-        self.declare_parameter("min_red_area_px", 13805.0)
+        self.declare_parameter("min_red_height_px", 110.0)
         self.declare_parameter("detected_topic", "/detect/traffic_light/detected")
         self.declare_parameter("color_topic", "/detect/traffic_light/color")
         self.declare_parameter(
             "confidence_topic", "/detect/traffic_light/confidence"
         )
-        self.declare_parameter("raw_image_topic", "/camera/traffic_light/raw")
         self.declare_parameter(
-            "detection_image_topic", "/detect/traffic_light/detection_view"
+            "compressed_image_topic", "/camera/traffic_light/raw/compressed"
         )
+        self.declare_parameter(
+            "detection_image_topic",
+            "/detect/traffic_light/detection_view/compressed",
+        )
+        self.declare_parameter("detection_jpeg_quality", 80)
         self.declare_parameter("show_window", True if show_window is None else show_window)
 
         self.model_path = (
@@ -72,8 +84,11 @@ class TrafficLightDetectorPublisher(Node):
         self.confidence_threshold = (
             self.get_parameter("confidence_threshold").get_parameter_value().double_value
         )
-        self.min_red_area_px = (
-            self.get_parameter("min_red_area_px").get_parameter_value().double_value
+        self.min_red_height_px = max(
+            0.0,
+            self.get_parameter("min_red_height_px")
+            .get_parameter_value()
+            .double_value,
         )
         self.show_window = (
             self.get_parameter("show_window").get_parameter_value().bool_value
@@ -86,13 +101,22 @@ class TrafficLightDetectorPublisher(Node):
         confidence_topic = (
             self.get_parameter("confidence_topic").get_parameter_value().string_value
         )
-        raw_image_topic = (
-            self.get_parameter("raw_image_topic").get_parameter_value().string_value
+        compressed_image_topic = (
+            self.get_parameter("compressed_image_topic")
+            .get_parameter_value()
+            .string_value
         )
         detection_image_topic = (
             self.get_parameter("detection_image_topic")
             .get_parameter_value()
             .string_value
+        )
+        self.detection_jpeg_quality = int(
+            np.clip(
+                int(self.get_parameter("detection_jpeg_quality").value),
+                1,
+                100,
+            )
         )
 
         self.detected_pub = self.create_publisher(Bool, detected_topic, 10)
@@ -101,7 +125,7 @@ class TrafficLightDetectorPublisher(Node):
             Float32, confidence_topic, 10
         )
         self.detection_image_pub = self.create_publisher(
-            Image, detection_image_topic, 10
+            CompressedImage, detection_image_topic, 10
         )
         self.logged_first_frame = False
 
@@ -113,17 +137,21 @@ class TrafficLightDetectorPublisher(Node):
             self.get_logger().info("Debug window enabled")
 
         self.subscription = self.create_subscription(
-            Image, raw_image_topic, self.process_frame, 10
+            CompressedImage,
+            compressed_image_topic,
+            self.process_frame,
+            10,
         )
         self.get_logger().info(
-            f"Subscribing to {raw_image_topic}=Image; publishing "
+            f"Subscribing to {compressed_image_topic}=CompressedImage; "
+            "publishing "
             f"{detected_topic}=Bool, {color_topic}=String(red/yellow/green/none), "
             f"{confidence_topic}=Float32, "
-            f"{detection_image_topic}=Image"
+            f"{detection_image_topic}=CompressedImage"
         )
         self.get_logger().info(
-            "Red light minimum area filter enabled: "
-            f"min_red_area_px={self.min_red_area_px}"
+            "Red light minimum bbox-height filter enabled: "
+            f"min_red_height_px={self.min_red_height_px}"
         )
 
     def load_yolo(self):
@@ -138,7 +166,7 @@ class TrafficLightDetectorPublisher(Node):
 
         return YOLO
 
-    def process_frame(self, image_msg: Image) -> None:
+    def process_frame(self, image_msg: CompressedImage) -> None:
         frame = self.image_message_to_bgr(image_msg)
         if frame is None:
             self.publish_detected(False)
@@ -153,12 +181,12 @@ class TrafficLightDetectorPublisher(Node):
 
         color, bbox, confidence = self.detect_best_color(frame)
 
-        # 빨간불일 때 bbox 크기 검사
+        # 빨간불일 때 bbox 높이 검사
         if color == "red" and bbox is not None:
-            _x, _y, width, height = bbox
-            area = width * height
-            if area < self.min_red_area_px:
-                # 면적이 너무 작으면 감지되지 않은 것으로 처리
+            if not red_bbox_is_tall_enough(
+                bbox, self.min_red_height_px
+            ):
+                # 높이가 너무 작으면 감지되지 않은 것으로 처리
                 color = None
                 bbox = None
                 confidence = 0.0
@@ -225,31 +253,32 @@ class TrafficLightDetectorPublisher(Node):
     def publish_confidence(self, confidence: float) -> None:
         self.confidence_pub.publish(Float32(data=float(confidence)))
 
-    def image_message_to_bgr(self, msg: Image):
-        if msg.encoding not in ("bgr8", "rgb8"):
-            self.get_logger().error(f"Unsupported image encoding: {msg.encoding}")
+    def image_message_to_bgr(self, msg: CompressedImage):
+        encoded = np.frombuffer(msg.data, dtype=np.uint8)
+        frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0:
+            self.get_logger().error(
+                f"Failed to decode compressed image (format={msg.format!r})"
+            )
             return None
+        return frame
 
-        channels = 3
-        expected_row_bytes = msg.width * channels
-        if msg.step < expected_row_bytes or len(msg.data) < msg.step * msg.height:
-            self.get_logger().error("Invalid image data size or step")
-            return None
+    def publish_image(self, frame, source_msg: CompressedImage) -> None:
+        success, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, self.detection_jpeg_quality],
+        )
+        if not success:
+            self.get_logger().error(
+                "Failed to encode traffic-light detection image as JPEG"
+            )
+            return
 
-        rows = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
-        frame = rows[:, :expected_row_bytes].reshape(msg.height, msg.width, channels)
-        if msg.encoding == "rgb8":
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        return frame.copy()
-
-    def publish_image(self, frame, source_msg: Image) -> None:
-        msg = Image()
+        msg = CompressedImage()
         msg.header = source_msg.header
-        msg.height, msg.width = frame.shape[:2]
-        msg.encoding = "bgr8"
-        msg.is_bigendian = False
-        msg.step = int(frame.strides[0])
-        msg.data = frame.tobytes()
+        msg.format = "jpeg"
+        msg.data = encoded.tobytes()
         self.detection_image_pub.publish(msg)
 
     def draw_detection_overlay(
