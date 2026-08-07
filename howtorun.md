@@ -50,29 +50,10 @@ ros2 run control_pkg keyboard_drive_toggle
 ```
 
 # T7. obstacle
-아래 두 launch는 대체 실행 방식이므로 동시에 실행하지 않는다.
-
-```
-ros2 launch detect_pkg obstacle_sonic_end.launch.py
-```
-```
-ros2 launch detect_pkg obstacle_yolo_end.launch.py
-```
-
-YOLO bbox가 화면 가운데에서 설정 크기에 도달할 때마다 왼쪽, 오른쪽을
-번갈아 풀조향하고, `yolo_end`와 같은 bbox 경계 통과 조건으로 종료하는 방식:
 
 ```
 ros2 launch detect_pkg obstacle_yolo_only.launch.py
 ```
-
-YOLO bbox 경계 또는 전방 초음파 임계값 중 하나를 먼저 만족하면 회피를
-종료하는 OR 방식:
-
-```
-ros2 launch detect_pkg obstacle_fusion_end.launch.py
-```
-
 
 # T8. traffic_light
 ```
