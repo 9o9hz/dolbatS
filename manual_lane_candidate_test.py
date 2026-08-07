@@ -40,7 +40,7 @@ class ManualLaneCandidateTest(Node):
         self.declare_parameter("lane_valid_topic", "/control/candidate/lane/valid")
         self.declare_parameter("status_topic", "/mission_manager/status")
         self.declare_parameter("steer_step_deg", 5.0)
-        self.declare_parameter("max_steer_deg", 20.0)
+        self.declare_parameter("max_steer_deg", 26.5)
         self.declare_parameter("publish_rate", 20.0)
 
         lane_steer_topic = str(self.get_parameter("lane_steer_topic").value)

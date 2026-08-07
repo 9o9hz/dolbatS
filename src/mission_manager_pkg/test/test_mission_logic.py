@@ -5,8 +5,7 @@ from mission_manager import (
     MISSION_LANE,
     MISSION_OBSTACLE,
     MISSION_TRAFFIC,
-    TRAFFIC_GREEN_FORWARD,
-    TRAFFIC_GREEN_WAIT_CLEAR,
+    TRAFFIC_IDLE,
     TRAFFIC_RED_HOLD,
     TRAFFIC_YELLOW_DECELERATING,
     TRAFFIC_YELLOW_HOLD,
@@ -21,14 +20,14 @@ class ThrottleMappingTest(unittest.TestCase):
     def test_linear_mapping_and_clamp(self):
         values = [
             (0.0, 0.8),
-            (23.0, 0.4),
-            (-23.0, 0.4),
+            (26.5, 0.4),
+            (-26.5, 0.4),
             (30.0, 0.4),
         ]
         for steer, expected in values:
             with self.subTest(steer=steer):
                 actual = map_throttle_by_steer(
-                    steer, 23.0, 0.4, 0.8, 0.0
+                    steer, 26.5, 0.4, 0.8, 0.0
                 )
                 self.assertAlmostEqual(actual, expected)
 
@@ -127,25 +126,58 @@ class TrafficStateTest(unittest.TestCase):
         self.assertAlmostEqual(self.logic.step(0.0).throttle, 0.6)
 
     def set_traffic(self, detected, color):
-        self.logic.traffic_detected = detected
+        self.logic.update_traffic_detected(detected)
         self.logic.traffic_color = color
 
-    def test_red_hold_priority_and_green_release(self):
-        self.logic.obstacle_active = True
+    def test_red_hold_releases_after_three_missed_frames(self):
         self.set_traffic(True, "red")
         output = self.logic.step(1.0)
         self.assertEqual(output.mission_state, MISSION_TRAFFIC)
         self.assertEqual(output.traffic_substate, TRAFFIC_RED_HOLD)
         self.assertEqual(output.throttle, 0.0)
 
+        for frame in range(1, 3):
+            self.set_traffic(False, "none")
+            output = self.logic.step(1.0 + frame)
+            self.assertEqual(output.mission_state, MISSION_TRAFFIC)
+            self.assertEqual(output.traffic_substate, TRAFFIC_RED_HOLD)
+
         self.set_traffic(False, "none")
-        output = self.logic.step(2.0)
+        output = self.logic.step(4.0)
+        self.assertEqual(output.mission_state, MISSION_LANE)
+        self.assertEqual(output.traffic_substate, TRAFFIC_IDLE)
+        self.assertEqual(output.selected_steer_source, "lane")
+
+    def test_red_missed_frame_count_must_be_consecutive(self):
+        self.set_traffic(True, "red")
+        self.logic.step(1.0)
+        self.set_traffic(False, "none")
+        self.logic.step(2.0)
+        self.set_traffic(False, "none")
+        self.logic.step(3.0)
+
+        self.set_traffic(True, "red")
+        self.assertEqual(self.logic.traffic_missed_frames, 0)
+        self.set_traffic(False, "none")
+        output = self.logic.step(4.0)
+
+        self.assertEqual(output.mission_state, MISSION_TRAFFIC)
         self.assertEqual(output.traffic_substate, TRAFFIC_RED_HOLD)
+        self.assertEqual(self.logic.traffic_missed_frames, 1)
+
+    def test_red_hold_releases_on_green(self):
+        self.set_traffic(True, "red")
+        self.assertEqual(
+            self.logic.step(1.0).traffic_substate,
+            TRAFFIC_RED_HOLD,
+        )
 
         self.set_traffic(True, "green")
-        output = self.logic.step(3.0)
-        self.assertEqual(output.traffic_substate, TRAFFIC_GREEN_FORWARD)
-        self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.4))
+        output = self.logic.step(2.0)
+        self.assertEqual(output.mission_state, MISSION_LANE)
+        self.assertEqual(output.traffic_substate, TRAFFIC_IDLE)
+        self.assertEqual(output.selected_steer_source, "lane")
+        self.assertEqual((output.steer_deg, output.throttle), (0.0, 0.6))
 
     def test_yellow_deceleration_and_hold(self):
         self.set_traffic(True, "yellow")
@@ -166,36 +198,40 @@ class TrafficStateTest(unittest.TestCase):
         self.logic.step(1.0)
         self.set_traffic(True, "green")
         output = self.logic.step(2.0)
-        self.assertEqual(
-            output.traffic_substate, TRAFFIC_YELLOW_DECELERATING
-        )
+        self.assertEqual(output.mission_state, MISSION_LANE)
+        self.assertEqual(output.traffic_substate, TRAFFIC_IDLE)
         self.set_traffic(True, "red")
         output = self.logic.step(2.1)
         self.assertEqual(output.traffic_substate, TRAFFIC_RED_HOLD)
         self.assertEqual(output.throttle, 0.0)
 
-    def test_green_completion_latch(self):
+    def test_green_remains_normal_lane_driving_without_latch(self):
         self.set_traffic(True, "green")
         output = self.logic.step(1.0)
-        self.assertEqual(output.traffic_substate, TRAFFIC_GREEN_FORWARD)
-        self.assertEqual(self.logic.step(3.9).mission_state, MISSION_TRAFFIC)
-
-        output = self.logic.step(4.0)
         self.assertEqual(output.mission_state, MISSION_LANE)
-        self.assertEqual(
-            output.traffic_substate, TRAFFIC_GREEN_WAIT_CLEAR
-        )
-        self.assertTrue(self.logic.traffic_green_completed)
+        self.assertEqual(output.traffic_substate, TRAFFIC_IDLE)
+        self.assertEqual(output.selected_steer_source, "lane")
 
         output = self.logic.step(10.0)
         self.assertEqual(output.mission_state, MISSION_LANE)
-        self.assertEqual(
-            output.traffic_substate, TRAFFIC_GREEN_WAIT_CLEAR
-        )
+        self.assertEqual(output.traffic_substate, TRAFFIC_IDLE)
+        self.assertFalse(self.logic.traffic_green_completed)
 
         self.set_traffic(False, "none")
         self.logic.step(11.0)
         self.assertFalse(self.logic.traffic_green_completed)
+
+    def test_green_does_not_disable_obstacle_avoidance(self):
+        self.logic.obstacle_active = True
+        self.logic.obstacle.update_steer(-12.0)
+        self.logic.obstacle.update_valid(True)
+        self.set_traffic(True, "green")
+
+        output = self.logic.step(1.0)
+
+        self.assertEqual(output.mission_state, MISSION_OBSTACLE)
+        self.assertEqual(output.traffic_substate, TRAFFIC_IDLE)
+        self.assertEqual(output.selected_steer_source, "obstacle")
 
 
 if __name__ == "__main__":

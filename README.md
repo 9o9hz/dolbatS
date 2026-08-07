@@ -204,9 +204,10 @@ source install/setup.bash
 
 | 토픽 | 타입 | 내용 |
 | --- | --- | --- |
-| `/camera/traffic_light/raw` | `sensor_msgs/Image` | 신호등 카메라 raw BGR 프레임 |
+| `/camera/traffic_light/raw/compressed` | `sensor_msgs/CompressedImage` | 신호등 카메라 JPEG 압축 입력 프레임 |
 | `/camera/lane/raw` | `sensor_msgs/Image` | 차선 카메라 raw BGR 프레임 |
 | `/camera/lane/detection_view/compressed` | `sensor_msgs/CompressedImage` | 차선 카메라의 JPEG 압축 장애물 감지 영상 |
+| `/detect/traffic_light/detection_view/compressed` | `sensor_msgs/CompressedImage` | 신호등 검출 오버레이 JPEG 영상 |
 | `/detect/traffic_light/detected` | `std_msgs/Bool` | 신호등 감지 여부 |
 | `/detect/traffic_light/color` | `std_msgs/String` | `red`, `yellow`, `green`, `none` |
 | `/detect/traffic_light/confidence` | `std_msgs/Float32` | 선택한 신호등 검출 confidence, 미검출은 `0.0` |

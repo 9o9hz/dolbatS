@@ -6,6 +6,8 @@ import time
 ser = serial.Serial("/dev/ttyACM0", 115200)
 time.sleep(3)
 
+MAX_STEER_DEG = 26.5
+
 def send_drive(direction, speed):
     speed = max(0, min(255, speed))
 
@@ -16,7 +18,7 @@ def send_drive(direction, speed):
     ser.write(cmd.encode())
 
 def send_steer(angle):
-    angle = max(-20, min(20, angle))
+    angle = max(-MAX_STEER_DEG, min(MAX_STEER_DEG, angle))
 
     cmd = f"S,{angle}\n"
     ser.write(cmd.encode('ascii'))

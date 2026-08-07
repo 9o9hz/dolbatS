@@ -27,11 +27,12 @@ DEFAULTS = {
     "traffic_detected_topic": "/detect/traffic_light/detected",
     "traffic_color_topic": "/detect/traffic_light/color",
     "traffic_confidence_topic": "/detect/traffic_light/confidence",
+    "red_release_missed_frames": 3,
     "final_steer_topic": "/auto_steer_angle",
     "final_throttle_topic": "/auto_throttle",
     "mission_state_topic": "/mission_state",
     "status_topic": "/mission_manager/status",
-    "auto_steer_angle_abs_max": 25.0,
+    "auto_steer_angle_abs_max": 26.5,
     "auto_throttle_max": 1.0,
     "throttle_curve_k": 0.0,
     "lane_throttle_min": 0.3,
@@ -138,13 +139,14 @@ class MissionLogic:
     def __init__(
         self,
         *,
-        auto_steer_angle_abs_max: float = 23.0,
+        auto_steer_angle_abs_max: float = 26.5,
         auto_throttle_max: float = 1.0,
         throttle_curve_k: float = 0.0,
         lane_throttle_min: float = 0.3,
         lane_throttle_max: float = 0.6,
         obstacle_throttle_min: float = 0.4,
         obstacle_throttle_max: float = 0.8,
+        red_release_missed_frames: int = 3,
         yellow_deceleration_sec: float = 3.0,
         green_forward_duration_sec: float = 3.0,
         green_forward_throttle: float = 0.4,
@@ -157,6 +159,9 @@ class MissionLogic:
         self.lane_throttle_max = lane_throttle_max
         self.obstacle_throttle_min = obstacle_throttle_min
         self.obstacle_throttle_max = obstacle_throttle_max
+        self.red_release_missed_frames = max(
+            1, int(red_release_missed_frames)
+        )
         self.yellow_deceleration_sec = yellow_deceleration_sec
         self.green_forward_duration_sec = green_forward_duration_sec
         self.green_forward_throttle = green_forward_throttle
@@ -166,6 +171,7 @@ class MissionLogic:
         self.obstacle = CandidateMemory()
         self.obstacle_active = False
         self.traffic_detected = False
+        self.traffic_missed_frames = 0
         self.traffic_color = "none"
         self.traffic_confidence = 0.0
         self.traffic_substate = TRAFFIC_IDLE
@@ -181,6 +187,17 @@ class MissionLogic:
             and self.traffic_color in VALID_TRAFFIC_COLORS
         )
 
+    def update_traffic_detected(self, detected: bool) -> None:
+        """Count consecutive detector frames without a traffic light."""
+        self.traffic_detected = bool(detected)
+        if self.traffic_detected:
+            self.traffic_missed_frames = 0
+        else:
+            self.traffic_missed_frames = min(
+                self.red_release_missed_frames,
+                self.traffic_missed_frames + 1,
+            )
+
     def _start_yellow(self, now_sec: float) -> None:
         self.traffic_substate = TRAFFIC_YELLOW_DECELERATING
         self.yellow_start_time = now_sec
@@ -191,6 +208,16 @@ class MissionLogic:
         self.green_start_time = now_sec
 
     def _update_traffic_state(self, now_sec: float) -> None:
+        valid = self._traffic_is_valid()
+        color = self.traffic_color if valid else "none"
+
+        # Green is normal lane driving, not a separate traffic mission.
+        # This also releases an existing red/yellow hold immediately.
+        if color == "green":
+            self.traffic_green_completed = False
+            self.traffic_substate = TRAFFIC_IDLE
+            return
+
         if self.traffic_green_completed:
             if not self.traffic_detected:
                 self.traffic_green_completed = False
@@ -199,21 +226,19 @@ class MissionLogic:
                 self.traffic_substate = TRAFFIC_GREEN_WAIT_CLEAR
             return
 
-        valid = self._traffic_is_valid()
-        color = self.traffic_color if valid else "none"
-
         if self.traffic_substate == TRAFFIC_IDLE:
             if color == "red":
                 self.traffic_substate = TRAFFIC_RED_HOLD
             elif color == "yellow":
                 self._start_yellow(now_sec)
-            elif color == "green":
-                self._start_green(now_sec)
             return
 
         if self.traffic_substate == TRAFFIC_RED_HOLD:
-            if color == "green":
-                self._start_green(now_sec)
+            if (
+                self.traffic_missed_frames
+                >= self.red_release_missed_frames
+            ):
+                self.traffic_substate = TRAFFIC_IDLE
             return
 
         if self.traffic_substate == TRAFFIC_YELLOW_DECELERATING:
@@ -223,15 +248,11 @@ class MissionLogic:
             elapsed = now_sec - self.yellow_start_time
             if elapsed >= self.yellow_deceleration_sec:
                 self.traffic_substate = TRAFFIC_YELLOW_HOLD
-                if color == "green":
-                    self._start_green(now_sec)
             return
 
         if self.traffic_substate == TRAFFIC_YELLOW_HOLD:
             if color == "red":
                 self.traffic_substate = TRAFFIC_RED_HOLD
-            elif color == "green":
-                self._start_green(now_sec)
             return
 
         if self.traffic_substate == TRAFFIC_GREEN_FORWARD:
@@ -383,9 +404,9 @@ class MissionManagerNode(Node):
         steer_abs_max = float(parameter("auto_steer_angle_abs_max"))
         if steer_abs_max <= 0.0:
             self.get_logger().warning(
-                "auto_steer_angle_abs_max must be positive; using 23.0"
+                "auto_steer_angle_abs_max must be positive; using 26.5"
             )
-            steer_abs_max = 23.0
+            steer_abs_max = 26.5
         throttle_max = max(
             0.0, float(parameter("auto_throttle_max"))
         )
@@ -417,6 +438,9 @@ class MissionManagerNode(Node):
             lane_throttle_max=lane_max,
             obstacle_throttle_min=obstacle_min,
             obstacle_throttle_max=obstacle_max,
+            red_release_missed_frames=max(
+                1, int(parameter("red_release_missed_frames"))
+            ),
             yellow_deceleration_sec=yellow_duration,
             green_forward_duration_sec=green_duration,
             green_forward_throttle=clamp(
@@ -533,7 +557,7 @@ class MissionManagerNode(Node):
         self.logic.obstacle_active = bool(message.data)
 
     def on_traffic_detected(self, message: Bool) -> None:
-        self.logic.traffic_detected = bool(message.data)
+        self.logic.update_traffic_detected(bool(message.data))
 
     def on_traffic_color(self, message: String) -> None:
         color = str(message.data).strip().lower()
@@ -566,6 +590,7 @@ class MissionManagerNode(Node):
             "mission_state": output.mission_state,
             "traffic_substate": output.traffic_substate,
             "traffic_detected": self.logic.traffic_detected,
+            "traffic_missed_frames": self.logic.traffic_missed_frames,
             "traffic_color": self.logic.traffic_color,
             "traffic_confidence": round(
                 self.logic.traffic_confidence, 3
