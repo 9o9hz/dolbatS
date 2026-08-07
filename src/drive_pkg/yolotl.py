@@ -394,6 +394,7 @@ class LaneFollowerNode(Node):
         self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = (
             0.001875,
             0.94,
+            0.94,
             0.001875,
         )
 
@@ -406,7 +407,7 @@ class LaneFollowerNode(Node):
         self.MAX_LANE_AGE = 7
         self.L = 0.54  # wheelbase 54.5cm 실측
 
-        self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.4,0.8
+        self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.95,0.99
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
         self.MIN_LOOKAHEAD_DISTANCE = 1.5
@@ -1102,7 +1103,7 @@ def main(args=None):
     rclpy.init(args=args)
     parser = argparse.ArgumentParser()
 
-    default_weights = _default_resource_path('best.pt')
+    default_weights = _default_resource_path('best_ver2.pt')
     default_params = _default_resource_path('bev_params_0803.npz')
     default_calib = _default_resource_path('camera_calibration.pkl')
 
