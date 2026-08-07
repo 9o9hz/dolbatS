@@ -403,6 +403,51 @@ class LaneTopologyTest(unittest.TestCase):
         self.assertEqual(processor._current_lane, "lane_1")
         self.assertIsNone(processor._lane_transition_state)
 
+    def test_lane_state_does_not_require_outer_solid_boundary(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=500,
+                pixels_per_meter_x=200.0,
+                lane_width_m=0.85,
+                initial_lane="auto",
+                lane_state_confirm_frames=1,
+                lane_change_center_tolerance_m=0.15,
+            ),
+        )
+        dashed = group(335.0, True)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED", semantic_confidence=0.95
+            )
+
+        self.assertEqual(
+            processor._classify_which_lane([dashed]), "lane_1"
+        )
+        self.assertEqual(processor._current_lane, "lane_1")
+
+    def test_lane_state_uses_configured_vehicle_reference_x(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=640,
+                vehicle_reference_x_px=340.0,
+                pixels_per_meter_x=200.0,
+                initial_lane="auto",
+                lane_state_confirm_frames=1,
+                lane_change_center_tolerance_m=1.0,
+            ),
+        )
+        dashed = group(330.0, True)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED", semantic_confidence=0.95
+            )
+
+        self.assertEqual(
+            processor._classify_which_lane([dashed]), "lane_2"
+        )
+
     def test_center_line_dead_zone_can_be_enabled_or_disabled(self):
         topology = self.topology(80.0, 260.0, 440.0)
         enabled = SegmentationLaneProcessor(

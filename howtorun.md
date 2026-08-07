@@ -41,7 +41,7 @@ ros2 run drive_pkg yolotl
 
 # T5. mission_manager
 ```
-  ros2 launch mission_manager_pkg mission_manager.launch.py
+ros2 launch mission_manager_pkg mission_manager.launch.py
 ```
 
 # T6. keyboard_toggle

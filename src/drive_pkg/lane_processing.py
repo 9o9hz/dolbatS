@@ -121,6 +121,8 @@ class LaneConfig:
     )
     warp_width: int = 640
     warp_height: int = 640
+    # Vehicle center in BEV pixels. A negative value uses warp_width / 2.
+    vehicle_reference_x_px: float = -1.0
     pixels_per_meter_x: float = 533.3333333333
     pixels_per_meter_y: float = 533.3333333333
     lane_width_m: float = 0.85
@@ -424,6 +426,13 @@ class SegmentationLaneProcessor:
 
     def _validate_config(self) -> None:
         cfg = self.config
+        if (
+            cfg.vehicle_reference_x_px >= 0.0
+            and cfg.vehicle_reference_x_px >= cfg.warp_width
+        ):
+            raise ValueError(
+                "vehicle_reference_x_px must be inside the BEV image"
+            )
         if len(cfg.source_points) != 8:
             raise ValueError("source_points must contain exactly eight numbers")
         if len(cfg.destination_points) != 8:
@@ -1046,8 +1055,14 @@ class SegmentationLaneProcessor:
         return reliable_groups
 
     def _group_side(self, group: LaneGroup) -> str:
-        center_x = self.config.warp_width * 0.5
+        center_x = self._vehicle_reference_x()
         return "left" if group["x_ref"] < center_x else "right"
+
+    def _vehicle_reference_x(self) -> float:
+        configured = float(self.config.vehicle_reference_x_px)
+        if configured >= 0.0:
+            return configured
+        return self.config.warp_width * 0.5
 
     def _group_type(
         self, group: LaneGroup
@@ -1318,18 +1333,27 @@ class SegmentationLaneProcessor:
     def _infer_lane_from_groups(
         self, groups: List[LaneGroup]
     ) -> Optional[str]:
-        solid_left, dashed, solid_right = (
+        _, dashed, _ = (
             self._solid_dashed_solid_topology(groups)
         )
-        if dashed is not None and (
-            solid_left is not None or solid_right is not None
-        ):
-            center_x = self.config.warp_width * 0.5
+        if dashed is None:
+            dashed_candidates = [
+                group
+                for group in groups
+                if self._group_has_path_overlap(group)
+                and self._group_is_dashed(group)
+            ]
+            if dashed_candidates:
+                dashed = max(
+                    dashed_candidates, key=self._group_reliability
+                )
+        if dashed is not None:
+            center_x = self._vehicle_reference_x()
             if center_x < float(dashed["x_ref"]):
                 return "lane_1"
             return "lane_2"
 
-        center_x = self.config.warp_width * 0.5
+        center_x = self._vehicle_reference_x()
         strongest_groups: Dict[str, LaneGroup] = {}
         for side in ("left", "right"):
             candidates = [
@@ -1362,10 +1386,26 @@ class SegmentationLaneProcessor:
     def _observe_lane_from_topology(
         self, groups: List[LaneGroup]
     ) -> Dict[str, Any]:
-        """Observe the ego lane without committing a temporal state change."""
-        solid_left, dashed, solid_right = (
+        """Observe the ego lane from the center dashed boundary.
+
+        Outer solid boundaries are useful for path construction, but are
+        not required for deciding which side of the center line the vehicle
+        occupies.
+        """
+        _, dashed, _ = (
             self._solid_dashed_solid_topology(groups)
         )
+        if dashed is None:
+            dashed_candidates = [
+                group
+                for group in groups
+                if self._group_has_path_overlap(group)
+                and self._group_is_dashed(group)
+            ]
+            if dashed_candidates:
+                dashed = max(
+                    dashed_candidates, key=self._group_reliability
+                )
         observation: Dict[str, Any] = {
             "lane": None,
             "topology_valid": False,
@@ -1376,7 +1416,7 @@ class SegmentationLaneProcessor:
         if dashed is None:
             return observation
 
-        vehicle_x = self.config.warp_width * 0.5
+        vehicle_x = self._vehicle_reference_x()
         dashed_x = float(dashed["x_ref"])
         lateral_to_dashed_m = abs(dashed_x - vehicle_x) / (
             self.config.pixels_per_meter_x
@@ -1386,35 +1426,30 @@ class SegmentationLaneProcessor:
             and lateral_to_dashed_m <= self.config.lane_dead_zone_m
         )
         if observation["in_dead_zone"]:
-            observation["topology_valid"] = bool(
-                solid_left is not None and solid_right is not None
-            )
+            observation["topology_valid"] = True
             return observation
 
-        if vehicle_x < dashed_x and solid_left is not None:
+        if vehicle_x < dashed_x:
             lane = "lane_1"
-            left_boundary = solid_left
-            right_boundary = dashed
-        elif vehicle_x > dashed_x and solid_right is not None:
+            lane_center_x = dashed_x - (
+                0.5
+                * self.config.lane_width_m
+                * self.config.pixels_per_meter_x
+            )
+        elif vehicle_x > dashed_x:
             lane = "lane_2"
-            left_boundary = dashed
-            right_boundary = solid_right
+            lane_center_x = dashed_x + (
+                0.5
+                * self.config.lane_width_m
+                * self.config.pixels_per_meter_x
+            )
         else:
             return observation
 
-        left_x = float(left_boundary["x_ref"])
-        right_x = float(right_boundary["x_ref"])
-        if not left_x < vehicle_x < right_x:
-            return observation
-
         reference_y = self.config.warp_height * 0.88
-        left_curve = np.asarray(left_boundary["curve"], dtype=np.float64)
-        right_curve = np.asarray(right_boundary["curve"], dtype=np.float64)
-        center_slope_px = 0.5 * (
-            2.0 * left_curve[0] * reference_y
-            + left_curve[1]
-            + 2.0 * right_curve[0] * reference_y
-            + right_curve[1]
+        dashed_curve = np.asarray(dashed["curve"], dtype=np.float64)
+        center_slope_px = (
+            2.0 * dashed_curve[0] * reference_y + dashed_curve[1]
         )
         center_slope_metric = (
             center_slope_px
@@ -1422,7 +1457,7 @@ class SegmentationLaneProcessor:
             / self.config.pixels_per_meter_x
         )
         angle_deg = abs(math.degrees(math.atan(center_slope_metric)))
-        center_offset_m = abs(vehicle_x - 0.5 * (left_x + right_x)) / (
+        center_offset_m = abs(vehicle_x - lane_center_x) / (
             self.config.pixels_per_meter_x
         )
         observation.update(
@@ -2535,7 +2570,7 @@ class SegmentationLaneProcessor:
         nearest_index = int(np.argmax(anchored[:, 1]))
         farthest_y = float(np.min(anchored[:, 1]))
         nearest_y = float(anchored[nearest_index, 1])
-        vehicle_x = float(self.config.warp_width) * 0.5
+        vehicle_x = self._vehicle_reference_x()
         vehicle_y = float(self.config.warp_height - 1)
         correction = vehicle_x - float(anchored[nearest_index, 0])
 
@@ -2633,7 +2668,7 @@ class SegmentationLaneProcessor:
     def pixels_to_meters(self, path: PointArray) -> PointArray:
         if path is None:
             return None
-        vehicle_x = self.config.warp_width * 0.5
+        vehicle_x = self._vehicle_reference_x()
         vehicle_y = self.config.warp_height - 1.0
         forward = (
             (vehicle_y - path[:, 1]) / self.config.pixels_per_meter_y
@@ -2718,7 +2753,7 @@ class SegmentationLaneProcessor:
         cv2.circle(
             debug,
             (
-                self.config.warp_width // 2,
+                int(round(self._vehicle_reference_x())),
                 self.config.warp_height - 1,
             ),
             7,

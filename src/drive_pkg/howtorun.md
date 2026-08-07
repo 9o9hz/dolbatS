@@ -68,6 +68,29 @@ source install/setup.bash
 ros2 launch drive_pkg drive_pipeline.launch.py
 ```
 
+YAML의 `initial_lane`을 수정하지 않고 시작 차로를 터미널에서 지정할 수 있다.
+허용값은 `auto`, `lane_1`, `lane_2`이며, 지정하지 않으면 `auto`를 사용한다.
+
+```bash
+ros2 launch drive_pkg drive_pipeline.launch.py initial_lane:=lane_1
+```
+
+전체 실행과 rosbag 실행에서도 같은 launch 인자를 사용할 수 있다.
+
+```bash
+ros2 launch drive_pkg drive_pipeline_full.launch.py initial_lane:=lane_2
+ros2 launch drive_pkg drive_rosbag.launch.py \
+  bag_path:=/path/to/bag initial_lane:=lane_1
+```
+
+노드를 직접 실행할 때는 ROS 파라미터 override를 사용한다.
+
+```bash
+ros2 run drive_pkg drive_main --ros-args \
+  --params-file /home/hanjingyu/dolbatS/src/drive_pkg/config/drive_pipeline.yaml \
+  -p initial_lane:=lane_1
+```
+
 `drive_pipeline.launch.py`는 `drive_main`, `pure_pursuit` 두 노드를 함께
 띄운다. 최종 제어는 별도 `mission_manager` launch가 발행한다.
 `pure_pursuit`의 `local_display`(기본값 true)가 켜져 있으면 통합 시각화

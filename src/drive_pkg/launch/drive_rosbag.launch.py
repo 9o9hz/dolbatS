@@ -13,6 +13,7 @@ def generate_launch_description() -> LaunchDescription:
     bag_path = LaunchConfiguration("bag_path")
     rate = LaunchConfiguration("rate")
     show_visualizer = LaunchConfiguration("show_visualizer")
+    initial_lane = LaunchConfiguration("initial_lane")
     default_params = PathJoinSubstitution(
         [FindPackageShare("drive_pkg"), "config", "drive_pipeline.yaml"]
     )
@@ -32,6 +33,11 @@ def generate_launch_description() -> LaunchDescription:
                 "show_visualizer",
                 default_value="true",
             ),
+            DeclareLaunchArgument(
+                "initial_lane",
+                default_value="auto",
+                description="Initial lane: auto, lane_1, or lane_2.",
+            ),
             Node(
                 package="drive_pkg",
                 executable="drive_main",
@@ -42,6 +48,9 @@ def generate_launch_description() -> LaunchDescription:
                     {
                         "local_display": False,
                         "image_topic": "/camera/lane/raw/compressed",
+                        "initial_lane": ParameterValue(
+                            initial_lane, value_type=str
+                        ),
                     },
                 ],
             ),

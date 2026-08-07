@@ -12,6 +12,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description() -> LaunchDescription:
     params_file = LaunchConfiguration("params_file")
     enable_drive = LaunchConfiguration("enable_drive")
+    initial_lane = LaunchConfiguration("initial_lane")
     default_params = PathJoinSubstitution(
         [FindPackageShare("drive_pkg"), "config", "drive_pipeline.yaml"]
     )
@@ -22,6 +23,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("video_device", default_value="/dev/video0"),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("enable_drive", default_value="false"),
+            DeclareLaunchArgument(
+                "initial_lane",
+                default_value="auto",
+                description="Initial lane: auto, lane_1, or lane_2.",
+            ),
             DeclareLaunchArgument(
                 "launch_serial_bridge", default_value="false"
             ),
@@ -65,7 +71,14 @@ def generate_launch_description() -> LaunchDescription:
                 executable="path_plan",
                 name="path_plan",
                 output="screen",
-                parameters=[params_file],
+                parameters=[
+                    params_file,
+                    {
+                        "initial_lane": ParameterValue(
+                            initial_lane, value_type=str
+                        )
+                    },
+                ],
             ),
             Node(
                 package="drive_pkg",
