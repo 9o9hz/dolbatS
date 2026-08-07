@@ -393,7 +393,7 @@ class LaneFollowerNode(Node):
         # BEV 640x640px 기준: x/y 방향 각각 1.20m (0803).
         self.m_per_pixel_y, self.y_offset_m, self.m_per_pixel_x = (
             0.001875,
-            1.23,
+            0.94,
             0.001875,
         )
 
@@ -409,15 +409,15 @@ class LaneFollowerNode(Node):
         self.THROTTLE_MIN_FOR_LD, self.THROTTLE_MAX_FOR_LD = 0.4,0.8
         self.current_throttle = self.THROTTLE_MIN_FOR_LD
 
-        self.MIN_LOOKAHEAD_DISTANCE = 1.2
-        self.MAX_LOOKAHEAD_DISTANCE = 1.4
+        self.MIN_LOOKAHEAD_DISTANCE = 1.0
+        self.MAX_LOOKAHEAD_DISTANCE = 1.0
         self.MAX_STEER_DEG = 35.0
         self.prev_steer_deg = 0.0
         self.MAX_STEER_RATE = 12.0
         # pure_pursuit.py(drive_pipeline.yaml steering_gain=5.00)와 동일한
         # 캘리브레이션. 순수 기하학적 pure-pursuit 각도는 작아서 이 게인
         # 없이는 아두이노 폐루프가 정지마찰을 못 넘기고 거의 안 움직인다.
-        self.STEERING_GAIN = 5.0
+        self.STEERING_GAIN = 1.0
 
         self.last_valid_ld = float(self.MAX_LOOKAHEAD_DISTANCE)
 
