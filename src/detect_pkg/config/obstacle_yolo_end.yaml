@@ -2,7 +2,7 @@ obstacle_detector_publisher:
   ros__parameters:
     # detect_pkg/config 아래에서 불러올 YOLO 모델 파일명
     model_filename: dolsoi-alter-v1.pt
-    confidence_threshold: 0.5
+    confidence_threshold: 0.85
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
     compressed_image_topic: /camera/lane/raw/compressed
@@ -57,8 +57,8 @@ yolo_obstacle_bbox_turn:
     publish_rate_hz: 30.0
 
     # raw 화면의 세로 경계선 비율. 0.25=1/4, 0.75=3/4 지점이다.
-    bbox_left_boundary_ratio: 0.29
-    bbox_right_boundary_ratio: 0.705
+    bbox_left_boundary_ratio: 0.333333
+    bbox_right_boundary_ratio: 0.666667
     # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
     # 왼쪽 경계선을 이 횟수만큼 연속 통과하면 회피를 종료한다.
     bbox_exit_consecutive_frames: 8

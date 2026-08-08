@@ -1,7 +1,7 @@
 obstacle_detector_publisher:
   ros__parameters:
     model_filename: dolsoi-model-v2.pt
-    confidence_threshold: 0.7
+    confidence_threshold: 0.85
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
     compressed_image_topic: /camera/lane/raw/compressed
@@ -14,6 +14,9 @@ obstacle_detector_publisher:
     detection_image_topic: /camera/lane/detection_view/compressed
     detection_jpeg_quality: 80
     show_window: true
+    # yolo_only가 발행하는 실제 트리거 ROI와 회피 종료선을 감지 영상에 표시한다.
+    show_yolo_only_guides: true
+    avoidance_status_topic: /detect/avoidance/status
 
 yolo_obstacle_yolo_only:
   ros__parameters:
@@ -23,13 +26,17 @@ yolo_obstacle_yolo_only:
     fallback_image_width_px: 640
     fallback_image_height_px: 480
 
-    # 화면을 세로로 나눈 가운데 영역의 좌우 경계 비율
+    # bbox 중심점이 들어와야 하는 직접 ROI. bottom=0.90이면 화면 하단
+    # 10%는 트리거 영역에서 제외되며, 감지 영상에 하단 제한선이 표시된다.
     middle_left_ratio: 0.2
     middle_right_ratio: 0.8
+    roi_top_ratio: 0.0
+    roi_bottom_ratio: 0.90
     # bbox 면적 / 전체 화면 면적. 0.025는 화면 면적의 2.5%이다.
-    min_bbox_area_ratio: 0.015
+    min_bbox_area_ratio: 0.020
 
-    # 회피 방향. launch의 avoid_direction:=L 또는 R 인자가 이 값을 덮어쓴다.
+    # 첫 회피 방향. 이후 장애물마다 L/R을 번갈아 사용한다.
+    # launch의 avoid_direction:=L 또는 R 인자가 이 값을 덮어쓴다.
     avoid_direction: L
     full_steer_angle_deg: 35.0
 
