@@ -31,7 +31,7 @@ drive_main:
     # x/y = 1.20m / 640px = 0.001875m/px.
     pixels_per_meter_x: 533.3333333333  # [사용/보정] ↑같은 x픽셀을 더 짧은 m로 환산
     pixels_per_meter_y: 533.3333333333  # [사용/보정] ↑같은 y픽셀을 더 짧은 m로 환산
-    line_width_target_m: 0.045  # [사용] 목표 페인트폭; 변경→허용폭 중심 이동
+    line_width_target_m: 0.050  # [사용] 목표 페인트폭; 변경→허용폭 중심 이동
     line_width_tolerance_m: 0.015  # [사용] 정상폭 ±값; ↑회수/오검출↑, ↓엄격
     line_width_recovery_tolerance_m: 0.030  # [사용] 세로형상 복구폭 ±값; ↑복구/오검출↑
     line_width_recovery_aspect_ratio: 1.30  # [사용] 복구 높이/폭; ↑엄격·복구↓, ↓반대
@@ -47,9 +47,9 @@ drive_main:
     crosswalk_spacing_tolerance_ratio: 0.25  # [사용] ↑규칙군집 판정 완화·오제거↑
     lane_width_m: 0.85  # [사용] 중심 offset=절반(0.425m); ↑경계에서 더 멀리
     # 둘 이상의 경계를 함께 사용할 때 허용하는 최소 중심 간격.
-    min_boundary_spacing_m: 0.80  # [사용] ↑좁은 쌍 탈락↑, ↓오쌍 허용↑
+    min_boundary_spacing_m: 0.77  # [사용] ↑좁은 쌍 탈락↑, ↓오쌍 허용↑
     # 850mm 기준 ±50mm 범위 밖이면 confidence 높은 한 선만 사용.
-    max_boundary_spacing_m: 0.90  # [사용] ↑넓은 쌍 허용↑, ↓엄격
+    max_boundary_spacing_m: 0.93  # [사용] ↑넓은 쌍 허용↑, ↓엄격
     # 두 경계가 함께 보이는 Y 구간에서 법선 방향 차선 폭을 반복 측정한다.
     # 중앙값은 국소 마스크 노이즈에 강하고, MAD가 크면 평행 경계가 아닌
     # 불안정한 쌍으로 판단하여 기존 confidence 기반 단일 경계로 복귀한다.
@@ -74,10 +74,9 @@ drive_main:
     dashed_piece_threshold: 2  # [사용] ↑SOLID 선호 진입 어려움
     prefer_solid_when_dashed: true  # [사용] ON=점선 다수 시 SOLID 우선
     initial_lane: "auto"  # [사용] 시작 차로 가정(lane_1/lane_2)
-    lane_state_confirm_frames: 1  # [사용] ↑초기확정 안정/지연↑, ↓반대
+    lane_state_confirm_frames: 3  # [사용] ↑초기확정 안정/지연↑, ↓반대
     # 중앙 점선 주변에서는 어느 차로에도 확정하지 않는다. false이면
     # 경계 통과 즉시 반대 차로 관측을 허용하되 완료 확인 조건은 유지한다.
-    lane_dead_zone_enabled: False # [사용] ON=중앙 점선 부근 차로 미확정
     lane_dead_zone_enabled: False # [사용] ON=중앙 점선 부근 차로 미확정
     lane_dead_zone_m: 0.06  # [조건부/현재OFF] ↑중립구간↑(enabled=true)
     # 목표 차로의 두 경계 안에서 중심·방향 조건이 연속으로 만족돼야 전환 완료.
@@ -85,13 +84,13 @@ drive_main:
     lane_change_center_tolerance_m: 0.40  # [사용] ↑완료판정 쉬움·오판↑, ↓엄격
     lane_change_angle_tolerance_deg: 30.0  # [사용] ↑완료판정 쉬움·오판↑
     # 토폴로지 관측이 장시간 사라지면 고정값을 버리고 unknown으로 복귀.
-    lane_state_max_missing_frames: 1  # [사용] ↑누락강건/오래된 상태유지↑
-    # 순간 오검출은 곡선 연속성으로 거르고, 사라진 경계는 2프레임 뒤 폐기한다.
-    lane_track_max_age_frames: 1  # [사용] ↑재연결/오매칭/폐기지연↑
+    lane_state_max_missing_frames: 3  # [사용] ↑누락강건/오래된 상태유지,↑차로 번호(lane_1/2)를 3프레임 유지
+    # 순간 오검출은 곡선 연속성으로 거르고, 사라진 경계는 3프레임 뒤 폐기한다.
+    lane_track_max_age_frames: 2  # [사용] ↑재연결/오매칭/폐기지연↑,left/right 경계 트랙을 3프레임 유지
     # S자에서 같은 물리 차선의 프레임 간 곡률 이동을 허용한다.
     lane_track_match_threshold_px: 65.0  # [사용] ↑추적관대·오매칭↑, ↓끊김↑
     solid_enter_frames: 4  # [사용] ↑SOLID선호 안정/진입지연↑
-    solid_exit_frames: 6  # [사용] ↑SOLID선호 유지/복귀지연↑
+    solid_exit_frames: 6  # [사용] ↑SOLID선호 유지/복귀지연↑,선택된 실선을 최대 6프레임 동안 유지
 
     # 기존 로컬의 다항식 경로 생성 및 시간축 평활화.
     path_top_y: 180  # [사용] ↓더 먼 경로 포함, ↑경로 짧아짐
@@ -105,11 +104,11 @@ drive_main:
     # 시간축 응답성 튜닝: 새 검출 경로를 75% 반영하고, 경로 소스가
     # 바뀌면 즉시 전환한다. 급커브 추종을 막지 않도록
     # 횡방향 변화 제한은 프레임당 10 cm로 완화한다.
-    path_ema_alpha: 0.75  # [사용] ↑반응/떨림↑, ↓평활/지연↑ (0~1)
+    path_ema_alpha: 0.75  # [사용] ↑반응/떨림↑, ↓평활/지연↑ (0~1), 새 경로 75%, 직전 경로 25%를 혼합
     path_transition_blend_frames: 1  # [사용] ↑전환부드러움/지연↑, 1=즉시
-    max_path_lateral_step_m: 0.15  # [사용] ↑급커브반응/점프↑, ↓안정/지연↑
+    max_path_lateral_step_m: 0.15  # [사용] ↑급커브반응/점프↑, ↓안정/지연↑,경로가 한 프레임에 최대 15cm만 이동하도록 제한
     # 검출 누락 시 오래된 경로를 과도하게 유지하지 않는다.
-    max_missing_frames: 0  # [사용] ↑fallback지속/오래된경로 위험↑
+    max_missing_frames: 2  # [사용] ↑fallback지속/오래된경로 위험↑
 
     path_topic: "/lane/path"  # [토픽/사용] 경로 출력; PP 입력과 일치 필수
     debug_topic: "/lane/path/debug/compressed"  # [토픽] 경로 디버그 영상
