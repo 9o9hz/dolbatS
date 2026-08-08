@@ -1,7 +1,7 @@
 # T1. lane_camera
 ```
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-  -p video_device:=/dev/video2 \
+  -p video_device:=/dev/video4 \
   -p pixel_format:=mjpeg2rgb \
   -p image_width:=640 \
   -p image_height:=480 \
@@ -15,7 +15,7 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
 
 ```
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-  -p video_device:=/dev/video4 \
+  -p video_device:=/dev/video2 \
   -p pixel_format:=mjpeg2rgb \
   -p image_width:=640 \
   -p image_height:=480 \
@@ -34,8 +34,15 @@ ros2 launch control_pkg serial_bridge.launch.py
 # T4. drive_pkg
 ```
 ros2 launch drive_pkg drive_pipeline.launch.py 
+
+
+ros2 run drive_pkg drive_main --ros-args \
+  --params-file /home/j/dolbatS/src/drive_pkg/config/drive_pipeline.yaml \
+  -p initial_lane:=lane_1
 ```
 ```
+
+# 시간 주행 yolotl
 ros2 run drive_pkg yolotl
 ```
 
@@ -65,3 +72,11 @@ ros2 run detect_pkg traffic_light_detection
 
 
 ros2 run plotjuggler plotjuggler -l /home/j/dolbatS/plotJuggler.xml --start_streamer "ROS2 Topic Subscriber"
+
+
+# 1. 현재 살아있는 ROS 2 프로세스 확인 
+ps aux | grep -i ros2
+
+# 2. 데몬 재시작으로 discovery 캐시 초기화
+ros2 daemon stop
+ros2 daemon start
