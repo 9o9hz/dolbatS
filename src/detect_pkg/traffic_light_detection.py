@@ -62,7 +62,7 @@ class TrafficLightDetectorPublisher(Node):
 
         self.declare_parameter("model_path", get_default_model_path())
         self.declare_parameter("confidence_threshold", 0.3)
-        self.declare_parameter("min_red_height_px", 110.0)
+        self.declare_parameter("min_red_height_px", 70.0)
         self.declare_parameter("detected_topic", "/detect/traffic_light/detected")
         self.declare_parameter("color_topic", "/detect/traffic_light/color")
         self.declare_parameter(
