@@ -27,7 +27,9 @@ DEFAULTS = {
     "traffic_detected_topic": "/detect/traffic_light/detected",
     "traffic_color_topic": "/detect/traffic_light/color",
     "traffic_confidence_topic": "/detect/traffic_light/confidence",
-    "red_release_missed_frames": 3,
+    # Traffic-light camera default period is 0.03 s (~33.3 FPS).
+    # Require about 3 seconds of consecutive missed detections.
+    "red_release_missed_frames": 100,
     "final_steer_topic": "/auto_steer_angle",
     "final_throttle_topic": "/auto_throttle",
     "mission_state_topic": "/mission_state",
@@ -146,7 +148,7 @@ class MissionLogic:
         lane_throttle_max: float = 0.6,
         obstacle_throttle_min: float = 0.4,
         obstacle_throttle_max: float = 0.8,
-        red_release_missed_frames: int = 3,
+        red_release_missed_frames: int = 100,
         yellow_deceleration_sec: float = 3.0,
         green_forward_duration_sec: float = 3.0,
         green_forward_throttle: float = 0.4,
@@ -210,13 +212,6 @@ class MissionLogic:
     def _update_traffic_state(self, now_sec: float) -> None:
         valid = self._traffic_is_valid()
         color = self.traffic_color if valid else "none"
-
-        # Green is normal lane driving, not a separate traffic mission.
-        # This also releases an existing red/yellow hold immediately.
-        if color == "green":
-            self.traffic_green_completed = False
-            self.traffic_substate = TRAFFIC_IDLE
-            return
 
         if self.traffic_green_completed:
             if not self.traffic_detected:

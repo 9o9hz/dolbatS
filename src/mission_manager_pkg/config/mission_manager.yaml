@@ -18,9 +18,10 @@ mission_manager:
     traffic_detected_topic: "/detect/traffic_light/detected"
     traffic_color_topic: "/detect/traffic_light/color"
     traffic_confidence_topic: "/detect/traffic_light/confidence"
-    # red_hold 진입 후 미감지가 이 프레임 수만큼 연속되어야 lane으로 복귀.
-    # green은 이 값과 무관하게 즉시 lane으로 복귀한다.
-    red_release_missed_frames: 10
+    # 카메라 기본 주기 0.03초(약 33.3 FPS) 기준:
+    # red_hold 진입 후 약 3초(100프레임) 연속 미감지 시 lane으로 복귀.
+    # green 검출만으로는 기존 red/yellow 정지 상태를 해제하지 않는다.
+    red_release_missed_frames: 100
 
     final_steer_topic: "/auto_steer_angle"
     final_throttle_topic: "/auto_throttle"
