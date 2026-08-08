@@ -1395,6 +1395,23 @@ class SegmentationLaneProcessor:
                 return "lane_1"
             return "lane_2"
 
+        # The center dashed boundary is the primary lane reference.  Only
+        # when it is unavailable, use the strongest visible outer solid:
+        # a solid on the vehicle's left bounds lane 1, while a solid on the
+        # vehicle's right bounds lane 2.
+        solid_candidates = [
+            group
+            for group in groups
+            if self._group_has_path_overlap(group)
+            and not self._group_is_dashed(group)
+        ]
+        if solid_candidates:
+            solid = max(solid_candidates, key=self._group_reliability)
+            if float(solid["x_ref"]) < self._vehicle_reference_x():
+                return "lane_1"
+            if float(solid["x_ref"]) > self._vehicle_reference_x():
+                return "lane_2"
+
         center_x = self._vehicle_reference_x()
         strongest_groups: Dict[str, LaneGroup] = {}
         for side in ("left", "right"):
@@ -1455,32 +1472,60 @@ class SegmentationLaneProcessor:
             "centered": False,
             "aligned": False,
         }
-        if dashed is None:
+        reference = dashed
+        reference_is_dashed = reference is not None
+        if reference is None:
+            solid_candidates = [
+                group
+                for group in groups
+                if self._group_has_path_overlap(group)
+                and not self._group_is_dashed(group)
+            ]
+            if solid_candidates:
+                reference = max(
+                    solid_candidates, key=self._group_reliability
+                )
+        if reference is None:
             return observation
 
         vehicle_x = self._vehicle_reference_x()
-        dashed_x = float(dashed["x_ref"])
-        lateral_to_dashed_m = abs(dashed_x - vehicle_x) / (
+        reference_x = float(reference["x_ref"])
+        lateral_to_reference_m = abs(reference_x - vehicle_x) / (
             self.config.pixels_per_meter_x
         )
         observation["in_dead_zone"] = bool(
-            self.config.lane_dead_zone_enabled
-            and lateral_to_dashed_m <= self.config.lane_dead_zone_m
+            reference_is_dashed
+            and self.config.lane_dead_zone_enabled
+            and lateral_to_reference_m <= self.config.lane_dead_zone_m
         )
         if observation["in_dead_zone"]:
             observation["topology_valid"] = True
             return observation
 
-        if vehicle_x < dashed_x:
+        if reference_is_dashed and vehicle_x < reference_x:
             lane = "lane_1"
-            lane_center_x = dashed_x - (
+            lane_center_x = reference_x - (
                 0.5
                 * self.config.lane_width_m
                 * self.config.pixels_per_meter_x
             )
-        elif vehicle_x > dashed_x:
+        elif reference_is_dashed and vehicle_x > reference_x:
             lane = "lane_2"
-            lane_center_x = dashed_x + (
+            lane_center_x = reference_x + (
+                0.5
+                * self.config.lane_width_m
+                * self.config.pixels_per_meter_x
+            )
+        elif not reference_is_dashed and reference_x < vehicle_x:
+            lane = "lane_1"
+            lane_center_x = reference_x + (
+                0.5
+                * self.config.lane_width_m
+                * self.config.pixels_per_meter_x
+            )
+        elif not reference_is_dashed and reference_x > vehicle_x:
+            lane = "lane_2"
+            lane_center_x = reference_x - (
                 0.5
                 * self.config.lane_width_m
                 * self.config.pixels_per_meter_x
@@ -1489,9 +1534,11 @@ class SegmentationLaneProcessor:
             return observation
 
         reference_y = self.config.warp_height * 0.88
-        dashed_curve = np.asarray(dashed["curve"], dtype=np.float64)
+        reference_curve = np.asarray(
+            reference["curve"], dtype=np.float64
+        )
         center_slope_px = (
-            2.0 * dashed_curve[0] * reference_y + dashed_curve[1]
+            2.0 * reference_curve[0] * reference_y + reference_curve[1]
         )
         center_slope_metric = (
             center_slope_px
@@ -1989,6 +2036,36 @@ class SegmentationLaneProcessor:
             and self._group_has_path_overlap(group)
         ]
         lane_state = self._current_lane or self._infer_lane_from_groups(groups)
+
+        # If the center dashed boundary is the only visible semantic
+        # reference, assign its boundary role from the confirmed ego lane.
+        # Do this before geometric track fallback: a physical center line
+        # that crossed the vehicle can otherwise remain latched to its old
+        # left/right track and offset the path toward the wrong lane.
+        if (
+            semantic_dashed
+            and not semantic_solid
+            and lane_state is not None
+            and self._lane_transition_state is None
+        ):
+            strongest_dashed = max(
+                semantic_dashed, key=self._group_reliability
+            )
+            self._using_tracked_boundary = False
+            if lane_state == "lane_1":
+                return (
+                    None,
+                    strongest_dashed,
+                    "lane1_dashed_right_boundary",
+                    dashed_region_count,
+                )
+            return (
+                strongest_dashed,
+                None,
+                "lane2_dashed_left_boundary",
+                dashed_region_count,
+            )
+
         if (
             semantic_dashed
             and semantic_solid

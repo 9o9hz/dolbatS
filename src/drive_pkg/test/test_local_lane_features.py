@@ -206,7 +206,7 @@ class LaneTopologyTest(unittest.TestCase):
 
         self.assertIs(selected_left, stronger_far)
         self.assertIsNone(selected_right)
-        self.assertEqual(mode, "dashed_detected_no_solid")
+        self.assertEqual(mode, "lane2_dashed_left_boundary")
 
     def test_boundary_reliability_uses_best_original_confidence(self):
         processor = SegmentationLaneProcessor(None, LaneConfig())
@@ -426,6 +426,50 @@ class LaneTopologyTest(unittest.TestCase):
         )
         self.assertEqual(processor._current_lane, "lane_1")
 
+    def test_lane_1_uses_dashed_only_as_right_boundary(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=640,
+                vehicle_reference_x_px=340.0,
+                pixels_per_meter_x=200.0,
+                initial_lane="lane_1",
+            ),
+        )
+        dashed = group(430.0, True)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED", semantic_confidence=0.95
+            )
+
+        left, right, mode, _ = processor._choose_boundaries([dashed])
+
+        self.assertIsNone(left)
+        self.assertIs(right, dashed)
+        self.assertEqual(mode, "lane1_dashed_right_boundary")
+
+    def test_lane_2_uses_dashed_only_as_left_boundary(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=640,
+                vehicle_reference_x_px=340.0,
+                pixels_per_meter_x=200.0,
+                initial_lane="lane_2",
+            ),
+        )
+        dashed = group(250.0, True)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED", semantic_confidence=0.95
+            )
+
+        left, right, mode, _ = processor._choose_boundaries([dashed])
+
+        self.assertIs(left, dashed)
+        self.assertIsNone(right)
+        self.assertEqual(mode, "lane2_dashed_left_boundary")
+
     def test_lane_state_uses_configured_vehicle_reference_x(self):
         processor = SegmentationLaneProcessor(
             None,
@@ -446,6 +490,74 @@ class LaneTopologyTest(unittest.TestCase):
 
         self.assertEqual(
             processor._classify_which_lane([dashed]), "lane_2"
+        )
+
+    def test_lane_state_falls_back_to_left_solid_as_lane_1(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=640,
+                vehicle_reference_x_px=340.0,
+                pixels_per_meter_x=200.0,
+                initial_lane="auto",
+                lane_state_confirm_frames=1,
+                lane_change_center_tolerance_m=1.0,
+            ),
+        )
+        solid = group(250.0, False)
+        solid["pieces"][0].update(
+            semantic_type="SOLID", semantic_confidence=0.95
+        )
+
+        self.assertEqual(
+            processor._classify_which_lane([solid]), "lane_1"
+        )
+
+    def test_lane_state_falls_back_to_right_solid_as_lane_2(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=640,
+                vehicle_reference_x_px=340.0,
+                pixels_per_meter_x=200.0,
+                initial_lane="auto",
+                lane_state_confirm_frames=1,
+                lane_change_center_tolerance_m=1.0,
+            ),
+        )
+        solid = group(430.0, False)
+        solid["pieces"][0].update(
+            semantic_type="SOLID", semantic_confidence=0.95
+        )
+
+        self.assertEqual(
+            processor._classify_which_lane([solid]), "lane_2"
+        )
+
+    def test_dashed_lane_observation_has_priority_over_solid(self):
+        processor = SegmentationLaneProcessor(
+            None,
+            LaneConfig(
+                warp_width=640,
+                vehicle_reference_x_px=340.0,
+                pixels_per_meter_x=200.0,
+                initial_lane="auto",
+                lane_state_confirm_frames=1,
+                lane_change_center_tolerance_m=1.0,
+            ),
+        )
+        dashed = group(430.0, True)
+        for piece in dashed["pieces"]:
+            piece.update(
+                semantic_type="DASHED", semantic_confidence=0.95
+            )
+        solid = group(440.0, False)
+        solid["pieces"][0].update(
+            semantic_type="SOLID", semantic_confidence=0.99
+        )
+
+        self.assertEqual(
+            processor._classify_which_lane([solid, dashed]), "lane_1"
         )
 
     def test_center_line_dead_zone_can_be_enabled_or_disabled(self):
