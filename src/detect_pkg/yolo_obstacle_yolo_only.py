@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direction-selectable YOLO avoidance ending at a bbox exit line."""
+"""Alternating YOLO avoidance starting in the configured direction."""
 
 import json
 import math
@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 
@@ -32,6 +33,15 @@ def turn_state_from_direction(direction: str) -> YoloOnlyState:
     raise ValueError("avoid_direction must be 'L' or 'R'")
 
 
+def opposite_turn_state(state: YoloOnlyState) -> YoloOnlyState:
+    """Return the opposite turn direction."""
+    if state == YoloOnlyState.TURN_LEFT:
+        return YoloOnlyState.TURN_RIGHT
+    if state == YoloOnlyState.TURN_RIGHT:
+        return YoloOnlyState.TURN_LEFT
+    raise ValueError("state must be TURN_LEFT or TURN_RIGHT")
+
+
 def centered_bbox_is_large_enough(
     center_x: float,
     bbox_width: float,
@@ -41,9 +51,21 @@ def centered_bbox_is_large_enough(
     middle_left_ratio: float,
     middle_right_ratio: float,
     min_bbox_area_ratio: float,
+    *,
+    center_y: Optional[float] = None,
+    roi_top_ratio: float = 0.0,
+    roi_bottom_ratio: float = 1.0,
 ) -> bool:
     """Return whether the bbox center and area satisfy the trigger settings."""
-    values = (center_x, bbox_width, bbox_height, min_bbox_area_ratio)
+    if center_y is None:
+        center_y = 0.5 * image_height
+    values = (
+        center_x,
+        center_y,
+        bbox_width,
+        bbox_height,
+        min_bbox_area_ratio,
+    )
     if image_width <= 0 or image_height <= 0:
         return False
     if not all(math.isfinite(value) for value in values):
@@ -51,15 +73,18 @@ def centered_bbox_is_large_enough(
     if bbox_width <= 0.0 or bbox_height <= 0.0:
         return False
 
-    center_is_middle = (
+    center_is_in_roi = (
         image_width * middle_left_ratio
         <= center_x
         <= image_width * middle_right_ratio
+        and image_height * roi_top_ratio
+        <= center_y
+        <= image_height * roi_bottom_ratio
     )
     bbox_area_ratio = (
         bbox_width * bbox_height / float(image_width * image_height)
     )
-    return center_is_middle and bbox_area_ratio >= min_bbox_area_ratio
+    return center_is_in_roi and bbox_area_ratio >= min_bbox_area_ratio
 
 
 class YoloObstacleYoloOnly(Node):
@@ -74,6 +99,8 @@ class YoloObstacleYoloOnly(Node):
             "fallback_image_height_px": 480,
             "middle_left_ratio": 1.0 / 3.0,
             "middle_right_ratio": 2.0 / 3.0,
+            "roi_top_ratio": 0.0,
+            "roi_bottom_ratio": 0.90,
             "min_bbox_area_ratio": 0.08,
             "full_steer_angle_deg": 25.0,
             "avoid_direction": "L",
@@ -101,6 +128,8 @@ class YoloObstacleYoloOnly(Node):
         )
         self.middle_left_ratio = float(parameter("middle_left_ratio"))
         self.middle_right_ratio = float(parameter("middle_right_ratio"))
+        self.roi_top_ratio = float(parameter("roi_top_ratio"))
+        self.roi_bottom_ratio = float(parameter("roi_bottom_ratio"))
         self.min_bbox_area_ratio = float(parameter("min_bbox_area_ratio"))
         self.full_steer_angle_deg = abs(
             float(parameter("full_steer_angle_deg"))
@@ -133,6 +162,12 @@ class YoloObstacleYoloOnly(Node):
             raise ValueError(
                 "middle ratios must satisfy 0 <= left < right <= 1"
             )
+        if not (
+            0.0 <= self.roi_top_ratio < self.roi_bottom_ratio <= 1.0
+        ):
+            raise ValueError(
+                "ROI ratios must satisfy 0 <= top < bottom <= 1"
+            )
         if not 0.0 < self.min_bbox_area_ratio <= 1.0:
             raise ValueError("min_bbox_area_ratio must be in (0, 1]")
         if self.full_steer_angle_deg <= 0.0:
@@ -148,6 +183,7 @@ class YoloObstacleYoloOnly(Node):
             )
 
         self.state = YoloOnlyState.WAIT_TRIGGER
+        self.next_turn_state = self.configured_turn_state
         self.yolo_detected = False
         self.clear_frames = 0
         self.bbox_exit_frames = 0
@@ -162,8 +198,13 @@ class YoloObstacleYoloOnly(Node):
         self.candidate_valid_pub = self.create_publisher(
             Bool, str(parameter("candidate_valid_topic")), 10
         )
+        status_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self.status_pub = self.create_publisher(
-            String, str(parameter("status_topic")), 10
+            String, str(parameter("status_topic")), status_qos
         )
 
         self.yolo_sub = self.create_subscription(
@@ -194,8 +235,10 @@ class YoloObstacleYoloOnly(Node):
             "Centered-bbox avoidance ready: "
             f"middle={self.middle_left_ratio:.3f}W.."
             f"{self.middle_right_ratio:.3f}W, "
+            f"vertical={self.roi_top_ratio:.3f}H.."
+            f"{self.roi_bottom_ratio:.3f}H, "
             f"min area={self.min_bbox_area_ratio:.3f}, "
-            f"turn={self.avoid_direction} "
+            f"first turn={self.avoid_direction} "
             f"({self.full_steer_angle_deg:.1f} deg); "
             f"exit lines={self.bbox_left_boundary_ratio:.3f}W/"
             f"{self.bbox_right_boundary_ratio:.3f}W, "
@@ -228,10 +271,10 @@ class YoloObstacleYoloOnly(Node):
             )
             return
 
-        center_x, _, bbox_width, bbox_height = (
+        center_x, center_y, bbox_width, bbox_height = (
             float(value) for value in msg.data[:4]
         )
-        if not math.isfinite(center_x):
+        if not math.isfinite(center_x) or not math.isfinite(center_y):
             return
         self.last_bbox_center_x = center_x
 
@@ -265,10 +308,13 @@ class YoloObstacleYoloOnly(Node):
             self.middle_left_ratio,
             self.middle_right_ratio,
             self.min_bbox_area_ratio,
+            center_y=center_y,
+            roi_top_ratio=self.roi_top_ratio,
+            roi_bottom_ratio=self.roi_bottom_ratio,
         ):
             return
 
-        self.state = self.configured_turn_state
+        self.state = self.next_turn_state
         self.bbox_exit_frames = 0
         self.publish_candidate()
         direction = (
@@ -289,6 +335,8 @@ class YoloObstacleYoloOnly(Node):
         boundary_x = self.image_width * boundary_ratio
         crossed_side = "right" if direction == "left" else "left"
 
+        completed_turn = self.state
+        self.next_turn_state = opposite_turn_state(completed_turn)
         self.state = YoloOnlyState.WAIT_CLEAR
         self.clear_frames = 0
         self.publish_candidate()
@@ -322,13 +370,33 @@ class YoloObstacleYoloOnly(Node):
             String(
                 data=json.dumps(
                     {
+                        "mode": "yolo_only",
                         "state": self.state.name.lower(),
                         "reason": reason,
                         "yolo_detected": self.yolo_detected,
                         "image_width": self.image_width,
                         "image_height": self.image_height,
+                        "roi_left_ratio": self.middle_left_ratio,
+                        "roi_right_ratio": self.middle_right_ratio,
+                        "roi_top_ratio": self.roi_top_ratio,
+                        "roi_bottom_ratio": self.roi_bottom_ratio,
                         "min_bbox_area_ratio": self.min_bbox_area_ratio,
+                        "bbox_left_boundary_ratio": (
+                            self.bbox_left_boundary_ratio
+                        ),
+                        "bbox_right_boundary_ratio": (
+                            self.bbox_right_boundary_ratio
+                        ),
+                        "bbox_exit_consecutive_frames": (
+                            self.bbox_exit_consecutive_frames
+                        ),
                         "avoid_direction": self.avoid_direction,
+                        "next_turn_direction": (
+                            "left"
+                            if self.next_turn_state
+                            == YoloOnlyState.TURN_LEFT
+                            else "right"
+                        ),
                         "bbox_center_x": self.last_bbox_center_x,
                         "bbox_exit_frames": self.bbox_exit_frames,
                         "avoidance_active": self.state

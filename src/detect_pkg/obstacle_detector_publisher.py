@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
-from typing import Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import (
     Bool,
@@ -15,15 +17,50 @@ from std_msgs.msg import (
     Float32MultiArray,
     Int8MultiArray,
     MultiArrayDimension,
+    String,
 )
 
 
 BBox = Tuple[float, float, float, float]
+Detection = Tuple[BBox, float]
 DEFAULT_MODEL_FILENAME = "dolsoi-model-v2.pt"
 EVENT_DETECTED = 1
 DIRECTION_RIGHT = -1
 DIRECTION_NONE = 0
 DIRECTION_LEFT = 1
+
+
+def normalized_overlay_geometry(
+    image_width: int,
+    image_height: int,
+    roi_left_ratio: float,
+    roi_right_ratio: float,
+    roi_top_ratio: float,
+    roi_bottom_ratio: float,
+    exit_left_ratio: float,
+    exit_right_ratio: float,
+) -> Dict[str, int]:
+    """Convert normalized YOLO-only guides to drawable pixel coordinates."""
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError("image dimensions must be positive")
+    if not (
+        0.0 <= roi_left_ratio < roi_right_ratio <= 1.0
+        and 0.0 <= roi_top_ratio < roi_bottom_ratio <= 1.0
+        and 0.0 <= exit_left_ratio < exit_right_ratio <= 1.0
+    ):
+        raise ValueError("overlay ratios must be ordered within [0, 1]")
+
+    def pixel(ratio: float, size: int) -> int:
+        return min(size - 1, max(0, int(round(size * ratio))))
+
+    return {
+        "roi_left": pixel(roi_left_ratio, image_width),
+        "roi_right": pixel(roi_right_ratio, image_width),
+        "roi_top": pixel(roi_top_ratio, image_height),
+        "roi_bottom": pixel(roi_bottom_ratio, image_height),
+        "exit_left": pixel(exit_left_ratio, image_width),
+        "exit_right": pixel(exit_right_ratio, image_width),
+    }
 
 
 def get_model_path(model_filename: str) -> str:
@@ -77,6 +114,10 @@ class ObstacleDetectorPublisher(Node):
         )
         self.declare_parameter("detection_jpeg_quality", 80)
         self.declare_parameter("show_window", False if show_window is None else show_window)
+        self.declare_parameter("show_yolo_only_guides", False)
+        self.declare_parameter(
+            "avoidance_status_topic", "/detect/avoidance/status"
+        )
 
         configured_model_path = str(self.get_parameter("model_path").value).strip()
         model_filename = str(self.get_parameter("model_filename").value).strip()
@@ -97,6 +138,9 @@ class ObstacleDetectorPublisher(Node):
             ),
         )
         self.enabled = bool(self.get_parameter("enabled_at_startup").value)
+        self.show_yolo_only_guides = bool(
+            self.get_parameter("show_yolo_only_guides").value
+        )
 
         enable_topic = str(self.get_parameter("enable_topic").value)
         detected_topic = (
@@ -112,6 +156,9 @@ class ObstacleDetectorPublisher(Node):
             self.get_parameter("detection_image_topic")
             .get_parameter_value()
             .string_value
+        )
+        avoidance_status_topic = str(
+            self.get_parameter("avoidance_status_topic").value
         )
         ultrasonic_enable_topic = str(
             self.get_parameter("ultrasonic_enable_topic").value
@@ -138,6 +185,7 @@ class ObstacleDetectorPublisher(Node):
         self.avoid_direction = DIRECTION_NONE
         self.avoidance_steer_deg = 0.0
         self.avoidance_valid = False
+        self.yolo_only_guide_config: Optional[Dict[str, object]] = None
 
         self.get_logger().info(f"Loading model: {self.model_path}")
         YOLO = self.load_yolo()
@@ -176,6 +224,18 @@ class ObstacleDetectorPublisher(Node):
             self.on_avoidance_valid,
             10,
         )
+        if self.show_yolo_only_guides:
+            status_qos = QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.avoidance_status_subscription = self.create_subscription(
+                String,
+                avoidance_status_topic,
+                self.on_avoidance_status,
+                status_qos,
+            )
         self.get_logger().info(
             f"YOLO enabled by {enable_topic} (startup={self.enabled}); "
             f"subscribing to {compressed_image_topic}=CompressedImage; publishing "
@@ -220,6 +280,41 @@ class ObstacleDetectorPublisher(Node):
     def on_avoidance_valid(self, msg: Bool) -> None:
         self.avoidance_valid = bool(msg.data)
 
+    def on_avoidance_status(self, msg: String) -> None:
+        try:
+            status = json.loads(msg.data)
+            required_ratios = (
+                "roi_left_ratio",
+                "roi_right_ratio",
+                "roi_top_ratio",
+                "roi_bottom_ratio",
+                "bbox_left_boundary_ratio",
+                "bbox_right_boundary_ratio",
+                "min_bbox_area_ratio",
+            )
+            if status.get("mode") != "yolo_only":
+                return
+            if not all(key in status for key in required_ratios):
+                return
+            normalized_overlay_geometry(
+                2,
+                2,
+                float(status["roi_left_ratio"]),
+                float(status["roi_right_ratio"]),
+                float(status["roi_top_ratio"]),
+                float(status["roi_bottom_ratio"]),
+                float(status["bbox_left_boundary_ratio"]),
+                float(status["bbox_right_boundary_ratio"]),
+            )
+            min_area_ratio = float(status["min_bbox_area_ratio"])
+            if not np.isfinite(min_area_ratio) or not (
+                0.0 < min_area_ratio <= 1.0
+            ):
+                return
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return
+        self.yolo_only_guide_config = status
+
     def load_yolo(self):
         try:
             from ultralytics import YOLO
@@ -245,7 +340,8 @@ class ObstacleDetectorPublisher(Node):
             self.get_logger().info(f"First subscribed frame: {width}x{height}")
             self.logged_first_frame = True
 
-        bbox = self.detect_best_bbox(frame)
+        detections = self.detect_bboxes(frame)
+        bbox = self.select_best_bbox(detections)
         detected = bbox is not None
         self.yolo_detected = detected
         self.publish_detected(detected)
@@ -254,16 +350,17 @@ class ObstacleDetectorPublisher(Node):
             self.publish_bbox(bbox)
 
         detection_frame = frame.copy()
-        self.draw_detection_overlay(detection_frame, bbox)
+        self.draw_detection_overlay(detection_frame, detections)
         self.publish_image(detection_frame, image_msg)
 
         if self.show_window:
             self.draw_debug_window(detection_frame)
 
-    def detect_best_bbox(self, frame) -> Optional[BBox]:
-        results = self.model.predict(frame, conf=self.confidence_threshold, verbose=False)
-        best_box = None
-        best_conf = -1.0
+    def detect_bboxes(self, frame) -> List[Detection]:
+        results = self.model.predict(
+            frame, conf=self.confidence_threshold, verbose=False
+        )
+        detections: List[Detection] = []
 
         for result in results:
             if result.boxes is None:
@@ -271,19 +368,24 @@ class ObstacleDetectorPublisher(Node):
 
             for box in result.boxes:
                 conf = float(box.conf[0])
-                if conf <= best_conf:
-                    continue
-
                 x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
                 width = x2 - x1
                 height = y2 - y1
                 center_x = x1 + width / 2.0
                 center_y = y1 + height / 2.0
+                detections.append(((center_x, center_y, width, height), conf))
 
-                best_conf = conf
-                best_box = (center_x, center_y, width, height)
+        return detections
 
-        return best_box
+    @staticmethod
+    def select_best_bbox(detections: Sequence[Detection]) -> Optional[BBox]:
+        if not detections:
+            return None
+        return max(detections, key=lambda detection: detection[1])[0]
+
+    def detect_best_bbox(self, frame) -> Optional[BBox]:
+        """Return the control bbox while retaining the original public helper."""
+        return self.select_best_bbox(self.detect_bboxes(frame))
 
     def publish_detected(self, detected: bool) -> None:
         msg = Bool()
@@ -326,8 +428,12 @@ class ObstacleDetectorPublisher(Node):
         msg.data = encoded.tobytes()
         self.detection_image_pub.publish(msg)
 
-    def draw_detection_overlay(self, frame, bbox: Optional[BBox]) -> None:
-        if bbox is not None:
+    def draw_detection_overlay(
+        self, frame, detections: Sequence[Detection]
+    ) -> None:
+        frame_height, frame_width = frame.shape[:2]
+        self.draw_yolo_only_guides(frame)
+        for bbox, confidence in detections:
             center_x, center_y, width, height = bbox
             x1 = int(center_x - width / 2.0)
             y1 = int(center_y - height / 2.0)
@@ -337,7 +443,169 @@ class ObstacleDetectorPublisher(Node):
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.circle(frame, (int(center_x), int(center_y)), 4, (0, 0, 255), -1)
 
+            label = f"confidence {confidence:.2f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.55
+            thickness = 2
+            (label_width, label_height), baseline = cv2.getTextSize(
+                label, font, font_scale, thickness
+            )
+            label_x = min(
+                max(x1, 0), max(frame_width - label_width - 6, 0)
+            )
+            label_y = max(y1 - 8, label_height + baseline + 4)
+            label_y = min(label_y, max(frame_height - baseline - 2, 0))
+            cv2.rectangle(
+                frame,
+                (label_x, label_y - label_height - baseline - 4),
+                (label_x + label_width + 6, label_y + baseline + 2),
+                (0, 0, 0),
+                -1,
+            )
+            cv2.putText(
+                frame,
+                label,
+                (label_x + 3, label_y - baseline),
+                font,
+                font_scale,
+                (0, 255, 0),
+                thickness,
+                cv2.LINE_AA,
+            )
+
         self.draw_status_panel(frame)
+
+    @staticmethod
+    def draw_dashed_vertical_line(
+        frame,
+        x: int,
+        color: Tuple[int, int, int],
+        thickness: int,
+        dash_px: int = 12,
+        gap_px: int = 8,
+    ) -> None:
+        height = frame.shape[0]
+        for y1 in range(0, height, dash_px + gap_px):
+            y2 = min(height - 1, y1 + dash_px)
+            cv2.line(frame, (x, y1), (x, y2), color, thickness)
+
+    def draw_yolo_only_guides(self, frame) -> None:
+        status = self.yolo_only_guide_config
+        if not self.show_yolo_only_guides or status is None:
+            return
+
+        try:
+            geometry = normalized_overlay_geometry(
+                frame.shape[1],
+                frame.shape[0],
+                float(status["roi_left_ratio"]),
+                float(status["roi_right_ratio"]),
+                float(status["roi_top_ratio"]),
+                float(status["roi_bottom_ratio"]),
+                float(status["bbox_left_boundary_ratio"]),
+                float(status["bbox_right_boundary_ratio"]),
+            )
+            min_area_percent = 100.0 * float(
+                status["min_bbox_area_ratio"]
+            )
+        except (KeyError, TypeError, ValueError):
+            return
+
+        # The translucent fill makes the actual center-point trigger region
+        # visible while retaining the complete lower edge of the ROI.
+        roi_overlay = frame.copy()
+        cv2.rectangle(
+            roi_overlay,
+            (geometry["roi_left"], geometry["roi_top"]),
+            (geometry["roi_right"], geometry["roi_bottom"]),
+            (120, 80, 0),
+            -1,
+        )
+        cv2.addWeighted(roi_overlay, 0.18, frame, 0.82, 0.0, frame)
+        cv2.rectangle(
+            frame,
+            (geometry["roi_left"], geometry["roi_top"]),
+            (geometry["roi_right"], geometry["roi_bottom"]),
+            (255, 200, 0),
+            2,
+        )
+        cv2.line(
+            frame,
+            (0, geometry["roi_bottom"]),
+            (frame.shape[1] - 1, geometry["roi_bottom"]),
+            (255, 0, 255),
+            3,
+        )
+        bottom_label_y = min(
+            frame.shape[0] - 10,
+            geometry["roi_bottom"] + 20,
+        )
+        cv2.putText(
+            frame,
+            "ROI BOTTOM LIMIT",
+            (8, bottom_label_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        state = str(status.get("state", ""))
+        active_exit = (
+            "right" if state == "turn_left"
+            else "left" if state == "turn_right"
+            else ""
+        )
+        for side in ("left", "right"):
+            active = side == active_exit
+            color = (0, 0, 255) if active else (0, 165, 255)
+            self.draw_dashed_vertical_line(
+                frame,
+                geometry[f"exit_{side}"],
+                color,
+                4 if active else 2,
+            )
+
+        label_y = max(
+            20,
+            min(frame.shape[0] - 12, geometry["roi_bottom"] - 10),
+        )
+        label_x = min(
+            geometry["roi_left"] + 6,
+            max(frame.shape[1] - 360, 0),
+        )
+        cv2.putText(
+            frame,
+            f"TRIGGER ROI: bbox center, area >= {min_area_percent:.1f}%",
+            (label_x, label_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        exit_label_y = min(frame.shape[0] - 8, 132)
+        for side, turn in (("left", "RIGHT"), ("right", "LEFT")):
+            x = geometry[f"exit_{side}"]
+            label = f"{turn} TURN EXIT"
+            label_width = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1
+            )[0][0]
+            label_x = min(
+                max(x - label_width // 2, 0),
+                max(frame.shape[1] - label_width, 0),
+            )
+            cv2.putText(
+                frame,
+                label,
+                (label_x, exit_label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.44,
+                (0, 0, 255) if side == active_exit else (0, 165, 255),
+                2 if side == active_exit else 1,
+                cv2.LINE_AA,
+            )
 
     def draw_status_panel(self, frame) -> None:
         if self.avoidance_valid and abs(self.avoidance_steer_deg) > 0.1:

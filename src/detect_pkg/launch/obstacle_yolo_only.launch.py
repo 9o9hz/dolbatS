@@ -19,7 +19,9 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "avoid_direction",
                 default_value="L",
-                description="Fixed avoidance direction: L or R",
+                description=(
+                    "First avoidance direction (then alternates): L or R"
+                ),
             ),
             Node(
                 package="detect_pkg",
