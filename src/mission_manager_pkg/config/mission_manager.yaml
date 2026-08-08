@@ -20,7 +20,7 @@ mission_manager:
     traffic_confidence_topic: "/detect/traffic_light/confidence"
     # red_hold 진입 후 미감지가 이 프레임 수만큼 연속되어야 lane으로 복귀.
     # green은 이 값과 무관하게 즉시 lane으로 복귀한다.
-    red_release_missed_frames: 3
+    red_release_missed_frames: 10
 
     final_steer_topic: "/auto_steer_angle"
     final_throttle_topic: "/auto_throttle"
