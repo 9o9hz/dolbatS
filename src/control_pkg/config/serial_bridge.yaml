@@ -2,6 +2,7 @@ serial_bridge:
   ros__parameters:
     steer_command_topic: "/auto_steer_angle"
     throttle_command_topic: "/auto_throttle"
+    drive_enable_topic: "/drive/enabled"
 
     serial_port: "/dev/ttyACM0"
     baud_rate: 115200

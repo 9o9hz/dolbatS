@@ -113,6 +113,10 @@ bool steerFeedbackFault = false;
 int driveSpeed = 0;
 char driveDir = 'S';
 
+// 전원 인가 후 START 명령을 받기 전까지는 조향/주행 출력을 모두 막는다.
+// 정지 중에도 D/S 목표 명령은 저장되며 START를 받으면 함께 적용된다.
+bool controlEnabled = false;
+
 // PC/ROS/USB 통신이 끊기면 마지막 구동 명령을 무기한 유지하지 않는다.
 // unsigned long 뺄셈은 millis() overflow에도 안전하다.
 const unsigned long DRIVE_COMMAND_TIMEOUT_MS = 500;
@@ -314,10 +318,10 @@ void publishVehicleTelemetry() {
   }
 
   int signedSpeed = 0;
-  if (driveDir == 'F') {
+  if (controlEnabled && driveDir == 'F') {
     signedSpeed = driveSpeed;
   }
-  else if (driveDir == 'R') {
+  else if (controlEnabled && driveDir == 'R') {
     signedSpeed = -driveSpeed;
   }
 
@@ -416,12 +420,38 @@ void stopAllMotors() {
 void parseCommand(String cmd) {
   if (cmd.length() == 0) return;
 
-  if (cmd.startsWith("D,")) {
+  if (cmd == "START") {
+    startControl();
+  }
+  else if (cmd == "STOP") {
+    stopControl();
+  }
+  else if (cmd.startsWith("D,")) {
     parseDriveCommand(cmd);
   }
   else if (cmd.startsWith("S,")) {
     parseSteerCommand(cmd);
   }
+}
+
+void startControl() {
+  controlEnabled = true;
+
+  // 정지 중 미리 받은 주행 명령이 START 직후 watchdog에 의해 사라지지
+  // 않도록 START 시점을 새 heartbeat 기준으로 삼는다.
+  if (hasReceivedDriveCommand) {
+    lastValidDriveCommandMs = millis();
+    driveWatchdogStopped = false;
+  }
+
+  // 정지 중에는 진행 감시를 하지 않으므로 시작 시 기준점을 다시 잡는다.
+  steerProgressDirection = 0;
+}
+
+void stopControl() {
+  controlEnabled = false;
+  stopAllMotors();
+  steerProgressDirection = 0;
 }
 
 void parseDriveCommand(String cmd) {
@@ -456,7 +486,8 @@ void parseDriveCommand(String cmd) {
 
 void updateDriveWatchdog() {
   if (
-    hasReceivedDriveCommand
+    controlEnabled
+    && hasReceivedDriveCommand
     && !driveWatchdogStopped
     && (unsigned long)(millis() - lastValidDriveCommandMs)
       > DRIVE_COMMAND_TIMEOUT_MS
@@ -502,6 +533,11 @@ void parseSteerCommand(String cmd) {
 // ---------------- 실제 구동 적용 ----------------
 
 void applyDrive() {
+  if (!controlEnabled) {
+    rearStop();
+    return;
+  }
+
   if (driveDir == 'F') {
     rearForward(driveSpeed);
   }
@@ -516,6 +552,12 @@ void applyDrive() {
 void applySteer() {
   currentSteerRaw = readSteerSensorRaw();
   currentSteerDeg = steerRawToDeg(currentSteerRaw);
+
+  if (!controlEnabled) {
+    handleStop();
+    steerProgressDirection = 0;
+    return;
+  }
 
   int steerRawError = targetSteerRaw - currentSteerRaw;
 

@@ -10,7 +10,7 @@ from typing import Optional, Sequence, Tuple
 import rclpy
 import serial
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Float32
 
 from serial_protocol import (
     ULTRASONIC_FRAME,
@@ -31,6 +31,7 @@ class SerialBridge(Node):
 
         self.declare_parameter("steer_command_topic", "/auto_steer_angle")
         self.declare_parameter("throttle_command_topic", "/auto_throttle")
+        self.declare_parameter("drive_enable_topic", "/drive/enabled")
         self.declare_parameter("serial_port", serial_port or "/dev/ttyACM0")
         self.declare_parameter("baud_rate", 115200 if baudrate is None else baudrate)
         self.declare_parameter("serial_startup_delay", 2.0)
@@ -66,6 +67,9 @@ class SerialBridge(Node):
         )
         throttle_command_topic = str(
             self.get_parameter("throttle_command_topic").value
+        )
+        drive_enable_topic = str(
+            self.get_parameter("drive_enable_topic").value
         )
         self.serial_port = str(self.get_parameter("serial_port").value)
         self.baud_rate = int(self.get_parameter("baud_rate").value)
@@ -131,12 +135,17 @@ class SerialBridge(Node):
         self.desired_throttle = 0.0
         self.control_was_valid = False
         self.stale_stop_sent = False
+        self.drive_enabled = False
+        self.arduino_started = False
 
         self.steer_subscription = self.create_subscription(
             Float32, steer_command_topic, self.on_steer_command, 10
         )
         self.throttle_subscription = self.create_subscription(
             Float32, throttle_command_topic, self.on_throttle_command, 10
+        )
+        self.drive_enable_subscription = self.create_subscription(
+            Bool, drive_enable_topic, self.on_drive_enabled, 10
         )
         self.steering_angle_pub = self.create_publisher(
             Float32, steering_angle_topic, 10
@@ -171,7 +180,8 @@ class SerialBridge(Node):
             f"Final control: {steer_command_topic}, {throttle_command_topic}; "
             f"serial={self.serial_port}@{self.baud_rate}, "
             f"pair timeout={self.command_timeout_sec:.2f}s, "
-            f"heartbeat={control_output_rate:.1f}Hz"
+            f"heartbeat={control_output_rate:.1f}Hz, "
+            f"enable={drive_enable_topic}"
         )
         self.get_logger().info(
             "Publishing Arduino telemetry: "
@@ -220,8 +230,10 @@ class SerialBridge(Node):
                 self.serial_rx_buffer.clear()
                 self.last_drive_command = None
                 self.last_steer_command = None
-            # Reconnection never replays an old moving command.
-            self.send_drive("S", 0, force=True)
+            # Reconnection never moves until a fresh pair has been staged and
+            # START is sent again by publish_fresh_control().
+            self.send_control("STOP")
+            self.arduino_started = False
             self.get_logger().info("Serial connected; safe stop sent")
         except (serial.SerialException, OSError) as exc:
             try:
@@ -247,6 +259,7 @@ class SerialBridge(Node):
                 pass
         self.control_was_valid = False
         self.stale_stop_sent = False
+        self.arduino_started = False
         self.get_logger().warning(
             f"Serial {operation} failed; disconnected and will retry: {exc}",
             throttle_duration_sec=self.reconnect_log_interval,
@@ -269,6 +282,21 @@ class SerialBridge(Node):
         )
         self.last_throttle_time = self.get_clock().now()
         self.received_throttle = True
+
+    def on_drive_enabled(self, msg: Bool) -> None:
+        requested = bool(msg.data)
+        if requested == self.drive_enabled:
+            return
+        self.drive_enabled = requested
+        if not requested:
+            self.send_control("STOP")
+            self.arduino_started = False
+            self.get_logger().warning("Arduino steering and drive stopped")
+            return
+
+        # If a valid pair is already available, stage both values before START.
+        # Otherwise the periodic control callback starts after both arrive.
+        self.publish_fresh_control()
 
     def _control_is_fresh(self, now) -> Tuple[bool, str]:
         if not self.received_steer or not self.received_throttle:
@@ -308,8 +336,14 @@ class SerialBridge(Node):
         if not (steer_sent and drive_sent):
             self.control_was_valid = False
             return
+        if self.drive_enabled and not self.arduino_started:
+            if not self.send_control("START"):
+                self.control_was_valid = False
+                return
+            self.arduino_started = True
+            self.get_logger().warning("Arduino steering and drive started")
         if not self.control_was_valid:
-            self.get_logger().info("Fresh steer/throttle pair; control enabled")
+            self.get_logger().info("Fresh steer/throttle pair available")
         self.control_was_valid = True
         self.stale_stop_sent = False
 
@@ -379,11 +413,14 @@ class SerialBridge(Node):
             connection = self.serial
             if connection is None:
                 return False
-            previous = (
-                self.last_steer_command
-                if kind == "steer"
-                else self.last_drive_command
-            )
+            if kind == "steer":
+                previous = self.last_steer_command
+            elif kind == "drive":
+                previous = self.last_drive_command
+            elif kind == "control":
+                previous = None
+            else:
+                raise ValueError(f"unsupported serial command kind: {kind}")
             if not force and command == previous:
                 return True
             try:
@@ -394,7 +431,7 @@ class SerialBridge(Node):
                 return False
             if kind == "steer":
                 self.last_steer_command = command
-            else:
+            elif kind == "drive":
                 self.last_drive_command = command
             return True
 
@@ -410,12 +447,19 @@ class SerialBridge(Node):
             f"D,{direction},{speed}\n", force=force, kind="drive"
         )
 
+    def send_control(self, command: str) -> bool:
+        if command not in ("START", "STOP"):
+            raise ValueError(f"unsupported Arduino control command: {command}")
+        return self._write_command(
+            f"{command}\n", force=True, kind="control"
+        )
+
     def destroy_node(self) -> bool:
         self.shutting_down = True
         with self.serial_lock:
             connection = self.serial
         if connection is not None:
-            self.send_drive("S", 0, force=True)
+            self.send_control("STOP")
         with self.serial_lock:
             self.serial = None
         if connection is not None:
