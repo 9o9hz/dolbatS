@@ -33,7 +33,7 @@ ros2 launch control_pkg serial_bridge.launch.py
 
 # T4. drive_pkg
 ```
-ros2 launch drive_pkg drive_pipeline.launch.py 
+ros2 launch drive_pkg drive_pipeline.launch.py initial_lane:=lane_2
 
 
 ros2 run drive_pkg drive_main --ros-args \
