@@ -1,7 +1,7 @@
 obstacle_detector_publisher:
   ros__parameters:
     model_filename: dolsoi-model-v2.pt
-    confidence_threshold: 0.85
+    confidence_threshold: 0.5
     enable_topic: /detect/obstacle/enable
     enabled_at_startup: true
     compressed_image_topic: /camera/lane/raw/compressed
@@ -38,7 +38,7 @@ yolo_obstacle_yolo_only:
     # 첫 회피 방향. 이후 장애물마다 L/R을 번갈아 사용한다.
     # launch의 avoid_direction:=L 또는 R 인자가 이 값을 덮어쓴다.
     avoid_direction: L
-    full_steer_angle_deg: 35.0
+    full_steer_angle_deg: 25.5
 
     # yolo_end와 동일한 bbox 기반 회피 종료 조건
     # 왼쪽 회전은 bbox 중심이 오른쪽 경계선을, 오른쪽 회전은 bbox 중심이
