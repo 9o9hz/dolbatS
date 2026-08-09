@@ -1,8 +1,8 @@
 #include <math.h>
 
 // ---------------- Motor Driver Pin ----------------
-const int HANDLE_IN1 = 2;
-const int HANDLE_IN2 = 3;
+const int HANDLE_IN1 = 8;
+const int HANDLE_IN2 = 9;
 
 const int REAR_L_IN1 = 4;
 const int REAR_L_IN2 = 5;
@@ -70,13 +70,15 @@ int pendingUltrasonicTelemetrySensor = 0;
 const int STEER_SENSOR_PIN = A4;
 
 // A4 값이 STEER_CENTER_RAW일 때 조향각 0도
-const int STEER_CENTER_RAW = 560;
+const int STEER_LEFT_RAW = 725;
+const int STEER_RIGHT_RAW = 421;
+const int STEER_CENTER_RAW = (STEER_LEFT_RAW + STEER_RIGHT_RAW) / 2;
 // 센서/링크를 정비한 뒤에는 실차 중앙의 raw 값으로 반드시 재보정한다.
 
 // 1 ADC count당 각도
 // 네가 말한 조건: 1도는 270/1024 값
-// 즉 각도 = ADC 변화량 * 270 / 1024
-const float DEG_PER_ADC = 53.0f / 266.0f;
+// 즉 각도 = ADC 변화량 * 270 / 10453 S,24
+const float DEG_PER_ADC = 53.0f / (STEER_LEFT_RAW - STEER_RIGHT_RAW);
 
 // 조향각 규약: 왼쪽은 양수(+), 오른쪽은 음수(-).
 // 실차에서는 왼쪽으로 움직일 때 A4 값이 증가한다. 이 극성이 틀리면
